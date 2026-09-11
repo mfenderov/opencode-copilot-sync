@@ -1,0 +1,45 @@
+{
+  "name": "opencode-copilot-sync",
+  "displayName": "OpenCode Models for Copilot",
+  "description": "Automatically sync OpenCode Zen & Go models to GitHub Copilot in VS Code",
+  "version": "0.1.0",
+  "type": "module",
+  "publisher": "mfenderov",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:opencode-copilot-sync.sync",
+    "onCommand:opencode-copilot-sync.setApiKey"
+  ],
+  "main": "./dist/extension.cjs",
+  "contributes": {
+    "commands": [
+      {
+        "command": "opencode-copilot-sync.sync",
+        "title": "OpenCode: Sync Models to Copilot",
+        "category": "OpenCode"
+      },
+      {
+        "command": "opencode-copilot-sync.setApiKey",
+        "title": "OpenCode: Set API Key",
+        "category": "OpenCode"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.cjs --external:vscode --format=cjs --platform=node",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0"
+  }
+}
