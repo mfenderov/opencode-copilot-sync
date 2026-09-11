@@ -13,9 +13,9 @@ export function buildProviderEntry(
   name: string,
   apiKey: string,
   modelIds: string[],
-  isGo: boolean = true
+  options: { isGo?: boolean; isFree?: boolean } = { isGo: true }
 ): ProviderEntry {
-  const models = modelIds.map((id) => enrichModel(id, { isGo }));
+  const models = modelIds.map((id) => enrichModel(id, options));
 
   return {
     name,

@@ -1,5 +1,6 @@
 export interface EnrichOptions {
   isGo?: boolean;
+  isFree?: boolean;
   modelsDevData?: Record<string, any>;
 }
 
@@ -18,7 +19,7 @@ export interface CustomEndpointModel {
   requestHeaders?: Record<string, string>;
 }
 
-function formatModelName(id: string): string {
+function formatModelName(id: string, suffix: string = '(OpenCode)'): string {
   // Convert "deepseek-v4-flash" -> "DeepSeek V4 Flash (OpenCode)"
   const parts = id.split(/[-_]/);
   const title = parts
@@ -35,16 +36,18 @@ function formatModelName(id: string): string {
       return p.charAt(0).toUpperCase() + p.slice(1);
     })
     .join(' ');
-  return `${title} (OpenCode)`;
+  return `${title} ${suffix}`;
 }
 
 export function enrichModel(modelId: string, options: EnrichOptions = {}): CustomEndpointModel {
   const isGo = options.isGo ?? true;
+  const isFree = options.isFree ?? false;
   const baseUrl = isGo
     ? 'https://opencode.ai/zen/go/v1/chat/completions'
     : 'https://opencode.ai/zen/v1/chat/completions';
 
-  const name = formatModelName(modelId);
+  const suffix = isFree ? '(Zen Free)' : '(OpenCode)';
+  const name = formatModelName(modelId, suffix);
   const lower = modelId.toLowerCase();
 
   let contextWindow = 131072;
@@ -73,7 +76,7 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
     reasoningEffortFormat: 'chat-completions',
   };
 
-  if (isGo) {
+  if (isGo || isFree) {
     model.requestHeaders = {
       'x-opencode-session': 'vscode-copilot',
     };

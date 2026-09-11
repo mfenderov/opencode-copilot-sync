@@ -1,10 +1,11 @@
 export async function fetchOpenCodeModels(
   apiKey: string,
-  isGo: boolean = true
+  catalog: 'go' | 'zen' = 'go'
 ): Promise<string[]> {
-  const url = isGo
-    ? 'https://opencode.ai/zen/go/v1/models'
-    : 'https://opencode.ai/zen/v1/models';
+  const url =
+    catalog === 'go'
+      ? 'https://opencode.ai/zen/go/v1/models'
+      : 'https://opencode.ai/zen/v1/models';
 
   const res = await fetch(url, {
     method: 'GET',
@@ -25,4 +26,8 @@ export async function fetchOpenCodeModels(
   }
 
   return json.data.map((m) => m.id).filter(Boolean);
+}
+
+export function filterFreeModels(modelIds: string[]): string[] {
+  return modelIds.filter((id) => id.includes('free') || id === 'big-pickle');
 }

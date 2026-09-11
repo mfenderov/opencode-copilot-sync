@@ -1,8 +1,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { buildProviderEntry, mergeChatLanguageModels } from './config.js';
-import { fetchOpenCodeModels } from './fetcher.js';
+import { buildProviderEntry, mergeChatLanguageModels, type ProviderEntry } from './config.js';
+import { fetchOpenCodeModels, filterFreeModels } from './fetcher.js';
 
 export function getChatLanguageModelsPath(): string {
   const platform = process.platform;
@@ -64,41 +64,64 @@ export function createBackup(filePath: string): string | null {
   return backupPath;
 }
 
-export function syncOpenCodeModelsToConfig(
-  apiKey: string,
-  modelIds: string[],
-  options: { isGo?: boolean; targetPath?: string } = {}
-): { syncedCount: number; targetPath: string; backupPath: string | null } {
-  const isGo = options.isGo ?? true;
-  const targetPath = options.targetPath || getChatLanguageModelsPath();
+export function writeProvidersToConfig(
+  providers: ProviderEntry[],
+  targetPath?: string
+): { targetPath: string; backupPath: string | null } {
+  const filePath = targetPath || getChatLanguageModelsPath();
+  const existingConfig = readChatLanguageModels(filePath);
+  const mergedConfig = mergeChatLanguageModels(existingConfig, providers);
 
-  const providerName = isGo ? 'OpenCode Go' : 'OpenCode Zen';
-  const newProvider = buildProviderEntry(providerName, apiKey, modelIds, isGo);
+  const backupPath = createBackup(filePath);
 
-  const existingConfig = readChatLanguageModels(targetPath);
-  const mergedConfig = mergeChatLanguageModels(existingConfig, [newProvider]);
-
-  const backupPath = createBackup(targetPath);
-
-  const dir = path.dirname(targetPath);
+  const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  fs.writeFileSync(targetPath, JSON.stringify(mergedConfig, null, 4), 'utf-8');
+  fs.writeFileSync(filePath, JSON.stringify(mergedConfig, null, 4), 'utf-8');
 
-  return {
-    syncedCount: modelIds.length,
-    targetPath,
-    backupPath,
-  };
+  return { targetPath: filePath, backupPath };
 }
 
 export async function syncOpenCodeModels(
   apiKey: string,
-  options: { isGo?: boolean; targetPath?: string } = {}
-): Promise<{ syncedCount: number; targetPath: string; backupPath: string | null }> {
-  const isGo = options.isGo ?? true;
-  const modelIds = await fetchOpenCodeModels(apiKey, isGo);
-  return syncOpenCodeModelsToConfig(apiKey, modelIds, options);
+  options: { targetPath?: string } = {}
+): Promise<{ goCount: number; freeCount: number; totalCount: number; targetPath: string; backupPath: string | null }> {
+  const providers: ProviderEntry[] = [];
+  let goCount = 0;
+  let freeCount = 0;
+
+  // 1. Fetch OpenCode Go catalog
+  try {
+    const goModelIds = await fetchOpenCodeModels(apiKey, 'go');
+    if (goModelIds.length > 0) {
+      providers.push(buildProviderEntry('OpenCode Go', apiKey, goModelIds, { isGo: true }));
+      goCount = goModelIds.length;
+    }
+  } catch (err: any) {
+    console.error(`Failed to fetch Go models: ${err.message}`);
+  }
+
+  // 2. Fetch OpenCode Zen Free catalog
+  try {
+    const zenModelIds = await fetchOpenCodeModels(apiKey, 'zen');
+    const freeModelIds = filterFreeModels(zenModelIds);
+    if (freeModelIds.length > 0) {
+      providers.push(buildProviderEntry('OpenCode Zen Free', apiKey, freeModelIds, { isGo: false, isFree: true }));
+      freeCount = freeModelIds.length;
+    }
+  } catch (err: any) {
+    console.error(`Failed to fetch Zen Free models: ${err.message}`);
+  }
+
+  const { targetPath, backupPath } = writeProvidersToConfig(providers, options.targetPath);
+
+  return {
+    goCount,
+    freeCount,
+    totalCount: goCount + freeCount,
+    targetPath,
+    backupPath,
+  };
 }

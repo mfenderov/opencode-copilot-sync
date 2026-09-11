@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readChatLanguageModels, getChatLanguageModelsPath, syncOpenCodeModelsToConfig } from '../out/syncer.js';
+import { readChatLanguageModels, getChatLanguageModelsPath, writeProvidersToConfig } from '../out/syncer.js';
+import { buildProviderEntry } from '../out/config.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -10,7 +11,7 @@ test('getChatLanguageModelsPath returns a path ending in chatLanguageModels.json
   assert.ok(p.endsWith('chatLanguageModels.json'));
 });
 
-test('syncOpenCodeModelsToConfig updates temp config without touching real files', () => {
+test('writeProvidersToConfig updates temp config without touching real files', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-test-'));
   const testFile = path.join(tmpDir, 'chatLanguageModels.json');
 
@@ -24,12 +25,8 @@ test('syncOpenCodeModelsToConfig updates temp config without touching real files
   fs.writeFileSync(testFile, JSON.stringify(initial, null, 2), 'utf-8');
 
   const mockModelIds = ['deepseek-v4-flash', 'kimi-k3'];
-  const result = syncOpenCodeModelsToConfig('sk-test-key', mockModelIds, {
-    isGo: true,
-    targetPath: testFile,
-  });
-
-  assert.equal(result.syncedCount, 2);
+  const provider = buildProviderEntry('OpenCode Go', 'sk-test-key', mockModelIds, { isGo: true });
+  writeProvidersToConfig([provider], testFile);
 
   const updated = JSON.parse(fs.readFileSync(testFile, 'utf-8'));
   assert.equal(updated.length, 2);

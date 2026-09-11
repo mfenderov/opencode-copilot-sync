@@ -24,11 +24,13 @@ export async function activate(context: vscode.ExtensionContext) {
             cancellable: false,
           },
           async () => {
-            const result = await syncOpenCodeModels(apiKey, { isGo: true });
-            outputChannel.appendLine(`Synced ${result.syncedCount} models to ${result.targetPath}`);
+            const result = await syncOpenCodeModels(apiKey);
+            outputChannel.appendLine(
+              `Synced ${result.goCount} Go models + ${result.freeCount} Free models to ${result.targetPath}`
+            );
             vscode.window
               .showInformationMessage(
-                `Synced ${result.syncedCount} OpenCode Go models to Copilot!`,
+                `Synced ${result.totalCount} OpenCode models (${result.goCount} Go + ${result.freeCount} Free) to Copilot!`,
                 'Open Models File'
               )
               .then((choice) => {
@@ -42,8 +44,10 @@ export async function activate(context: vscode.ExtensionContext) {
         );
       } else {
         // Background silent sync on startup / reload
-        const result = await syncOpenCodeModels(apiKey, { isGo: true });
-        outputChannel.appendLine(`[Startup] Synced ${result.syncedCount} models to ${result.targetPath}`);
+        const result = await syncOpenCodeModels(apiKey);
+        outputChannel.appendLine(
+          `[Startup] Synced ${result.goCount} Go models + ${result.freeCount} Free models to ${result.targetPath}`
+        );
       }
     } catch (err: any) {
       outputChannel.appendLine(`Sync error: ${err.message}`);
