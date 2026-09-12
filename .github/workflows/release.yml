@@ -40,10 +40,6 @@ jobs:
           draft: false
           prerelease: false
 
-      - name: Verify VSCE Token
-        if: env.VSCE_PAT != ''
-        run: npx @vscode/vsce verify-pat mfenderov -p "$VSCE_PAT"
-
       - name: Publish to VS Code Marketplace
         if: env.VSCE_PAT != ''
-        run: npx @vscode/vsce publish -p "$VSCE_PAT" --packagePath opencode-copilot-sync-*.vsix
+        run: npx @vscode/vsce publish -p "$VSCE_PAT" --packagePath opencode-copilot-sync-*.vsix --no-dependencies
