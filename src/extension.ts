@@ -24,6 +24,17 @@ export async function activate(context: vscode.ExtensionContext) {
       if (!apiKey) {
         if (interactive) {
           vscode.window.showWarningMessage('OpenCode sync cancelled: No API key provided.');
+        } else {
+          vscode.window
+            .showInformationMessage(
+              'OpenCode Copilot Sync: Set your API key to sync OpenCode models to Copilot.',
+              'Set API Key'
+            )
+            .then((choice) => {
+              if (choice === 'Set API Key') {
+                vscode.commands.executeCommand('opencode-copilot-sync.setApiKey');
+              }
+            });
         }
         return;
       }

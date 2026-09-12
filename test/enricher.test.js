@@ -30,3 +30,9 @@ test('enrichModel preserves version decimals in display name', () => {
   const model = enrichModel('minimax-m2.7', { isGo: true });
   assert.equal(model.name, 'MiniMax M2.7 (OpenCode)');
 });
+
+test('enrichModel computes maxInputTokens and sets modelOptions', () => {
+  const model = enrichModel('deepseek-v4-flash', { isGo: true });
+  assert.equal(model.maxInputTokens, model.contextWindow - model.maxOutputTokens);
+  assert.deepEqual(model.modelOptions, { temperature: null, top_p: null });
+});

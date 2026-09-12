@@ -12,11 +12,16 @@ export interface CustomEndpointModel {
   toolCalling: boolean;
   vision: boolean;
   contextWindow: number;
+  maxInputTokens: number;
   maxOutputTokens: number;
   thinking: boolean;
   supportsReasoningEffort?: string[];
   reasoningEffortFormat?: 'chat-completions';
   requestHeaders?: Record<string, string>;
+  modelOptions?: {
+    temperature: number | null;
+    top_p: number | null;
+  };
 }
 
 function formatModelName(id: string, suffix: string = '(OpenCode)'): string {
@@ -62,6 +67,8 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
     vision = true;
   }
 
+  const maxInputTokens = contextWindow - maxOutputTokens;
+
   const model: CustomEndpointModel = {
     id: modelId,
     name,
@@ -70,10 +77,15 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
     toolCalling: true,
     vision,
     contextWindow,
+    maxInputTokens,
     maxOutputTokens,
     thinking,
     supportsReasoningEffort: ['low', 'medium', 'high', 'xhigh', 'max'],
     reasoningEffortFormat: 'chat-completions',
+    modelOptions: {
+      temperature: null,
+      top_p: null,
+    },
   };
 
   if (isGo || isFree) {
