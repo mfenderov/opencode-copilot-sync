@@ -42,4 +42,4 @@ jobs:
 
       - name: Publish to VS Code Marketplace
         if: env.VSCE_PAT != ''
-        run: npx @vscode/vsce publish -p "$VSCE_PAT" --no-dependencies
+        run: npx @vscode/vsce publish -p "$VSCE_PAT" --packagePath opencode-copilot-sync-*.vsix
