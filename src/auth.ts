@@ -6,20 +6,66 @@ import type * as vscode from 'vscode';
 export const SECRET_KEY = 'opencode_api_key';
 
 export function getStoredOpenCodeKey(customPath?: string): string | null {
-  const authPath = customPath || path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json');
-  try {
-    if (!fs.existsSync(authPath)) {
-      return null;
-    }
-    const raw = fs.readFileSync(authPath, 'utf-8');
-    const data = JSON.parse(raw);
-    const key = data['opencode-go']?.key || data['opencode']?.key;
-    if (typeof key === 'string' && key.trim().length > 0) {
-      return key.trim();
-    }
-  } catch {
-    // Ignore read/parse errors
+  if (customPath) {
+    try {
+      if (fs.existsSync(customPath)) {
+        const raw = fs.readFileSync(customPath, 'utf-8');
+        const data = JSON.parse(raw);
+        const key = data['opencode-go']?.key || data['opencode']?.key;
+        if (typeof key === 'string' && key.trim().length > 0) {
+          return key.trim();
+        }
+      }
+    } catch {}
+    return null;
   }
+
+  const candidatePaths: string[] = [];
+
+  // 1. Primary local platform path
+  candidatePaths.push(path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json'));
+
+  // 2. If running on Windows, also check WSL network shares
+  if (process.platform === 'win32') {
+    for (const prefix of ['\\\\wsl.localhost', '\\\\wsl$']) {
+      try {
+        if (fs.existsSync(prefix)) {
+          const distros = fs.readdirSync(prefix);
+          for (const distro of distros) {
+            const homeDir = path.join(prefix, distro, 'home');
+            if (fs.existsSync(homeDir)) {
+              for (const u of fs.readdirSync(homeDir)) {
+                candidatePaths.push(path.join(homeDir, u, '.local', 'share', 'opencode', 'auth.json'));
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+  }
+
+  // 3. If running inside WSL, also check Windows user directories
+  if (process.platform === 'linux' && fs.existsSync('/mnt/c/Users')) {
+    try {
+      for (const u of fs.readdirSync('/mnt/c/Users')) {
+        candidatePaths.push(path.join('/mnt/c/Users', u, '.local', 'share', 'opencode', 'auth.json'));
+      }
+    } catch {}
+  }
+
+  for (const authPath of candidatePaths) {
+    try {
+      if (fs.existsSync(authPath)) {
+        const raw = fs.readFileSync(authPath, 'utf-8');
+        const data = JSON.parse(raw);
+        const key = data['opencode-go']?.key || data['opencode']?.key;
+        if (typeof key === 'string' && key.trim().length > 0) {
+          return key.trim();
+        }
+      }
+    } catch {}
+  }
+
   return null;
 }
 

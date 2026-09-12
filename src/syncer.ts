@@ -17,6 +17,38 @@ export function getChatLanguageModelsPath(): string {
   return path.join(os.homedir(), '.config', 'Code', 'User', 'chatLanguageModels.json');
 }
 
+export function isWSL(): boolean {
+  if (process.platform !== 'linux') return false;
+  if (process.env.WSL_DISTRO_NAME) return true;
+  try {
+    const v = fs.readFileSync('/proc/version', 'utf-8');
+    return v.toLowerCase().includes('microsoft') || v.toLowerCase().includes('wsl');
+  } catch {
+    return false;
+  }
+}
+
+export function getAllChatLanguageModelsPaths(): string[] {
+  const paths: string[] = [getChatLanguageModelsPath()];
+
+  if (isWSL()) {
+    try {
+      const mntCUsers = '/mnt/c/Users';
+      if (fs.existsSync(mntCUsers)) {
+        for (const user of fs.readdirSync(mntCUsers)) {
+          if (['Public', 'Default', 'Default User', 'All Users'].includes(user) || user.startsWith('.')) continue;
+          const winPath = path.join(mntCUsers, user, 'AppData', 'Roaming', 'Code', 'User', 'chatLanguageModels.json');
+          if (fs.existsSync(path.dirname(winPath)) && !paths.includes(winPath)) {
+            paths.push(winPath);
+          }
+        }
+      }
+    } catch {}
+  }
+
+  return paths;
+}
+
 export function readChatLanguageModels(targetPath?: string): any[] {
   const filePath = targetPath || getChatLanguageModelsPath();
   if (!fs.existsSync(filePath)) {
@@ -69,20 +101,31 @@ export function writeProvidersToConfig(
   providers: ProviderEntry[],
   targetPath?: string
 ): { targetPath: string; backupPath: string | null } {
-  const filePath = targetPath || getChatLanguageModelsPath();
-  const existingConfig = readChatLanguageModels(filePath);
-  const mergedConfig = mergeChatLanguageModels(existingConfig, providers);
+  const filePaths = targetPath ? [targetPath] : getAllChatLanguageModelsPaths();
+  let primaryBackup: string | null = null;
 
-  const backupPath = createBackup(filePath);
+  for (const filePath of filePaths) {
+    try {
+      const existingConfig = readChatLanguageModels(filePath);
+      const mergedConfig = mergeChatLanguageModels(existingConfig, providers);
 
-  const dir = path.dirname(filePath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+      const backupPath = createBackup(filePath);
+      if (!primaryBackup) {
+        primaryBackup = backupPath;
+      }
+
+      const dir = path.dirname(filePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      fs.writeFileSync(filePath, JSON.stringify(mergedConfig, null, 4), 'utf-8');
+    } catch (err: any) {
+      console.error(`Failed writing to ${filePath}: ${err.message}`);
+    }
   }
 
-  fs.writeFileSync(filePath, JSON.stringify(mergedConfig, null, 4), 'utf-8');
-
-  return { targetPath: filePath, backupPath };
+  return { targetPath: filePaths[0], backupPath: primaryBackup };
 }
 
 export async function syncOpenCodeModels(

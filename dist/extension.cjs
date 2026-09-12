@@ -42,18 +42,60 @@ var path = __toESM(require("node:path"), 1);
 var os = __toESM(require("node:os"), 1);
 var SECRET_KEY = "opencode_api_key";
 function getStoredOpenCodeKey(customPath) {
-  const authPath = customPath || path.join(os.homedir(), ".local", "share", "opencode", "auth.json");
-  try {
-    if (!fs.existsSync(authPath)) {
-      return null;
+  if (customPath) {
+    try {
+      if (fs.existsSync(customPath)) {
+        const raw = fs.readFileSync(customPath, "utf-8");
+        const data = JSON.parse(raw);
+        const key = data["opencode-go"]?.key || data["opencode"]?.key;
+        if (typeof key === "string" && key.trim().length > 0) {
+          return key.trim();
+        }
+      }
+    } catch {
     }
-    const raw = fs.readFileSync(authPath, "utf-8");
-    const data = JSON.parse(raw);
-    const key = data["opencode-go"]?.key || data["opencode"]?.key;
-    if (typeof key === "string" && key.trim().length > 0) {
-      return key.trim();
+    return null;
+  }
+  const candidatePaths = [];
+  candidatePaths.push(path.join(os.homedir(), ".local", "share", "opencode", "auth.json"));
+  if (process.platform === "win32") {
+    for (const prefix of ["\\\\wsl.localhost", "\\\\wsl$"]) {
+      try {
+        if (fs.existsSync(prefix)) {
+          const distros = fs.readdirSync(prefix);
+          for (const distro of distros) {
+            const homeDir = path.join(prefix, distro, "home");
+            if (fs.existsSync(homeDir)) {
+              for (const u of fs.readdirSync(homeDir)) {
+                candidatePaths.push(path.join(homeDir, u, ".local", "share", "opencode", "auth.json"));
+              }
+            }
+          }
+        }
+      } catch {
+      }
     }
-  } catch {
+  }
+  if (process.platform === "linux" && fs.existsSync("/mnt/c/Users")) {
+    try {
+      for (const u of fs.readdirSync("/mnt/c/Users")) {
+        candidatePaths.push(path.join("/mnt/c/Users", u, ".local", "share", "opencode", "auth.json"));
+      }
+    } catch {
+    }
+  }
+  for (const authPath of candidatePaths) {
+    try {
+      if (fs.existsSync(authPath)) {
+        const raw = fs.readFileSync(authPath, "utf-8");
+        const data = JSON.parse(raw);
+        const key = data["opencode-go"]?.key || data["opencode"]?.key;
+        if (typeof key === "string" && key.trim().length > 0) {
+          return key.trim();
+        }
+      }
+    } catch {
+    }
   }
   return null;
 }
@@ -143,16 +185,67 @@ function enrichModel(modelId, options = {}) {
   const suffix = isFree ? "(Zen Free)" : "(OpenCode)";
   const name = formatModelName(modelId, suffix);
   const lower = modelId.toLowerCase();
-  let contextWindow = 131072;
-  let maxOutputTokens = 8192;
+  let contextWindow = 1048576;
+  let maxOutputTokens = 65536;
   let vision = false;
   let thinking = true;
-  if (lower.includes("kimi") || lower.includes("minimax") || lower.includes("1m") || lower.includes("opus")) {
-    contextWindow = 262144;
-  }
-  if (lower.includes("vision") || lower.includes("glm") || lower.includes("qwen") || lower.includes("kimi") || lower.includes("omni")) {
+  if (lower.includes("deepseek")) {
+    contextWindow = 1048576;
+    maxOutputTokens = 131072;
+    vision = lower.includes("vision");
+  } else if (lower.includes("glm")) {
+    contextWindow = 1048576;
+    maxOutputTokens = 131072;
     vision = true;
+  } else if (lower.includes("kimi")) {
+    contextWindow = 1048576;
+    maxOutputTokens = 65536;
+    vision = true;
+  } else if (lower.includes("qwen")) {
+    contextWindow = 1e6;
+    maxOutputTokens = 131072;
+    vision = true;
+  } else if (lower.includes("minimax")) {
+    contextWindow = 1048576;
+    maxOutputTokens = 131072;
+    vision = false;
+  } else if (lower.includes("claude")) {
+    if (lower.includes("haiku")) {
+      contextWindow = 2e5;
+      maxOutputTokens = 64e3;
+      thinking = false;
+    } else {
+      contextWindow = 1e6;
+      maxOutputTokens = 128e3;
+    }
+    vision = true;
+  } else if (lower.includes("gpt")) {
+    if (lower.includes("mini") || lower.includes("nano")) {
+      contextWindow = 128e3;
+      maxOutputTokens = 16384;
+    } else {
+      contextWindow = 1e6;
+      maxOutputTokens = 128e3;
+    }
+    vision = true;
+  } else if (lower.includes("mimo")) {
+    contextWindow = 1048576;
+    maxOutputTokens = 65536;
+    vision = lower.includes("omni");
+  } else if (lower.includes("nemotron")) {
+    contextWindow = 1e6;
+    maxOutputTokens = 128e3;
+    vision = false;
+  } else if (lower.includes("muse")) {
+    contextWindow = 1e6;
+    maxOutputTokens = 65536;
+    vision = false;
+  } else if (lower.includes("longcat")) {
+    contextWindow = 1048576;
+    maxOutputTokens = 65536;
+    vision = false;
   }
+  const maxInputTokens = contextWindow - maxOutputTokens;
   const model = {
     id: modelId,
     name,
@@ -161,10 +254,16 @@ function enrichModel(modelId, options = {}) {
     toolCalling: true,
     vision,
     contextWindow,
+    maxInputTokens,
     maxOutputTokens,
+    editTools: ["find-replace", "multi-find-replace", "apply-patch", "code-rewrite"],
     thinking,
-    supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
-    reasoningEffortFormat: "chat-completions"
+    supportsReasoningEffort: thinking ? ["low", "medium", "high", "xhigh", "max"] : void 0,
+    reasoningEffortFormat: thinking ? "chat-completions" : void 0,
+    modelOptions: {
+      temperature: null,
+      top_p: null
+    }
   };
   if (isGo || isFree) {
     model.requestHeaders = {
@@ -235,6 +334,35 @@ function getChatLanguageModelsPath() {
   }
   return path2.join(os2.homedir(), ".config", "Code", "User", "chatLanguageModels.json");
 }
+function isWSL() {
+  if (process.platform !== "linux") return false;
+  if (process.env.WSL_DISTRO_NAME) return true;
+  try {
+    const v = fs2.readFileSync("/proc/version", "utf-8");
+    return v.toLowerCase().includes("microsoft") || v.toLowerCase().includes("wsl");
+  } catch {
+    return false;
+  }
+}
+function getAllChatLanguageModelsPaths() {
+  const paths = [getChatLanguageModelsPath()];
+  if (isWSL()) {
+    try {
+      const mntCUsers = "/mnt/c/Users";
+      if (fs2.existsSync(mntCUsers)) {
+        for (const user of fs2.readdirSync(mntCUsers)) {
+          if (["Public", "Default", "Default User", "All Users"].includes(user) || user.startsWith(".")) continue;
+          const winPath = path2.join(mntCUsers, user, "AppData", "Roaming", "Code", "User", "chatLanguageModels.json");
+          if (fs2.existsSync(path2.dirname(winPath)) && !paths.includes(winPath)) {
+            paths.push(winPath);
+          }
+        }
+      }
+    } catch {
+    }
+  }
+  return paths;
+}
 function readChatLanguageModels(targetPath) {
   const filePath = targetPath || getChatLanguageModelsPath();
   if (!fs2.existsSync(filePath)) {
@@ -276,16 +404,26 @@ function createBackup(filePath) {
   return backupPath;
 }
 function writeProvidersToConfig(providers, targetPath) {
-  const filePath = targetPath || getChatLanguageModelsPath();
-  const existingConfig = readChatLanguageModels(filePath);
-  const mergedConfig = mergeChatLanguageModels(existingConfig, providers);
-  const backupPath = createBackup(filePath);
-  const dir = path2.dirname(filePath);
-  if (!fs2.existsSync(dir)) {
-    fs2.mkdirSync(dir, { recursive: true });
+  const filePaths = targetPath ? [targetPath] : getAllChatLanguageModelsPaths();
+  let primaryBackup = null;
+  for (const filePath of filePaths) {
+    try {
+      const existingConfig = readChatLanguageModels(filePath);
+      const mergedConfig = mergeChatLanguageModels(existingConfig, providers);
+      const backupPath = createBackup(filePath);
+      if (!primaryBackup) {
+        primaryBackup = backupPath;
+      }
+      const dir = path2.dirname(filePath);
+      if (!fs2.existsSync(dir)) {
+        fs2.mkdirSync(dir, { recursive: true });
+      }
+      fs2.writeFileSync(filePath, JSON.stringify(mergedConfig, null, 4), "utf-8");
+    } catch (err) {
+      console.error(`Failed writing to ${filePath}: ${err.message}`);
+    }
   }
-  fs2.writeFileSync(filePath, JSON.stringify(mergedConfig, null, 4), "utf-8");
-  return { targetPath: filePath, backupPath };
+  return { targetPath: filePaths[0], backupPath: primaryBackup };
 }
 async function syncOpenCodeModels(apiKey, options = {}) {
   const includeGo = options.includeGo ?? true;
@@ -355,6 +493,15 @@ async function activate(context) {
       if (!apiKey) {
         if (interactive) {
           vscode.window.showWarningMessage("OpenCode sync cancelled: No API key provided.");
+        } else {
+          vscode.window.showInformationMessage(
+            "OpenCode Copilot Sync: Set your API key to sync OpenCode models to Copilot.",
+            "Set API Key"
+          ).then((choice) => {
+            if (choice === "Set API Key") {
+              vscode.commands.executeCommand("opencode-copilot-sync.setApiKey");
+            }
+          });
         }
         return;
       }

@@ -14,6 +14,7 @@ export interface CustomEndpointModel {
   contextWindow: number;
   maxInputTokens: number;
   maxOutputTokens: number;
+  editTools?: string[];
   thinking: boolean;
   supportsReasoningEffort?: string[];
   reasoningEffortFormat?: 'chat-completions';
@@ -55,16 +56,66 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
   const name = formatModelName(modelId, suffix);
   const lower = modelId.toLowerCase();
 
-  let contextWindow = 131072;
-  let maxOutputTokens = 8192;
+  let contextWindow = 1048576;
+  let maxOutputTokens = 65536;
   let vision = false;
   let thinking = true;
 
-  if (lower.includes('kimi') || lower.includes('minimax') || lower.includes('1m') || lower.includes('opus')) {
-    contextWindow = 262144;
-  }
-  if (lower.includes('vision') || lower.includes('glm') || lower.includes('qwen') || lower.includes('kimi') || lower.includes('omni')) {
+  if (lower.includes('deepseek')) {
+    contextWindow = 1048576;
+    maxOutputTokens = 131072;
+    vision = lower.includes('vision');
+  } else if (lower.includes('glm')) {
+    contextWindow = 1048576;
+    maxOutputTokens = 131072;
     vision = true;
+  } else if (lower.includes('kimi')) {
+    contextWindow = 1048576;
+    maxOutputTokens = 65536;
+    vision = true;
+  } else if (lower.includes('qwen')) {
+    contextWindow = 1000000;
+    maxOutputTokens = 131072;
+    vision = true;
+  } else if (lower.includes('minimax')) {
+    contextWindow = 1048576;
+    maxOutputTokens = 131072;
+    vision = false;
+  } else if (lower.includes('claude')) {
+    if (lower.includes('haiku')) {
+      contextWindow = 200000;
+      maxOutputTokens = 64000;
+      thinking = false;
+    } else {
+      contextWindow = 1000000;
+      maxOutputTokens = 128000;
+    }
+    vision = true;
+  } else if (lower.includes('gpt')) {
+    if (lower.includes('mini') || lower.includes('nano')) {
+      contextWindow = 128000;
+      maxOutputTokens = 16384;
+    } else {
+      contextWindow = 1000000;
+      maxOutputTokens = 128000;
+    }
+    vision = true;
+  } else if (lower.includes('mimo')) {
+    contextWindow = 1048576;
+    maxOutputTokens = 65536;
+    vision = lower.includes('omni');
+  } else if (lower.includes('nemotron')) {
+    contextWindow = 1000000;
+    maxOutputTokens = 128000;
+    vision = false;
+  } else if (lower.includes('muse')) {
+    contextWindow = 1000000;
+    maxOutputTokens = 65536;
+    vision = false;
+  } else if (lower.includes('longcat')) {
+    contextWindow = 1048576;
+    maxOutputTokens = 65536;
+    vision = false;
   }
 
   const maxInputTokens = contextWindow - maxOutputTokens;
@@ -79,9 +130,10 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
     contextWindow,
     maxInputTokens,
     maxOutputTokens,
+    editTools: ['find-replace', 'multi-find-replace', 'apply-patch', 'code-rewrite'],
     thinking,
-    supportsReasoningEffort: ['low', 'medium', 'high', 'xhigh', 'max'],
-    reasoningEffortFormat: 'chat-completions',
+    supportsReasoningEffort: thinking ? ['low', 'medium', 'high', 'xhigh', 'max'] : undefined,
+    reasoningEffortFormat: thinking ? 'chat-completions' : undefined,
     modelOptions: {
       temperature: null,
       top_p: null,
