@@ -70,7 +70,7 @@
   "scripts": {
     "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.cjs --external:vscode --format=cjs --platform=node",
     "package": "npm run build && npx @vscode/vsce package --no-dependencies",
-    "test": "node --test test/*.test.js"
+    "test": "npx tsc && node --test test/*.test.js"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
