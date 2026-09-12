@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.4.0 - 2026-09-12
+#### Features
+- automatically enable chat.agentHost.byokModels.enabled for Agent Mode - (70216da) - Mark Fenderov
+
+- - -
+
 ## v0.3.4 - 2026-09-12
 #### Bug Fixes
 - remove proposed API editTools which caused runtime rejection and model disappearance - (d4d7af6) - Mark Fenderov
