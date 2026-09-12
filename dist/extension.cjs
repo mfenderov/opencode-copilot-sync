@@ -575,6 +575,70 @@ async function syncOpenCodeModels(apiKey, options = {}) {
   };
 }
 
+// src/usage.ts
+var OPENCODE_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
+async function fetchOpenCodeUsage(apiKey, fetchFn = fetch) {
+  if (!apiKey || !apiKey.trim()) {
+    return { ok: false, reason: "no-key" };
+  }
+  try {
+    const res = await fetchFn(OPENCODE_USAGE_URL, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey.trim()}`,
+        "x-opencode-session": "vscode-copilot",
+        "User-Agent": "vscode-copilot/1.0"
+      }
+    });
+    if (res.status === 401) return { ok: false, reason: "unauthorized" };
+    if (res.status === 403) return { ok: false, reason: "no-subscription" };
+    if (!res.ok) return { ok: false, reason: "network" };
+    const json = await res.json();
+    if (!json?.usage?.rolling || !json?.usage?.weekly || !json?.usage?.monthly) {
+      return { ok: false, reason: "invalid" };
+    }
+    return { ok: true, usage: json.usage };
+  } catch {
+    return { ok: false, reason: "network" };
+  }
+}
+function formatStatusBarText(usage) {
+  const maxPercent = Math.max(usage.rolling.percent, usage.weekly.percent);
+  const isRateLimited = usage.rolling.status === "rate-limited" || usage.weekly.status === "rate-limited" || usage.monthly.status === "rate-limited";
+  const icon = isRateLimited ? "$(warning)" : "$(hubot)";
+  return `${icon} OpenCode ${maxPercent}%`;
+}
+function formatRelativeTime(isoDateStr) {
+  try {
+    const target = new Date(isoDateStr).getTime();
+    const now = Date.now();
+    const diffMs = target - now;
+    if (diffMs <= 0) return "now";
+    const diffMins = Math.round(diffMs / 6e4);
+    if (diffMins < 60) return `in ${diffMins}m`;
+    const diffHours = Math.round(diffMins / 60);
+    if (diffHours < 24) return `in ${diffHours}h`;
+    const diffDays = Math.round(diffHours / 24);
+    return `in ${diffDays}d`;
+  } catch {
+    return isoDateStr;
+  }
+}
+function formatUsageTooltip(usage) {
+  return [
+    "### OpenCode Go Usage",
+    "",
+    "| Quota Window | Used | Status | Resets |",
+    "|:---|:---:|:---:|:---|",
+    `| **5h Rolling** | \`${usage.rolling.percent}%\` | ${usage.rolling.status === "ok" ? "\u{1F7E2} OK" : "\u{1F534} Limited"} | ${formatRelativeTime(usage.rolling.resetsAt)} |`,
+    `| **Weekly Quota** | \`${usage.weekly.percent}%\` | ${usage.weekly.status === "ok" ? "\u{1F7E2} OK" : "\u{1F534} Limited"} | ${formatRelativeTime(usage.weekly.resetsAt)} |`,
+    `| **Monthly Quota** | \`${usage.monthly.percent}%\` | ${usage.monthly.status === "ok" ? "\u{1F7E2} OK" : "\u{1F534} Limited"} | ${formatRelativeTime(usage.monthly.resetsAt)} |`,
+    "",
+    "---",
+    "_Click to sync models & refresh usage quota._"
+  ].join("\n");
+}
+
 // src/extension.ts
 async function activate(context) {
   const outputChannel = vscode.window.createOutputChannel("OpenCode Copilot Sync");
@@ -590,10 +654,27 @@ async function activate(context) {
   }
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
   statusBarItem.text = "$(hubot) OpenCode";
-  statusBarItem.tooltip = "Click to sync OpenCode models to Copilot";
+  statusBarItem.tooltip = "Click to sync OpenCode models & refresh usage";
   statusBarItem.command = "opencode-copilot-sync.sync";
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
+  async function updateUsageMeter(apiKey) {
+    try {
+      const key = apiKey || await resolveApiKey(context.secrets, false);
+      if (!key) return;
+      const res = await fetchOpenCodeUsage(key);
+      if (res.ok) {
+        statusBarItem.text = formatStatusBarText(res.usage);
+        const md = new vscode.MarkdownString(formatUsageTooltip(res.usage));
+        md.isTrusted = true;
+        statusBarItem.tooltip = md;
+      } else if (res.reason === "no-subscription") {
+        statusBarItem.text = "$(hubot) OpenCode (Zen)";
+        statusBarItem.tooltip = "OpenCode Zen (Pay-as-you-go / Free tier). Click to sync models.";
+      }
+    } catch {
+    }
+  }
   async function performSync(interactive) {
     try {
       const config2 = vscode.workspace.getConfiguration("opencode");
@@ -648,18 +729,19 @@ async function activate(context) {
           `[Startup] Synced ${result.totalCount} unified OpenCode models (${result.goCount} Go + ${result.zenCount} Zen) to ${result.targetPath}`
         );
       }
+      await updateUsageMeter(apiKey);
     } catch (err) {
       outputChannel.appendLine(`[Sync Error] ${err.message}`);
       if (interactive) {
         vscode.window.showErrorMessage(`OpenCode sync failed: ${err.message}`);
       }
-    } finally {
       statusBarItem.text = "$(hubot) OpenCode";
       statusBarItem.tooltip = "OpenCode models synced with Copilot (click to re-sync)";
     }
   }
   context.subscriptions.push(
     vscode.commands.registerCommand("opencode-copilot-sync.sync", () => performSync(true)),
+    vscode.commands.registerCommand("opencode-copilot-sync.refreshUsage", () => updateUsageMeter()),
     vscode.commands.registerCommand("opencode-copilot-sync.setApiKey", async () => {
       const key = await promptAndSetApiKey(context.secrets, vscode.window);
       if (key) {
@@ -684,6 +766,10 @@ async function activate(context) {
       performSync(false);
     }, 3e3);
   }
+  const usageTimer = setInterval(() => {
+    updateUsageMeter();
+  }, 6e4);
+  context.subscriptions.push({ dispose: () => clearInterval(usageTimer) });
 }
 function deactivate() {
 }

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { resolveApiKey, promptAndSetApiKey } from './auth.js';
 import { syncOpenCodeModels, getChatLanguageModelsPath } from './syncer.js';
+import { fetchOpenCodeUsage, formatStatusBarText, formatUsageTooltip } from './usage.js';
 
 export async function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel('OpenCode Copilot Sync');
@@ -17,13 +18,31 @@ export async function activate(context: vscode.ExtensionContext) {
     outputChannel.appendLine(`Note: Could not set chat.agentHost.byokModels.enabled: ${err.message}`);
   }
 
-  // Status bar indicator & quick trigger
+  // Status bar indicator with Live Usage Meter & quick trigger
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
   statusBarItem.text = '$(hubot) OpenCode';
-  statusBarItem.tooltip = 'Click to sync OpenCode models to Copilot';
+  statusBarItem.tooltip = 'Click to sync OpenCode models & refresh usage';
   statusBarItem.command = 'opencode-copilot-sync.sync';
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
+
+  async function updateUsageMeter(apiKey?: string) {
+    try {
+      const key = apiKey || (await resolveApiKey(context.secrets, false));
+      if (!key) return;
+
+      const res = await fetchOpenCodeUsage(key);
+      if (res.ok) {
+        statusBarItem.text = formatStatusBarText(res.usage);
+        const md = new vscode.MarkdownString(formatUsageTooltip(res.usage));
+        md.isTrusted = true;
+        statusBarItem.tooltip = md;
+      } else if (res.reason === 'no-subscription') {
+        statusBarItem.text = '$(hubot) OpenCode (Zen)';
+        statusBarItem.tooltip = 'OpenCode Zen (Pay-as-you-go / Free tier). Click to sync models.';
+      }
+    } catch {}
+  }
 
   async function performSync(interactive: boolean) {
     try {
@@ -88,12 +107,14 @@ export async function activate(context: vscode.ExtensionContext) {
           `[Startup] Synced ${result.totalCount} unified OpenCode models (${result.goCount} Go + ${result.zenCount} Zen) to ${result.targetPath}`
         );
       }
+
+      // Refresh usage meter after successful sync
+      await updateUsageMeter(apiKey);
     } catch (err: any) {
       outputChannel.appendLine(`[Sync Error] ${err.message}`);
       if (interactive) {
         vscode.window.showErrorMessage(`OpenCode sync failed: ${err.message}`);
       }
-    } finally {
       statusBarItem.text = '$(hubot) OpenCode';
       statusBarItem.tooltip = 'OpenCode models synced with Copilot (click to re-sync)';
     }
@@ -102,6 +123,7 @@ export async function activate(context: vscode.ExtensionContext) {
   // Register commands
   context.subscriptions.push(
     vscode.commands.registerCommand('opencode-copilot-sync.sync', () => performSync(true)),
+    vscode.commands.registerCommand('opencode-copilot-sync.refreshUsage', () => updateUsageMeter()),
     vscode.commands.registerCommand('opencode-copilot-sync.setApiKey', async () => {
       const key = await promptAndSetApiKey(context.secrets, vscode.window);
       if (key) {
@@ -128,6 +150,12 @@ export async function activate(context: vscode.ExtensionContext) {
       performSync(false);
     }, 3000);
   }
+
+  // Periodic usage meter refresh (every 60 seconds)
+  const usageTimer = setInterval(() => {
+    updateUsageMeter();
+  }, 60000);
+  context.subscriptions.push({ dispose: () => clearInterval(usageTimer) });
 }
 
 export function deactivate() {}
