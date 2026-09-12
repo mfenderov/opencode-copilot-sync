@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.3.2 - 2026-09-12
+#### Continuous Integration
+- add cross-platform test matrix (linux, windows, macos), docker verification, and integration tests - (ae0f3ca) - Mark Fenderov
+
+- - -
+
 ## v0.3.1 - 2026-09-12
 #### Bug Fixes
 - prevent model list erasure on empty fetch, add config key fallback and Windows paths - (9a96363) - Mark Fenderov
