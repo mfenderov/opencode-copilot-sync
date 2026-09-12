@@ -44,7 +44,7 @@ test('mergeChatLanguageModels appends new provider if not present', () => {
   ];
 
   const newProvider = {
-    name: 'OpenCode Go',
+    name: 'OpenCode',
     vendor: 'customendpoint',
     apiKey: 'new-key',
     models: []
@@ -52,5 +52,25 @@ test('mergeChatLanguageModels appends new provider if not present', () => {
 
   const merged = mergeChatLanguageModels(existing, [newProvider]);
   assert.equal(merged.length, 2);
-  assert.equal(merged[1].name, 'OpenCode Go');
+  assert.equal(merged[1].name, 'OpenCode');
+});
+
+test('mergeChatLanguageModels cleans up legacy OpenCode Go and OpenCode Zen Free providers when unified OpenCode is added', () => {
+  const existing = [
+    { name: 'HF Router', vendor: 'customendpoint', models: [] },
+    { name: 'OpenCode Go', vendor: 'customendpoint', models: [] },
+    { name: 'OpenCode Zen Free', vendor: 'customendpoint', models: [] }
+  ];
+
+  const unified = {
+    name: 'OpenCode',
+    vendor: 'customendpoint',
+    apiKey: 'key',
+    models: [{ id: 'deepseek-v4-flash' }]
+  };
+
+  const merged = mergeChatLanguageModels(existing, [unified]);
+  assert.equal(merged.length, 2);
+  assert.equal(merged[0].name, 'HF Router');
+  assert.equal(merged[1].name, 'OpenCode');
 });

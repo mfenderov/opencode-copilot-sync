@@ -30,7 +30,13 @@ export function mergeChatLanguageModels(
   existingConfig: any[],
   newProviders: ProviderEntry[]
 ): any[] {
-  const result = [...existingConfig];
+  const addingUnifiedOpenCode = newProviders.some((p) => p.name === 'OpenCode');
+  const result = existingConfig.filter((entry) => {
+    if (addingUnifiedOpenCode && (entry?.name === 'OpenCode Go' || entry?.name === 'OpenCode Zen Free')) {
+      return false;
+    }
+    return true;
+  });
 
   for (const newProvider of newProviders) {
     const idx = result.findIndex(

@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { buildProviderEntry, mergeChatLanguageModels, type ProviderEntry } from './config.js';
+import { enrichModel } from './enricher.js';
 import { fetchOpenCodeModels, filterFreeModels } from './fetcher.js';
 
 export function getChatLanguageModelsPath(): string {
@@ -86,47 +87,64 @@ export function writeProvidersToConfig(
 
 export async function syncOpenCodeModels(
   apiKey: string,
-  options: { includeGo?: boolean; includeFree?: boolean; targetPath?: string } = {}
-): Promise<{ goCount: number; freeCount: number; totalCount: number; targetPath: string; backupPath: string | null }> {
+  options: { includeGo?: boolean; includeZen?: boolean; targetPath?: string } = {}
+): Promise<{ goCount: number; zenCount: number; totalCount: number; targetPath: string; backupPath: string | null }> {
   const includeGo = options.includeGo ?? true;
-  const includeFree = options.includeFree ?? true;
-  const providers: ProviderEntry[] = [];
-  let goCount = 0;
-  let freeCount = 0;
+  const includeZen = options.includeZen ?? true;
+
+  let goModelIds: string[] = [];
+  let zenModelIds: string[] = [];
 
   // 1. Fetch OpenCode Go catalog
   if (includeGo) {
     try {
-      const goModelIds = await fetchOpenCodeModels(apiKey, 'go');
-      if (goModelIds.length > 0) {
-        providers.push(buildProviderEntry('OpenCode Go', apiKey, goModelIds, { isGo: true }));
-        goCount = goModelIds.length;
-      }
+      goModelIds = await fetchOpenCodeModels(apiKey, 'go');
     } catch (err: any) {
       console.error(`Failed to fetch Go models: ${err.message}`);
     }
   }
 
-  // 2. Fetch OpenCode Zen Free catalog
-  if (includeFree) {
+  // 2. Fetch OpenCode Zen catalog
+  if (includeZen) {
     try {
-      const zenModelIds = await fetchOpenCodeModels(apiKey, 'zen');
-      const freeModelIds = filterFreeModels(zenModelIds);
-      if (freeModelIds.length > 0) {
-        providers.push(buildProviderEntry('OpenCode Zen Free', apiKey, freeModelIds, { isGo: false, isFree: true }));
-        freeCount = freeModelIds.length;
-      }
+      zenModelIds = await fetchOpenCodeModels(apiKey, 'zen');
     } catch (err: any) {
-      console.error(`Failed to fetch Zen Free models: ${err.message}`);
+      console.error(`Failed to fetch Zen models: ${err.message}`);
     }
   }
 
-  const { targetPath, backupPath } = writeProvidersToConfig(providers, options.targetPath);
+  const goSet = new Set(goModelIds);
+  const models = [];
+
+  // Go models first (flat subscription rate)
+  for (const id of goModelIds) {
+    models.push(enrichModel(id, { isGo: true }));
+  }
+
+  // Zen models that are NOT in Go (Free tier + proprietary models like Claude/GPT)
+  let zenCount = 0;
+  for (const id of zenModelIds) {
+    if (!goSet.has(id)) {
+      const isFree = filterFreeModels([id]).length > 0;
+      models.push(enrichModel(id, { isGo: false, isFree }));
+      zenCount++;
+    }
+  }
+
+  const unifiedProvider: ProviderEntry = {
+    name: 'OpenCode',
+    vendor: 'customendpoint',
+    apiKey,
+    apiType: 'chat-completions',
+    models,
+  };
+
+  const { targetPath, backupPath } = writeProvidersToConfig([unifiedProvider], options.targetPath);
 
   return {
-    goCount,
-    freeCount,
-    totalCount: goCount + freeCount,
+    goCount: goModelIds.length,
+    zenCount,
+    totalCount: models.length,
     targetPath,
     backupPath,
   };

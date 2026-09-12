@@ -2,14 +2,33 @@
   "name": "opencode-copilot-sync",
   "displayName": "OpenCode Models for Copilot",
   "description": "Automatically sync OpenCode Zen & Go models to GitHub Copilot in VS Code",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "publisher": "mfenderov",
   "license": "MIT",
+  "icon": "icon.png",
+  "pricing": "Free",
+  "homepage": "https://github.com/mfenderov/opencode-copilot-sync#readme",
+  "bugs": {
+    "url": "https://github.com/mfenderov/opencode-copilot-sync/issues"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/mfenderov/opencode-copilot-sync.git"
   },
+  "keywords": [
+    "opencode",
+    "opencode-go",
+    "opencode-zen",
+    "zen-models",
+    "copilot",
+    "github-copilot",
+    "copilot-chat",
+    "custom-models",
+    "chatLanguageModels",
+    "llm-gateway",
+    "ai"
+  ],
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -59,10 +78,10 @@
           "default": true,
           "description": "Include models from the OpenCode Go subscription ($10/mo flat catalog)."
         },
-        "opencode.includeFreeModels": {
+        "opencode.includeZenModels": {
           "type": "boolean",
           "default": true,
-          "description": "Include free-tier models from OpenCode Zen (e.g. DeepSeek V4 Flash Free, MiMo Free, etc.)."
+          "description": "Include OpenCode Zen models (Free tier + Zen exclusive models, de-duplicated against Go)."
         }
       }
     }

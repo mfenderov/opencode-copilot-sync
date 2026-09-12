@@ -37,3 +37,9 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: false
+
+      - name: Publish to VS Code Marketplace
+        if: env.VSCE_PAT != ''
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx @vscode/vsce publish -p $VSCE_PAT --no-dependencies

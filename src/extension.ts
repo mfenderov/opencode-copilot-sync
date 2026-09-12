@@ -18,7 +18,7 @@ export async function activate(context: vscode.ExtensionContext) {
     try {
       const config = vscode.workspace.getConfiguration('opencode');
       const includeGo = config.get<boolean>('includeGoModels', true);
-      const includeFree = config.get<boolean>('includeFreeModels', true);
+      const includeZen = config.get<boolean>('includeZenModels', true);
 
       const apiKey = await resolveApiKey(context.secrets, interactive, vscode.window);
       if (!apiKey) {
@@ -39,13 +39,13 @@ export async function activate(context: vscode.ExtensionContext) {
             cancellable: false,
           },
           async () => {
-            const result = await syncOpenCodeModels(apiKey, { includeGo, includeFree });
+            const result = await syncOpenCodeModels(apiKey, { includeGo, includeZen });
             outputChannel.appendLine(
-              `Synced ${result.goCount} Go models + ${result.freeCount} Free models to ${result.targetPath}`
+              `Synced ${result.totalCount} unified OpenCode models (${result.goCount} Go + ${result.zenCount} Zen) to ${result.targetPath}`
             );
             vscode.window
               .showInformationMessage(
-                `Synced ${result.totalCount} OpenCode models (${result.goCount} Go + ${result.freeCount} Free) to Copilot!`,
+                `Synced ${result.totalCount} OpenCode models (${result.goCount} Go flat-rate + ${result.zenCount} Zen exclusive) to Copilot!`,
                 'Open Models File'
               )
               .then((choice) => {
@@ -59,9 +59,9 @@ export async function activate(context: vscode.ExtensionContext) {
         );
       } else {
         // Background silent sync on startup / reload
-        const result = await syncOpenCodeModels(apiKey, { includeGo, includeFree });
+        const result = await syncOpenCodeModels(apiKey, { includeGo, includeZen });
         outputChannel.appendLine(
-          `[Startup] Synced ${result.goCount} Go models + ${result.freeCount} Free models to ${result.targetPath}`
+          `[Startup] Synced ${result.totalCount} unified OpenCode models (${result.goCount} Go + ${result.zenCount} Zen) to ${result.targetPath}`
         );
       }
     } catch (err: any) {

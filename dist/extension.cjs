@@ -175,18 +175,14 @@ function enrichModel(modelId, options = {}) {
 }
 
 // src/config.ts
-function buildProviderEntry(name, apiKey, modelIds, options = { isGo: true }) {
-  const models = modelIds.map((id) => enrichModel(id, options));
-  return {
-    name,
-    vendor: "customendpoint",
-    apiKey,
-    apiType: "chat-completions",
-    models
-  };
-}
 function mergeChatLanguageModels(existingConfig, newProviders) {
-  const result = [...existingConfig];
+  const addingUnifiedOpenCode = newProviders.some((p) => p.name === "OpenCode");
+  const result = existingConfig.filter((entry) => {
+    if (addingUnifiedOpenCode && (entry?.name === "OpenCode Go" || entry?.name === "OpenCode Zen Free")) {
+      return false;
+    }
+    return true;
+  });
   for (const newProvider of newProviders) {
     const idx = result.findIndex(
       (entry) => entry && entry.name === newProvider.name && entry.vendor === newProvider.vendor
@@ -293,38 +289,48 @@ function writeProvidersToConfig(providers, targetPath) {
 }
 async function syncOpenCodeModels(apiKey, options = {}) {
   const includeGo = options.includeGo ?? true;
-  const includeFree = options.includeFree ?? true;
-  const providers = [];
-  let goCount = 0;
-  let freeCount = 0;
+  const includeZen = options.includeZen ?? true;
+  let goModelIds = [];
+  let zenModelIds = [];
   if (includeGo) {
     try {
-      const goModelIds = await fetchOpenCodeModels(apiKey, "go");
-      if (goModelIds.length > 0) {
-        providers.push(buildProviderEntry("OpenCode Go", apiKey, goModelIds, { isGo: true }));
-        goCount = goModelIds.length;
-      }
+      goModelIds = await fetchOpenCodeModels(apiKey, "go");
     } catch (err) {
       console.error(`Failed to fetch Go models: ${err.message}`);
     }
   }
-  if (includeFree) {
+  if (includeZen) {
     try {
-      const zenModelIds = await fetchOpenCodeModels(apiKey, "zen");
-      const freeModelIds = filterFreeModels(zenModelIds);
-      if (freeModelIds.length > 0) {
-        providers.push(buildProviderEntry("OpenCode Zen Free", apiKey, freeModelIds, { isGo: false, isFree: true }));
-        freeCount = freeModelIds.length;
-      }
+      zenModelIds = await fetchOpenCodeModels(apiKey, "zen");
     } catch (err) {
-      console.error(`Failed to fetch Zen Free models: ${err.message}`);
+      console.error(`Failed to fetch Zen models: ${err.message}`);
     }
   }
-  const { targetPath, backupPath } = writeProvidersToConfig(providers, options.targetPath);
+  const goSet = new Set(goModelIds);
+  const models = [];
+  for (const id of goModelIds) {
+    models.push(enrichModel(id, { isGo: true }));
+  }
+  let zenCount = 0;
+  for (const id of zenModelIds) {
+    if (!goSet.has(id)) {
+      const isFree = filterFreeModels([id]).length > 0;
+      models.push(enrichModel(id, { isGo: false, isFree }));
+      zenCount++;
+    }
+  }
+  const unifiedProvider = {
+    name: "OpenCode",
+    vendor: "customendpoint",
+    apiKey,
+    apiType: "chat-completions",
+    models
+  };
+  const { targetPath, backupPath } = writeProvidersToConfig([unifiedProvider], options.targetPath);
   return {
-    goCount,
-    freeCount,
-    totalCount: goCount + freeCount,
+    goCount: goModelIds.length,
+    zenCount,
+    totalCount: models.length,
     targetPath,
     backupPath
   };
@@ -344,7 +350,7 @@ async function activate(context) {
     try {
       const config2 = vscode.workspace.getConfiguration("opencode");
       const includeGo = config2.get("includeGoModels", true);
-      const includeFree = config2.get("includeFreeModels", true);
+      const includeZen = config2.get("includeZenModels", true);
       const apiKey = await resolveApiKey(context.secrets, interactive, vscode.window);
       if (!apiKey) {
         if (interactive) {
@@ -362,12 +368,12 @@ async function activate(context) {
             cancellable: false
           },
           async () => {
-            const result = await syncOpenCodeModels(apiKey, { includeGo, includeFree });
+            const result = await syncOpenCodeModels(apiKey, { includeGo, includeZen });
             outputChannel.appendLine(
-              `Synced ${result.goCount} Go models + ${result.freeCount} Free models to ${result.targetPath}`
+              `Synced ${result.totalCount} unified OpenCode models (${result.goCount} Go + ${result.zenCount} Zen) to ${result.targetPath}`
             );
             vscode.window.showInformationMessage(
-              `Synced ${result.totalCount} OpenCode models (${result.goCount} Go + ${result.freeCount} Free) to Copilot!`,
+              `Synced ${result.totalCount} OpenCode models (${result.goCount} Go flat-rate + ${result.zenCount} Zen exclusive) to Copilot!`,
               "Open Models File"
             ).then((choice) => {
               if (choice === "Open Models File") {
@@ -379,9 +385,9 @@ async function activate(context) {
           }
         );
       } else {
-        const result = await syncOpenCodeModels(apiKey, { includeGo, includeFree });
+        const result = await syncOpenCodeModels(apiKey, { includeGo, includeZen });
         outputChannel.appendLine(
-          `[Startup] Synced ${result.goCount} Go models + ${result.freeCount} Free models to ${result.targetPath}`
+          `[Startup] Synced ${result.totalCount} unified OpenCode models (${result.goCount} Go + ${result.zenCount} Zen) to ${result.targetPath}`
         );
       }
     } catch (err) {
