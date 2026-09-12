@@ -5,6 +5,11 @@
   "version": "0.1.0",
   "type": "module",
   "publisher": "mfenderov",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mfenderov/opencode-copilot-sync.git"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -12,10 +17,15 @@
     "AI",
     "Other"
   ],
+  "extensionKind": [
+    "ui",
+    "workspace"
+  ],
   "activationEvents": [
     "onStartupFinished",
     "onCommand:opencode-copilot-sync.sync",
-    "onCommand:opencode-copilot-sync.setApiKey"
+    "onCommand:opencode-copilot-sync.setApiKey",
+    "onCommand:opencode-copilot-sync.openConfig"
   ],
   "main": "./dist/extension.cjs",
   "contributes": {
@@ -29,11 +39,37 @@
         "command": "opencode-copilot-sync.setApiKey",
         "title": "OpenCode: Set API Key",
         "category": "OpenCode"
+      },
+      {
+        "command": "opencode-copilot-sync.openConfig",
+        "title": "OpenCode: Open Copilot Models Config",
+        "category": "OpenCode"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "OpenCode Copilot Sync",
+      "properties": {
+        "opencode.autoSyncOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically sync OpenCode models to Copilot on VS Code startup or window reload."
+        },
+        "opencode.includeGoModels": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include models from the OpenCode Go subscription ($10/mo flat catalog)."
+        },
+        "opencode.includeFreeModels": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include free-tier models from OpenCode Zen (e.g. DeepSeek V4 Flash Free, MiMo Free, etc.)."
+        }
+      }
+    }
   },
   "scripts": {
     "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.cjs --external:vscode --format=cjs --platform=node",
+    "package": "npm run build && npx @vscode/vsce package --no-dependencies",
     "test": "node --test test/*.test.js"
   },
   "devDependencies": {

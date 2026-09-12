@@ -86,33 +86,39 @@ export function writeProvidersToConfig(
 
 export async function syncOpenCodeModels(
   apiKey: string,
-  options: { targetPath?: string } = {}
+  options: { includeGo?: boolean; includeFree?: boolean; targetPath?: string } = {}
 ): Promise<{ goCount: number; freeCount: number; totalCount: number; targetPath: string; backupPath: string | null }> {
+  const includeGo = options.includeGo ?? true;
+  const includeFree = options.includeFree ?? true;
   const providers: ProviderEntry[] = [];
   let goCount = 0;
   let freeCount = 0;
 
   // 1. Fetch OpenCode Go catalog
-  try {
-    const goModelIds = await fetchOpenCodeModels(apiKey, 'go');
-    if (goModelIds.length > 0) {
-      providers.push(buildProviderEntry('OpenCode Go', apiKey, goModelIds, { isGo: true }));
-      goCount = goModelIds.length;
+  if (includeGo) {
+    try {
+      const goModelIds = await fetchOpenCodeModels(apiKey, 'go');
+      if (goModelIds.length > 0) {
+        providers.push(buildProviderEntry('OpenCode Go', apiKey, goModelIds, { isGo: true }));
+        goCount = goModelIds.length;
+      }
+    } catch (err: any) {
+      console.error(`Failed to fetch Go models: ${err.message}`);
     }
-  } catch (err: any) {
-    console.error(`Failed to fetch Go models: ${err.message}`);
   }
 
   // 2. Fetch OpenCode Zen Free catalog
-  try {
-    const zenModelIds = await fetchOpenCodeModels(apiKey, 'zen');
-    const freeModelIds = filterFreeModels(zenModelIds);
-    if (freeModelIds.length > 0) {
-      providers.push(buildProviderEntry('OpenCode Zen Free', apiKey, freeModelIds, { isGo: false, isFree: true }));
-      freeCount = freeModelIds.length;
+  if (includeFree) {
+    try {
+      const zenModelIds = await fetchOpenCodeModels(apiKey, 'zen');
+      const freeModelIds = filterFreeModels(zenModelIds);
+      if (freeModelIds.length > 0) {
+        providers.push(buildProviderEntry('OpenCode Zen Free', apiKey, freeModelIds, { isGo: false, isFree: true }));
+        freeCount = freeModelIds.length;
+      }
+    } catch (err: any) {
+      console.error(`Failed to fetch Zen Free models: ${err.message}`);
     }
-  } catch (err: any) {
-    console.error(`Failed to fetch Zen Free models: ${err.message}`);
   }
 
   const { targetPath, backupPath } = writeProvidersToConfig(providers, options.targetPath);

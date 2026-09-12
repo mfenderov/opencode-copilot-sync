@@ -1,13 +1,25 @@
 import * as vscode from 'vscode';
 import { resolveApiKey, promptAndSetApiKey } from './auth.js';
-import { syncOpenCodeModels } from './syncer.js';
+import { syncOpenCodeModels, getChatLanguageModelsPath } from './syncer.js';
 
 export async function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel('OpenCode Copilot Sync');
   context.subscriptions.push(outputChannel);
 
+  // Status bar indicator & quick trigger
+  const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+  statusBarItem.text = '$(hubot) OpenCode';
+  statusBarItem.tooltip = 'Click to sync OpenCode models to Copilot';
+  statusBarItem.command = 'opencode-copilot-sync.sync';
+  statusBarItem.show();
+  context.subscriptions.push(statusBarItem);
+
   async function performSync(interactive: boolean) {
     try {
+      const config = vscode.workspace.getConfiguration('opencode');
+      const includeGo = config.get<boolean>('includeGoModels', true);
+      const includeFree = config.get<boolean>('includeFreeModels', true);
+
       const apiKey = await resolveApiKey(context.secrets, interactive, vscode.window);
       if (!apiKey) {
         if (interactive) {
@@ -15,6 +27,9 @@ export async function activate(context: vscode.ExtensionContext) {
         }
         return;
       }
+
+      statusBarItem.text = '$(sync~spin) OpenCode';
+      statusBarItem.tooltip = 'Syncing OpenCode models...';
 
       if (interactive) {
         await vscode.window.withProgress(
@@ -24,7 +39,7 @@ export async function activate(context: vscode.ExtensionContext) {
             cancellable: false,
           },
           async () => {
-            const result = await syncOpenCodeModels(apiKey);
+            const result = await syncOpenCodeModels(apiKey, { includeGo, includeFree });
             outputChannel.appendLine(
               `Synced ${result.goCount} Go models + ${result.freeCount} Free models to ${result.targetPath}`
             );
@@ -44,7 +59,7 @@ export async function activate(context: vscode.ExtensionContext) {
         );
       } else {
         // Background silent sync on startup / reload
-        const result = await syncOpenCodeModels(apiKey);
+        const result = await syncOpenCodeModels(apiKey, { includeGo, includeFree });
         outputChannel.appendLine(
           `[Startup] Synced ${result.goCount} Go models + ${result.freeCount} Free models to ${result.targetPath}`
         );
@@ -54,6 +69,9 @@ export async function activate(context: vscode.ExtensionContext) {
       if (interactive) {
         vscode.window.showErrorMessage(`OpenCode sync failed: ${err.message}`);
       }
+    } finally {
+      statusBarItem.text = '$(hubot) OpenCode';
+      statusBarItem.tooltip = 'OpenCode models synced with Copilot (click to re-sync)';
     }
   }
 
@@ -66,13 +84,26 @@ export async function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage('OpenCode API Key updated! Syncing models now...');
         await performSync(true);
       }
+    }),
+    vscode.commands.registerCommand('opencode-copilot-sync.openConfig', async () => {
+      const p = getChatLanguageModelsPath();
+      try {
+        const doc = await vscode.workspace.openTextDocument(p);
+        await vscode.window.showTextDocument(doc);
+      } catch (err: any) {
+        vscode.window.showErrorMessage(`Unable to open config: ${err.message}`);
+      }
     })
   );
 
-  // Background sync on startup / reload (delayed slightly to avoid startup contention)
-  setTimeout(() => {
-    performSync(false);
-  }, 1000);
+  // Background sync on startup / reload if enabled
+  const config = vscode.workspace.getConfiguration('opencode');
+  const autoSync = config.get<boolean>('autoSyncOnStartup', true);
+  if (autoSync) {
+    setTimeout(() => {
+      performSync(false);
+    }, 1000);
+  }
 }
 
 export function deactivate() {}

@@ -292,27 +292,33 @@ function writeProvidersToConfig(providers, targetPath) {
   return { targetPath: filePath, backupPath };
 }
 async function syncOpenCodeModels(apiKey, options = {}) {
+  const includeGo = options.includeGo ?? true;
+  const includeFree = options.includeFree ?? true;
   const providers = [];
   let goCount = 0;
   let freeCount = 0;
-  try {
-    const goModelIds = await fetchOpenCodeModels(apiKey, "go");
-    if (goModelIds.length > 0) {
-      providers.push(buildProviderEntry("OpenCode Go", apiKey, goModelIds, { isGo: true }));
-      goCount = goModelIds.length;
+  if (includeGo) {
+    try {
+      const goModelIds = await fetchOpenCodeModels(apiKey, "go");
+      if (goModelIds.length > 0) {
+        providers.push(buildProviderEntry("OpenCode Go", apiKey, goModelIds, { isGo: true }));
+        goCount = goModelIds.length;
+      }
+    } catch (err) {
+      console.error(`Failed to fetch Go models: ${err.message}`);
     }
-  } catch (err) {
-    console.error(`Failed to fetch Go models: ${err.message}`);
   }
-  try {
-    const zenModelIds = await fetchOpenCodeModels(apiKey, "zen");
-    const freeModelIds = filterFreeModels(zenModelIds);
-    if (freeModelIds.length > 0) {
-      providers.push(buildProviderEntry("OpenCode Zen Free", apiKey, freeModelIds, { isGo: false, isFree: true }));
-      freeCount = freeModelIds.length;
+  if (includeFree) {
+    try {
+      const zenModelIds = await fetchOpenCodeModels(apiKey, "zen");
+      const freeModelIds = filterFreeModels(zenModelIds);
+      if (freeModelIds.length > 0) {
+        providers.push(buildProviderEntry("OpenCode Zen Free", apiKey, freeModelIds, { isGo: false, isFree: true }));
+        freeCount = freeModelIds.length;
+      }
+    } catch (err) {
+      console.error(`Failed to fetch Zen Free models: ${err.message}`);
     }
-  } catch (err) {
-    console.error(`Failed to fetch Zen Free models: ${err.message}`);
   }
   const { targetPath, backupPath } = writeProvidersToConfig(providers, options.targetPath);
   return {
@@ -328,8 +334,17 @@ async function syncOpenCodeModels(apiKey, options = {}) {
 async function activate(context) {
   const outputChannel = vscode.window.createOutputChannel("OpenCode Copilot Sync");
   context.subscriptions.push(outputChannel);
+  const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+  statusBarItem.text = "$(hubot) OpenCode";
+  statusBarItem.tooltip = "Click to sync OpenCode models to Copilot";
+  statusBarItem.command = "opencode-copilot-sync.sync";
+  statusBarItem.show();
+  context.subscriptions.push(statusBarItem);
   async function performSync(interactive) {
     try {
+      const config2 = vscode.workspace.getConfiguration("opencode");
+      const includeGo = config2.get("includeGoModels", true);
+      const includeFree = config2.get("includeFreeModels", true);
       const apiKey = await resolveApiKey(context.secrets, interactive, vscode.window);
       if (!apiKey) {
         if (interactive) {
@@ -337,6 +352,8 @@ async function activate(context) {
         }
         return;
       }
+      statusBarItem.text = "$(sync~spin) OpenCode";
+      statusBarItem.tooltip = "Syncing OpenCode models...";
       if (interactive) {
         await vscode.window.withProgress(
           {
@@ -345,7 +362,7 @@ async function activate(context) {
             cancellable: false
           },
           async () => {
-            const result = await syncOpenCodeModels(apiKey);
+            const result = await syncOpenCodeModels(apiKey, { includeGo, includeFree });
             outputChannel.appendLine(
               `Synced ${result.goCount} Go models + ${result.freeCount} Free models to ${result.targetPath}`
             );
@@ -362,7 +379,7 @@ async function activate(context) {
           }
         );
       } else {
-        const result = await syncOpenCodeModels(apiKey);
+        const result = await syncOpenCodeModels(apiKey, { includeGo, includeFree });
         outputChannel.appendLine(
           `[Startup] Synced ${result.goCount} Go models + ${result.freeCount} Free models to ${result.targetPath}`
         );
@@ -372,6 +389,9 @@ async function activate(context) {
       if (interactive) {
         vscode.window.showErrorMessage(`OpenCode sync failed: ${err.message}`);
       }
+    } finally {
+      statusBarItem.text = "$(hubot) OpenCode";
+      statusBarItem.tooltip = "OpenCode models synced with Copilot (click to re-sync)";
     }
   }
   context.subscriptions.push(
@@ -382,11 +402,24 @@ async function activate(context) {
         vscode.window.showInformationMessage("OpenCode API Key updated! Syncing models now...");
         await performSync(true);
       }
+    }),
+    vscode.commands.registerCommand("opencode-copilot-sync.openConfig", async () => {
+      const p = getChatLanguageModelsPath();
+      try {
+        const doc = await vscode.workspace.openTextDocument(p);
+        await vscode.window.showTextDocument(doc);
+      } catch (err) {
+        vscode.window.showErrorMessage(`Unable to open config: ${err.message}`);
+      }
     })
   );
-  setTimeout(() => {
-    performSync(false);
-  }, 1e3);
+  const config = vscode.workspace.getConfiguration("opencode");
+  const autoSync = config.get("autoSyncOnStartup", true);
+  if (autoSync) {
+    setTimeout(() => {
+      performSync(false);
+    }, 1e3);
+  }
 }
 function deactivate() {
 }
