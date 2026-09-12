@@ -16,7 +16,12 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,8 +35,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run unit tests
+      - name: Run unit & integration tests
         run: npm test
+
+      - name: Run Docker container verification
+        if: runner.os == 'Linux'
+        run: docker run --rm -v "$PWD:/workspace" -w /workspace node:22 npm test
 
       - name: Build & Package VSIX
         run: npm run package
