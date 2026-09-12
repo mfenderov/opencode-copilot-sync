@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.5.0 - 2026-09-12
+#### Features
+- add live status bar usage quota meter and hover tooltip - (af262cf) - Mark Fenderov
+
+- - -
+
 ## v0.4.0 - 2026-09-12
 #### Features
 - automatically enable chat.agentHost.byokModels.enabled for Agent Mode - (70216da) - Mark Fenderov
