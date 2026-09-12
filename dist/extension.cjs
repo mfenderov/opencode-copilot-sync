@@ -579,6 +579,15 @@ async function syncOpenCodeModels(apiKey, options = {}) {
 async function activate(context) {
   const outputChannel = vscode.window.createOutputChannel("OpenCode Copilot Sync");
   context.subscriptions.push(outputChannel);
+  try {
+    const agentHostCfg = vscode.workspace.getConfiguration("chat.agentHost");
+    if (!agentHostCfg.get("byokModels.enabled", false)) {
+      await agentHostCfg.update("byokModels.enabled", true, vscode.ConfigurationTarget.Global);
+      outputChannel.appendLine("Enabled chat.agentHost.byokModels.enabled for Agent Mode support.");
+    }
+  } catch (err) {
+    outputChannel.appendLine(`Note: Could not set chat.agentHost.byokModels.enabled: ${err.message}`);
+  }
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
   statusBarItem.text = "$(hubot) OpenCode";
   statusBarItem.tooltip = "Click to sync OpenCode models to Copilot";

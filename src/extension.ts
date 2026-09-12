@@ -6,6 +6,17 @@ export async function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel('OpenCode Copilot Sync');
   context.subscriptions.push(outputChannel);
 
+  // Auto-enable VS Code's experimental Agent Host BYOK bridge so custom models appear in Agent Mode
+  try {
+    const agentHostCfg = vscode.workspace.getConfiguration('chat.agentHost');
+    if (!agentHostCfg.get<boolean>('byokModels.enabled', false)) {
+      await agentHostCfg.update('byokModels.enabled', true, vscode.ConfigurationTarget.Global);
+      outputChannel.appendLine('Enabled chat.agentHost.byokModels.enabled for Agent Mode support.');
+    }
+  } catch (err: any) {
+    outputChannel.appendLine(`Note: Could not set chat.agentHost.byokModels.enabled: ${err.message}`);
+  }
+
   // Status bar indicator & quick trigger
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
   statusBarItem.text = '$(hubot) OpenCode';
