@@ -1,13 +1,21 @@
 name: CI
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
     branches: [main]
 
 jobs:
-  build-and-test:
+  test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -27,3 +35,46 @@ jobs:
 
       - name: Build & Package VSIX
         run: npm run package
+
+  release:
+    needs: [test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Record latest tag
+        id: before
+        run: echo "tag=$(git describe --tags --abbrev=0 2>/dev/null || echo '')" >> "$GITHUB_OUTPUT"
+
+      - name: Auto bump version and tag
+        uses: cocogitto/cocogitto-action@v4
+        with:
+          command: bump
+          args: --auto
+          git-user: 'github-actions[bot]'
+          git-user-email: 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Push version commit and tag, then trigger release
+        run: |
+          BEFORE="${{ steps.before.outputs.tag }}"
+          AFTER="$(git describe --tags --abbrev=0 2>/dev/null || echo '')"
+          if [ -z "$AFTER" ] || [ "$AFTER" = "$BEFORE" ]; then
+            echo "Auto bump did not detect feat/fix — falling back to patch bump..."
+            cog bump --patch
+            AFTER="$(git describe --tags --abbrev=0 2>/dev/null || echo '')"
+          fi
+          git push origin main
+          git push origin "$AFTER"
+          echo "Triggering release workflow for $AFTER..."
+          gh workflow run release.yml --ref "$AFTER"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
