@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.3.0 - 2026-09-12
+#### Features
+- accurate 1M model context limits, editTools capabilities, and Windows/WSL cross-profile sync - (e9b0884) - Mark Fenderov
+
+- - -
+
 ## v0.2.1 - 2026-09-12
 #### Bug Fixes
 - add maxInputTokens and modelOptions to models for Copilot selection - (5d43a81) - Mark Fenderov
