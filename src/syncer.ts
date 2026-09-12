@@ -174,6 +174,10 @@ export async function syncOpenCodeModels(
     }
   }
 
+  if (models.length === 0) {
+    throw new Error('No models were fetched from OpenCode API. Preserving existing configuration to prevent accidental erasure.');
+  }
+
   const unifiedProvider: ProviderEntry = {
     name: 'OpenCode',
     vendor: 'customendpoint',

@@ -57,7 +57,15 @@ function getStoredOpenCodeKey(customPath) {
     return null;
   }
   const candidatePaths = [];
-  candidatePaths.push(path.join(os.homedir(), ".local", "share", "opencode", "auth.json"));
+  const home = os.homedir();
+  candidatePaths.push(path.join(home, ".local", "share", "opencode", "auth.json"));
+  candidatePaths.push(path.join(home, ".config", "opencode", "auth.json"));
+  if (process.env.LOCALAPPDATA) {
+    candidatePaths.push(path.join(process.env.LOCALAPPDATA, "opencode", "auth.json"));
+  }
+  if (process.env.APPDATA) {
+    candidatePaths.push(path.join(process.env.APPDATA, "opencode", "auth.json"));
+  }
   if (process.platform === "win32") {
     for (const prefix of ["\\\\wsl.localhost", "\\\\wsl$"]) {
       try {
@@ -68,6 +76,7 @@ function getStoredOpenCodeKey(customPath) {
             if (fs.existsSync(homeDir)) {
               for (const u of fs.readdirSync(homeDir)) {
                 candidatePaths.push(path.join(homeDir, u, ".local", "share", "opencode", "auth.json"));
+                candidatePaths.push(path.join(homeDir, u, ".config", "opencode", "auth.json"));
               }
             }
           }
@@ -79,7 +88,11 @@ function getStoredOpenCodeKey(customPath) {
   if (process.platform === "linux" && fs.existsSync("/mnt/c/Users")) {
     try {
       for (const u of fs.readdirSync("/mnt/c/Users")) {
+        if (["Public", "Default", "Default User", "All Users"].includes(u) || u.startsWith(".")) continue;
+        candidatePaths.push(path.join("/mnt/c/Users", u, "AppData", "Local", "opencode", "auth.json"));
+        candidatePaths.push(path.join("/mnt/c/Users", u, "AppData", "Roaming", "opencode", "auth.json"));
         candidatePaths.push(path.join("/mnt/c/Users", u, ".local", "share", "opencode", "auth.json"));
+        candidatePaths.push(path.join("/mnt/c/Users", u, ".config", "opencode", "auth.json"));
       }
     } catch {
     }
@@ -99,6 +112,23 @@ function getStoredOpenCodeKey(customPath) {
   }
   return null;
 }
+function getKeyFromExistingConfig(customPath) {
+  try {
+    const configPath = customPath || (process.platform === "darwin" ? path.join(os.homedir(), "Library", "Application Support", "Code", "User", "chatLanguageModels.json") : process.platform === "win32" ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "Code", "User", "chatLanguageModels.json") : path.join(os.homedir(), ".config", "Code", "User", "chatLanguageModels.json"));
+    if (fs.existsSync(configPath)) {
+      const raw = fs.readFileSync(configPath, "utf-8");
+      const data = JSON.parse(raw);
+      if (Array.isArray(data)) {
+        const entry = data.find((e) => e && (e.name === "OpenCode" || e.name === "OpenCode Go"));
+        if (entry?.apiKey && typeof entry.apiKey === "string" && entry.apiKey.trim().startsWith("sk-")) {
+          return entry.apiKey.trim();
+        }
+      }
+    }
+  } catch {
+  }
+  return null;
+}
 async function resolveApiKey(secrets, promptIfMissing = true, vscodeWindow) {
   const stored = await secrets.get(SECRET_KEY);
   if (stored && stored.trim().length > 0) {
@@ -108,6 +138,11 @@ async function resolveApiKey(secrets, promptIfMissing = true, vscodeWindow) {
   if (autoFound) {
     await secrets.store(SECRET_KEY, autoFound);
     return autoFound;
+  }
+  const fromExisting = getKeyFromExistingConfig();
+  if (fromExisting) {
+    await secrets.store(SECRET_KEY, fromExisting);
+    return fromExisting;
   }
   if (promptIfMissing && vscodeWindow) {
     const entered = await vscodeWindow.showInputBox({
@@ -287,9 +322,13 @@ function mergeChatLanguageModels(existingConfig, newProviders) {
       (entry) => entry && entry.name === newProvider.name && entry.vendor === newProvider.vendor
     );
     if (idx >= 0) {
+      const existingModels = result[idx].models || [];
+      const incomingModels = newProvider.models || [];
+      const modelsToKeep = incomingModels.length > 0 ? incomingModels : existingModels;
       result[idx] = {
         ...result[idx],
-        ...newProvider
+        ...newProvider,
+        models: modelsToKeep
       };
     } else {
       result.push(newProvider);
@@ -457,6 +496,9 @@ async function syncOpenCodeModels(apiKey, options = {}) {
       zenCount++;
     }
   }
+  if (models.length === 0) {
+    throw new Error("No models were fetched from OpenCode API. Preserving existing configuration to prevent accidental erasure.");
+  }
   const unifiedProvider = {
     name: "OpenCode",
     vendor: "customendpoint",
@@ -538,7 +580,7 @@ async function activate(context) {
         );
       }
     } catch (err) {
-      outputChannel.appendLine(`Sync error: ${err.message}`);
+      outputChannel.appendLine(`[Sync Error] ${err.message}`);
       if (interactive) {
         vscode.window.showErrorMessage(`OpenCode sync failed: ${err.message}`);
       }
@@ -571,7 +613,7 @@ async function activate(context) {
   if (autoSync) {
     setTimeout(() => {
       performSync(false);
-    }, 1e3);
+    }, 3e3);
   }
 }
 function deactivate() {

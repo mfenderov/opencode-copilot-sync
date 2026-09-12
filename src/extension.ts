@@ -76,7 +76,7 @@ export async function activate(context: vscode.ExtensionContext) {
         );
       }
     } catch (err: any) {
-      outputChannel.appendLine(`Sync error: ${err.message}`);
+      outputChannel.appendLine(`[Sync Error] ${err.message}`);
       if (interactive) {
         vscode.window.showErrorMessage(`OpenCode sync failed: ${err.message}`);
       }
@@ -107,13 +107,13 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Background sync on startup / reload if enabled
+  // Background sync on startup / reload if enabled (waits 3s for network/bridges)
   const config = vscode.workspace.getConfiguration('opencode');
   const autoSync = config.get<boolean>('autoSyncOnStartup', true);
   if (autoSync) {
     setTimeout(() => {
       performSync(false);
-    }, 1000);
+    }, 3000);
   }
 }
 

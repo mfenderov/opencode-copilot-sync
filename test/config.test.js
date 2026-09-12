@@ -74,3 +74,26 @@ test('mergeChatLanguageModels cleans up legacy OpenCode Go and OpenCode Zen Free
   assert.equal(merged[0].name, 'HF Router');
   assert.equal(merged[1].name, 'OpenCode');
 });
+
+test('mergeChatLanguageModels preserves existing models when new provider has empty models array', () => {
+  const existing = [
+    {
+      name: 'OpenCode',
+      vendor: 'customendpoint',
+      apiKey: 'valid-key',
+      models: [{ id: 'deepseek-v4-flash' }, { id: 'kimi-k3' }]
+    }
+  ];
+
+  const emptyUpdate = {
+    name: 'OpenCode',
+    vendor: 'customendpoint',
+    apiKey: 'valid-key',
+    models: []
+  };
+
+  const merged = mergeChatLanguageModels(existing, [emptyUpdate]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].models.length, 2, 'Existing models must be preserved instead of being wiped out');
+});
+

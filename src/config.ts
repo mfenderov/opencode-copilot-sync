@@ -44,9 +44,14 @@ export function mergeChatLanguageModels(
     );
 
     if (idx >= 0) {
+      const existingModels = result[idx].models || [];
+      const incomingModels = newProvider.models || [];
+      const modelsToKeep = incomingModels.length > 0 ? incomingModels : existingModels;
+
       result[idx] = {
         ...result[idx],
         ...newProvider,
+        models: modelsToKeep,
       };
     } else {
       result.push(newProvider);
