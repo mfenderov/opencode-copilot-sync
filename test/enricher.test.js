@@ -35,4 +35,5 @@ test('enrichModel computes maxInputTokens and sets modelOptions', () => {
   const model = enrichModel('deepseek-v4-flash', { isGo: true });
   assert.equal(model.maxInputTokens, model.contextWindow - model.maxOutputTokens);
   assert.deepEqual(model.modelOptions, { temperature: null, top_p: null });
+  assert.equal(model.editTools, undefined, 'editTools must not be set to avoid proposed API rejection');
 });

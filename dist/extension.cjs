@@ -291,7 +291,6 @@ function enrichModel(modelId, options = {}) {
     contextWindow,
     maxInputTokens,
     maxOutputTokens,
-    editTools: ["find-replace", "multi-find-replace", "apply-patch", "code-rewrite"],
     thinking,
     supportsReasoningEffort: thinking ? ["low", "medium", "high", "xhigh", "max"] : void 0,
     reasoningEffortFormat: thinking ? "chat-completions" : void 0,

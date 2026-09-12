@@ -14,7 +14,6 @@ export interface CustomEndpointModel {
   contextWindow: number;
   maxInputTokens: number;
   maxOutputTokens: number;
-  editTools?: string[];
   thinking: boolean;
   supportsReasoningEffort?: string[];
   reasoningEffortFormat?: 'chat-completions';
@@ -130,7 +129,6 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
     contextWindow,
     maxInputTokens,
     maxOutputTokens,
-    editTools: ['find-replace', 'multi-find-replace', 'apply-patch', 'code-rewrite'],
     thinking,
     supportsReasoningEffort: thinking ? ['low', 'medium', 'high', 'xhigh', 'max'] : undefined,
     reasoningEffortFormat: thinking ? 'chat-completions' : undefined,
