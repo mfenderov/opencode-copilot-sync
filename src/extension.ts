@@ -42,6 +42,8 @@ export async function activate(context: vscode.ExtensionContext) {
       statusBarItem.text = '$(sync~spin) OpenCode';
       statusBarItem.tooltip = 'Syncing OpenCode models...';
 
+      const storagePath = context.globalStorageUri?.fsPath;
+
       if (interactive) {
         await vscode.window.withProgress(
           {
@@ -50,7 +52,7 @@ export async function activate(context: vscode.ExtensionContext) {
             cancellable: false,
           },
           async () => {
-            const result = await syncOpenCodeModels(apiKey, { includeGo, includeZen });
+            const result = await syncOpenCodeModels(apiKey, { includeGo, includeZen, storagePath });
             outputChannel.appendLine(
               `Synced ${result.totalCount} unified OpenCode models (${result.goCount} Go + ${result.zenCount} Zen) to ${result.targetPath}`
             );
@@ -70,7 +72,7 @@ export async function activate(context: vscode.ExtensionContext) {
         );
       } else {
         // Background silent sync on startup / reload
-        const result = await syncOpenCodeModels(apiKey, { includeGo, includeZen });
+        const result = await syncOpenCodeModels(apiKey, { includeGo, includeZen, storagePath });
         outputChannel.appendLine(
           `[Startup] Synced ${result.totalCount} unified OpenCode models (${result.goCount} Go + ${result.zenCount} Zen) to ${result.targetPath}`
         );

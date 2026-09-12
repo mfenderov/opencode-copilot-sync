@@ -362,7 +362,16 @@ function filterFreeModels(modelIds) {
 }
 
 // src/syncer.ts
-function getChatLanguageModelsPath() {
+function getChatLanguageModelsPath(activeExtensionStoragePath) {
+  if (activeExtensionStoragePath) {
+    try {
+      const derived = path2.resolve(activeExtensionStoragePath, "..", "..", "chatLanguageModels.json");
+      if (fs2.existsSync(path2.dirname(derived))) {
+        return derived;
+      }
+    } catch {
+    }
+  }
   const platform = process.platform;
   if (platform === "darwin") {
     return path2.join(os2.homedir(), "Library", "Application Support", "Code", "User", "chatLanguageModels.json");
@@ -370,6 +379,14 @@ function getChatLanguageModelsPath() {
   if (platform === "win32") {
     const appData = process.env.APPDATA || path2.join(os2.homedir(), "AppData", "Roaming");
     return path2.join(appData, "Code", "User", "chatLanguageModels.json");
+  }
+  const serverPath = path2.join(os2.homedir(), ".vscode-server", "data", "User", "chatLanguageModels.json");
+  if (fs2.existsSync(path2.dirname(serverPath))) {
+    return serverPath;
+  }
+  const serverInsidersPath = path2.join(os2.homedir(), ".vscode-server-insiders", "data", "User", "chatLanguageModels.json");
+  if (fs2.existsSync(path2.dirname(serverInsidersPath))) {
+    return serverInsidersPath;
   }
   return path2.join(os2.homedir(), ".config", "Code", "User", "chatLanguageModels.json");
 }
@@ -383,21 +400,64 @@ function isWSL() {
     return false;
   }
 }
-function getAllChatLanguageModelsPaths() {
-  const paths = [getChatLanguageModelsPath()];
+function getAllChatLanguageModelsPaths(activeExtensionStoragePath) {
+  const paths = [];
+  const primary = getChatLanguageModelsPath(activeExtensionStoragePath);
+  paths.push(primary);
+  if (process.platform === "linux") {
+    const serverCandidates = [
+      path2.join(os2.homedir(), ".vscode-server", "data", "User", "chatLanguageModels.json"),
+      path2.join(os2.homedir(), ".vscode-server-insiders", "data", "User", "chatLanguageModels.json"),
+      path2.join(os2.homedir(), ".config", "Code", "User", "chatLanguageModels.json"),
+      path2.join(os2.homedir(), ".config", "Code - Insiders", "User", "chatLanguageModels.json")
+    ];
+    for (const sc of serverCandidates) {
+      if (fs2.existsSync(path2.dirname(sc)) && !paths.includes(sc)) {
+        paths.push(sc);
+      }
+    }
+  }
   if (isWSL()) {
     try {
       const mntCUsers = "/mnt/c/Users";
       if (fs2.existsSync(mntCUsers)) {
         for (const user of fs2.readdirSync(mntCUsers)) {
           if (["Public", "Default", "Default User", "All Users"].includes(user) || user.startsWith(".")) continue;
-          const winPath = path2.join(mntCUsers, user, "AppData", "Roaming", "Code", "User", "chatLanguageModels.json");
-          if (fs2.existsSync(path2.dirname(winPath)) && !paths.includes(winPath)) {
-            paths.push(winPath);
+          for (const variant of ["Code", "Code - Insiders"]) {
+            const winPath = path2.join(mntCUsers, user, "AppData", "Roaming", variant, "User", "chatLanguageModels.json");
+            if (fs2.existsSync(path2.dirname(winPath)) && !paths.includes(winPath)) {
+              paths.push(winPath);
+            }
           }
         }
       }
     } catch {
+    }
+  }
+  if (process.platform === "win32") {
+    for (const prefix of ["\\\\wsl.localhost", "\\\\wsl$"]) {
+      try {
+        if (fs2.existsSync(prefix)) {
+          for (const distro of fs2.readdirSync(prefix)) {
+            const home = path2.join(prefix, distro, "home");
+            if (fs2.existsSync(home)) {
+              for (const u of fs2.readdirSync(home)) {
+                const wslPaths = [
+                  path2.join(home, u, ".vscode-server", "data", "User", "chatLanguageModels.json"),
+                  path2.join(home, u, ".vscode-server-insiders", "data", "User", "chatLanguageModels.json"),
+                  path2.join(home, u, ".config", "Code", "User", "chatLanguageModels.json")
+                ];
+                for (const wp of wslPaths) {
+                  if (fs2.existsSync(path2.dirname(wp)) && !paths.includes(wp)) {
+                    paths.push(wp);
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch {
+      }
     }
   }
   return paths;
@@ -442,8 +502,8 @@ function createBackup(filePath) {
   }
   return backupPath;
 }
-function writeProvidersToConfig(providers, targetPath) {
-  const filePaths = targetPath ? [targetPath] : getAllChatLanguageModelsPaths();
+function writeProvidersToConfig(providers, targetPath, storagePath) {
+  const filePaths = targetPath ? [targetPath] : getAllChatLanguageModelsPaths(storagePath);
   let primaryBackup = null;
   for (const filePath of filePaths) {
     try {
@@ -506,7 +566,7 @@ async function syncOpenCodeModels(apiKey, options = {}) {
     apiType: "chat-completions",
     models
   };
-  const { targetPath, backupPath } = writeProvidersToConfig([unifiedProvider], options.targetPath);
+  const { targetPath, backupPath } = writeProvidersToConfig([unifiedProvider], options.targetPath, options.storagePath);
   return {
     goCount: goModelIds.length,
     zenCount,
@@ -549,6 +609,7 @@ async function activate(context) {
       }
       statusBarItem.text = "$(sync~spin) OpenCode";
       statusBarItem.tooltip = "Syncing OpenCode models...";
+      const storagePath = context.globalStorageUri?.fsPath;
       if (interactive) {
         await vscode.window.withProgress(
           {
@@ -557,7 +618,7 @@ async function activate(context) {
             cancellable: false
           },
           async () => {
-            const result = await syncOpenCodeModels(apiKey, { includeGo, includeZen });
+            const result = await syncOpenCodeModels(apiKey, { includeGo, includeZen, storagePath });
             outputChannel.appendLine(
               `Synced ${result.totalCount} unified OpenCode models (${result.goCount} Go + ${result.zenCount} Zen) to ${result.targetPath}`
             );
@@ -574,7 +635,7 @@ async function activate(context) {
           }
         );
       } else {
-        const result = await syncOpenCodeModels(apiKey, { includeGo, includeZen });
+        const result = await syncOpenCodeModels(apiKey, { includeGo, includeZen, storagePath });
         outputChannel.appendLine(
           `[Startup] Synced ${result.totalCount} unified OpenCode models (${result.goCount} Go + ${result.zenCount} Zen) to ${result.targetPath}`
         );

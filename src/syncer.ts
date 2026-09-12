@@ -5,7 +5,16 @@ import { buildProviderEntry, mergeChatLanguageModels, type ProviderEntry } from 
 import { enrichModel } from './enricher.js';
 import { fetchOpenCodeModels, filterFreeModels } from './fetcher.js';
 
-export function getChatLanguageModelsPath(): string {
+export function getChatLanguageModelsPath(activeExtensionStoragePath?: string): string {
+  if (activeExtensionStoragePath) {
+    try {
+      const derived = path.resolve(activeExtensionStoragePath, '..', '..', 'chatLanguageModels.json');
+      if (fs.existsSync(path.dirname(derived))) {
+        return derived;
+      }
+    } catch {}
+  }
+
   const platform = process.platform;
   if (platform === 'darwin') {
     return path.join(os.homedir(), 'Library', 'Application Support', 'Code', 'User', 'chatLanguageModels.json');
@@ -14,6 +23,17 @@ export function getChatLanguageModelsPath(): string {
     const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
     return path.join(appData, 'Code', 'User', 'chatLanguageModels.json');
   }
+
+  // Linux / WSL: check if VS Code Server data directory exists
+  const serverPath = path.join(os.homedir(), '.vscode-server', 'data', 'User', 'chatLanguageModels.json');
+  if (fs.existsSync(path.dirname(serverPath))) {
+    return serverPath;
+  }
+  const serverInsidersPath = path.join(os.homedir(), '.vscode-server-insiders', 'data', 'User', 'chatLanguageModels.json');
+  if (fs.existsSync(path.dirname(serverInsidersPath))) {
+    return serverInsidersPath;
+  }
+
   return path.join(os.homedir(), '.config', 'Code', 'User', 'chatLanguageModels.json');
 }
 
@@ -28,8 +48,25 @@ export function isWSL(): boolean {
   }
 }
 
-export function getAllChatLanguageModelsPaths(): string[] {
-  const paths: string[] = [getChatLanguageModelsPath()];
+export function getAllChatLanguageModelsPaths(activeExtensionStoragePath?: string): string[] {
+  const paths: string[] = [];
+  const primary = getChatLanguageModelsPath(activeExtensionStoragePath);
+  paths.push(primary);
+
+  // Linux / WSL: check all possible server and client locations
+  if (process.platform === 'linux') {
+    const serverCandidates = [
+      path.join(os.homedir(), '.vscode-server', 'data', 'User', 'chatLanguageModels.json'),
+      path.join(os.homedir(), '.vscode-server-insiders', 'data', 'User', 'chatLanguageModels.json'),
+      path.join(os.homedir(), '.config', 'Code', 'User', 'chatLanguageModels.json'),
+      path.join(os.homedir(), '.config', 'Code - Insiders', 'User', 'chatLanguageModels.json'),
+    ];
+    for (const sc of serverCandidates) {
+      if (fs.existsSync(path.dirname(sc)) && !paths.includes(sc)) {
+        paths.push(sc);
+      }
+    }
+  }
 
   if (isWSL()) {
     try {
@@ -37,13 +74,42 @@ export function getAllChatLanguageModelsPaths(): string[] {
       if (fs.existsSync(mntCUsers)) {
         for (const user of fs.readdirSync(mntCUsers)) {
           if (['Public', 'Default', 'Default User', 'All Users'].includes(user) || user.startsWith('.')) continue;
-          const winPath = path.join(mntCUsers, user, 'AppData', 'Roaming', 'Code', 'User', 'chatLanguageModels.json');
-          if (fs.existsSync(path.dirname(winPath)) && !paths.includes(winPath)) {
-            paths.push(winPath);
+          for (const variant of ['Code', 'Code - Insiders']) {
+            const winPath = path.join(mntCUsers, user, 'AppData', 'Roaming', variant, 'User', 'chatLanguageModels.json');
+            if (fs.existsSync(path.dirname(winPath)) && !paths.includes(winPath)) {
+              paths.push(winPath);
+            }
           }
         }
       }
     } catch {}
+  }
+
+  // Windows host checking WSL network shares
+  if (process.platform === 'win32') {
+    for (const prefix of ['\\\\wsl.localhost', '\\\\wsl$']) {
+      try {
+        if (fs.existsSync(prefix)) {
+          for (const distro of fs.readdirSync(prefix)) {
+            const home = path.join(prefix, distro, 'home');
+            if (fs.existsSync(home)) {
+              for (const u of fs.readdirSync(home)) {
+                const wslPaths = [
+                  path.join(home, u, '.vscode-server', 'data', 'User', 'chatLanguageModels.json'),
+                  path.join(home, u, '.vscode-server-insiders', 'data', 'User', 'chatLanguageModels.json'),
+                  path.join(home, u, '.config', 'Code', 'User', 'chatLanguageModels.json'),
+                ];
+                for (const wp of wslPaths) {
+                  if (fs.existsSync(path.dirname(wp)) && !paths.includes(wp)) {
+                    paths.push(wp);
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch {}
+    }
   }
 
   return paths;
@@ -99,9 +165,10 @@ export function createBackup(filePath: string): string | null {
 
 export function writeProvidersToConfig(
   providers: ProviderEntry[],
-  targetPath?: string
+  targetPath?: string,
+  storagePath?: string
 ): { targetPath: string; backupPath: string | null } {
-  const filePaths = targetPath ? [targetPath] : getAllChatLanguageModelsPaths();
+  const filePaths = targetPath ? [targetPath] : getAllChatLanguageModelsPaths(storagePath);
   let primaryBackup: string | null = null;
 
   for (const filePath of filePaths) {
@@ -130,7 +197,7 @@ export function writeProvidersToConfig(
 
 export async function syncOpenCodeModels(
   apiKey: string,
-  options: { includeGo?: boolean; includeZen?: boolean; targetPath?: string } = {}
+  options: { includeGo?: boolean; includeZen?: boolean; targetPath?: string; storagePath?: string } = {}
 ): Promise<{ goCount: number; zenCount: number; totalCount: number; targetPath: string; backupPath: string | null }> {
   const includeGo = options.includeGo ?? true;
   const includeZen = options.includeZen ?? true;
@@ -186,7 +253,7 @@ export async function syncOpenCodeModels(
     models,
   };
 
-  const { targetPath, backupPath } = writeProvidersToConfig([unifiedProvider], options.targetPath);
+  const { targetPath, backupPath } = writeProvidersToConfig([unifiedProvider], options.targetPath, options.storagePath);
 
   return {
     goCount: goModelIds.length,
