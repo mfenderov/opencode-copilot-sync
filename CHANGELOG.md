@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.6.0 - 2026-09-13
+#### Features
+- add in-editor @vscode/test-electron E2E testing suite - (a63803a) - Mark Fenderov
+#### Bug Fixes
+- update engines.vscode and @types/vscode to ^1.125.0 to pass vsce package gate - (57a3396) - Mark Fenderov
+
+- - -
+
 ## v0.5.0 - 2026-09-12
 #### Features
 - add live status bar usage quota meter and hover tooltip - (af262cf) - Mark Fenderov
