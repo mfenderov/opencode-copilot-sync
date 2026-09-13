@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.7.2 - 2026-09-13
+#### Bug Fixes
+- (**release**) specify tag_name in softprops/action-gh-release - (ee81edc) - Mark Fenderov
+
+- - -
+
 ## v0.7.1 - 2026-09-13
 #### Bug Fixes
 - filter defunct `muse-*` models returning HTTP 500 to prevent retry timeouts
