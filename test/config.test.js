@@ -75,6 +75,50 @@ test('mergeChatLanguageModels cleans up legacy OpenCode Go and OpenCode Zen Free
   assert.equal(merged[1].name, 'OpenCode');
 });
 
+test('mergeChatLanguageModels cleans up legacy Customprovider or Custom Endpoint entries containing OpenCode models', () => {
+  const existing = [
+    { name: 'HF Router', vendor: 'customendpoint', models: [{ id: 'claude-3-opus', url: 'https://hf.co/v1' }] },
+    { name: 'Customprovider', vendor: 'customendpoint', apiKey: 'sk-old', models: [{ id: 'deepseek-v4-flash', url: 'https://opencode.ai/zen/go/v1/chat/completions' }] },
+    { name: 'Custom Endpoint', vendor: 'customendpoint', apiKey: 'sk-old2', models: [] }
+  ];
+
+  const unified = {
+    name: 'OpenCode',
+    vendor: 'customendpoint',
+    apiKey: 'new-key',
+    models: [{ id: 'deepseek-v4-flash' }]
+  };
+
+  const merged = mergeChatLanguageModels(existing, [unified]);
+  assert.equal(merged.length, 2);
+  assert.equal(merged[0].name, 'HF Router');
+  assert.equal(merged[1].name, 'OpenCode');
+  assert.equal(merged[1].apiKey, 'new-key');
+});
+
+test('mergeChatLanguageModels preserves secret input reference ${input:...} on existing provider', () => {
+  const existing = [
+    {
+      name: 'OpenCode',
+      vendor: 'customendpoint',
+      apiKey: '${input:chat.lm.secret.customendpoint.OpenCode.apiKey}',
+      models: [{ id: 'old-model' }]
+    }
+  ];
+
+  const incoming = {
+    name: 'OpenCode',
+    vendor: 'customendpoint',
+    apiKey: 'sk-raw-key',
+    models: [{ id: 'new-model' }]
+  };
+
+  const merged = mergeChatLanguageModels(existing, [incoming]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].apiKey, '${input:chat.lm.secret.customendpoint.OpenCode.apiKey}', 'Secret storage reference must be preserved');
+  assert.equal(merged[0].models[0].id, 'new-model');
+});
+
 test('mergeChatLanguageModels preserves existing models when new provider has empty models array', () => {
   const existing = [
     {

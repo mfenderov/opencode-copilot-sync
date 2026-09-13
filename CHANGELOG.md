@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.7.1 - 2026-09-13
+#### Bug Fixes
+- filter defunct `muse-*` models returning HTTP 500 to prevent retry timeouts
+- bi-directional multi-distro WSL sync across all `.vscode-server` User and Machine directories
+- clean up legacy `Customprovider` and `Custom Endpoint` entries while preserving SecretStorage references
+- change `extensionKind` to `["ui", "workspace"]` for reliable activation in Remote-WSL
+
+- - -
 ## v0.7.0 - 2026-09-13
 #### Features
 - automated WSL mirror: syncs `chatLanguageModels.json` directly into WSL `.vscode-server` locations with zero manual copying

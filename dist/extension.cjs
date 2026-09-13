@@ -37,164 +37,14 @@ module.exports = __toCommonJS(extension_exports);
 var vscode = __toESM(require("vscode"), 1);
 
 // src/auth.ts
-var fs = __toESM(require("node:fs"), 1);
-var path = __toESM(require("node:path"), 1);
-var os = __toESM(require("node:os"), 1);
-var SECRET_KEY = "opencode_api_key";
-function getStoredOpenCodeKey(customPath) {
-  if (customPath) {
-    try {
-      if (fs.existsSync(customPath)) {
-        const raw = fs.readFileSync(customPath, "utf-8");
-        const data = JSON.parse(raw);
-        const key = data["opencode-go"]?.key || data["opencode"]?.key;
-        if (typeof key === "string" && key.trim().length > 0) {
-          return key.trim();
-        }
-      }
-    } catch {
-    }
-    return null;
-  }
-  const candidatePaths = [];
-  const home = os.homedir();
-  candidatePaths.push(path.join(home, ".local", "share", "opencode", "auth.json"));
-  candidatePaths.push(path.join(home, ".config", "opencode", "auth.json"));
-  if (process.env.LOCALAPPDATA) {
-    candidatePaths.push(path.join(process.env.LOCALAPPDATA, "opencode", "auth.json"));
-  }
-  if (process.env.APPDATA) {
-    candidatePaths.push(path.join(process.env.APPDATA, "opencode", "auth.json"));
-  }
-  if (process.platform === "win32") {
-    for (const prefix of ["\\\\wsl.localhost", "\\\\wsl$"]) {
-      try {
-        if (fs.existsSync(prefix)) {
-          const distros = fs.readdirSync(prefix);
-          for (const distro of distros) {
-            const homeDir = path.join(prefix, distro, "home");
-            if (fs.existsSync(homeDir)) {
-              for (const u of fs.readdirSync(homeDir)) {
-                candidatePaths.push(path.join(homeDir, u, ".local", "share", "opencode", "auth.json"));
-                candidatePaths.push(path.join(homeDir, u, ".config", "opencode", "auth.json"));
-              }
-            }
-          }
-        }
-      } catch {
-      }
-    }
-  }
-  if (process.platform === "linux" && fs.existsSync("/mnt/c/Users")) {
-    try {
-      for (const u of fs.readdirSync("/mnt/c/Users")) {
-        if (["Public", "Default", "Default User", "All Users"].includes(u) || u.startsWith(".")) continue;
-        candidatePaths.push(path.join("/mnt/c/Users", u, "AppData", "Local", "opencode", "auth.json"));
-        candidatePaths.push(path.join("/mnt/c/Users", u, "AppData", "Roaming", "opencode", "auth.json"));
-        candidatePaths.push(path.join("/mnt/c/Users", u, ".local", "share", "opencode", "auth.json"));
-        candidatePaths.push(path.join("/mnt/c/Users", u, ".config", "opencode", "auth.json"));
-      }
-    } catch {
-    }
-  }
-  for (const authPath of candidatePaths) {
-    try {
-      if (fs.existsSync(authPath)) {
-        const raw = fs.readFileSync(authPath, "utf-8");
-        const data = JSON.parse(raw);
-        const key = data["opencode-go"]?.key || data["opencode"]?.key;
-        if (typeof key === "string" && key.trim().length > 0) {
-          return key.trim();
-        }
-      }
-    } catch {
-    }
-  }
-  return null;
-}
-function getKeyFromExistingConfig(customPath) {
-  try {
-    const configPath = customPath || (process.platform === "darwin" ? path.join(os.homedir(), "Library", "Application Support", "Code", "User", "chatLanguageModels.json") : process.platform === "win32" ? path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "Code", "User", "chatLanguageModels.json") : path.join(os.homedir(), ".config", "Code", "User", "chatLanguageModels.json"));
-    if (fs.existsSync(configPath)) {
-      const raw = fs.readFileSync(configPath, "utf-8");
-      const data = JSON.parse(raw);
-      if (Array.isArray(data)) {
-        const entry = data.find((e) => e && (e.name === "OpenCode" || e.name === "OpenCode Go"));
-        if (entry?.apiKey && typeof entry.apiKey === "string" && entry.apiKey.trim().startsWith("sk-")) {
-          return entry.apiKey.trim();
-        }
-      }
-    }
-  } catch {
-  }
-  return null;
-}
-async function resolveApiKey(secrets, promptIfMissing = true, vscodeWindow) {
-  const stored = await secrets.get(SECRET_KEY);
-  if (stored && stored.trim().length > 0) {
-    return stored.trim();
-  }
-  const autoFound = getStoredOpenCodeKey();
-  if (autoFound) {
-    await secrets.store(SECRET_KEY, autoFound);
-    return autoFound;
-  }
-  const fromExisting = getKeyFromExistingConfig();
-  if (fromExisting) {
-    await secrets.store(SECRET_KEY, fromExisting);
-    return fromExisting;
-  }
-  if (promptIfMissing && vscodeWindow) {
-    const entered = await vscodeWindow.showInputBox({
-      title: "OpenCode API Key",
-      prompt: "Enter your OpenCode API Key (starts with sk-)",
-      password: true,
-      ignoreFocusOut: true,
-      validateInput: (value) => {
-        if (!value || value.trim().length === 0) {
-          return "API Key cannot be empty";
-        }
-        if (!value.trim().startsWith("sk-")) {
-          return "OpenCode API keys typically start with sk-";
-        }
-        return null;
-      }
-    });
-    if (entered && entered.trim().length > 0) {
-      const cleanKey = entered.trim();
-      await secrets.store(SECRET_KEY, cleanKey);
-      return cleanKey;
-    }
-  }
-  return void 0;
-}
-async function promptAndSetApiKey(secrets, vscodeWindow) {
-  const currentKey = await secrets.get(SECRET_KEY);
-  const entered = await vscodeWindow.showInputBox({
-    title: "OpenCode API Key",
-    prompt: "Enter your OpenCode API Key (starts with sk-)",
-    value: currentKey || "",
-    password: true,
-    ignoreFocusOut: true,
-    validateInput: (value) => {
-      if (!value || value.trim().length === 0) {
-        return "API Key cannot be empty";
-      }
-      return null;
-    }
-  });
-  if (entered && entered.trim().length > 0) {
-    const cleanKey = entered.trim();
-    await secrets.store(SECRET_KEY, cleanKey);
-    return cleanKey;
-  }
-  return void 0;
-}
-
-// src/syncer.ts
 var fs2 = __toESM(require("node:fs"), 1);
 var path2 = __toESM(require("node:path"), 1);
 var os2 = __toESM(require("node:os"), 1);
+
+// src/syncer.ts
+var fs = __toESM(require("node:fs"), 1);
+var path = __toESM(require("node:path"), 1);
+var os = __toESM(require("node:os"), 1);
 var cp = __toESM(require("node:child_process"), 1);
 
 // src/enricher.ts
@@ -309,10 +159,29 @@ function enrichModel(modelId, options = {}) {
 }
 
 // src/config.ts
+function isOpenCodeLegacyOrCustomEntry(entry) {
+  if (!entry || entry.vendor !== "customendpoint") {
+    return false;
+  }
+  const name = typeof entry.name === "string" ? entry.name.trim() : "";
+  if (name === "OpenCode Go" || name === "OpenCode Zen Free") {
+    return true;
+  }
+  const hasOpenCodeModels = Array.isArray(entry.models) && entry.models.some((m) => typeof m?.url === "string" && m.url.includes("opencode.ai"));
+  if (hasOpenCodeModels) {
+    return true;
+  }
+  if (/^(customprovider|custom endpoint|customendpoint)$/i.test(name)) {
+    if (typeof entry.apiKey === "string" && entry.apiKey.trim().startsWith("sk-")) {
+      return true;
+    }
+  }
+  return false;
+}
 function mergeChatLanguageModels(existingConfig, newProviders) {
   const addingUnifiedOpenCode = newProviders.some((p) => p.name === "OpenCode");
   const result = existingConfig.filter((entry) => {
-    if (addingUnifiedOpenCode && (entry?.name === "OpenCode Go" || entry?.name === "OpenCode Zen Free")) {
+    if (addingUnifiedOpenCode && isOpenCodeLegacyOrCustomEntry(entry) && entry?.name !== "OpenCode") {
       return false;
     }
     return true;
@@ -325,9 +194,12 @@ function mergeChatLanguageModels(existingConfig, newProviders) {
       const existingModels = result[idx].models || [];
       const incomingModels = newProvider.models || [];
       const modelsToKeep = incomingModels.length > 0 ? incomingModels : existingModels;
+      const existingApiKey = result[idx].apiKey;
+      const apiKey = typeof existingApiKey === "string" && existingApiKey.startsWith("${input:") ? existingApiKey : newProvider.apiKey;
       result[idx] = {
         ...result[idx],
         ...newProvider,
+        apiKey,
         models: modelsToKeep
       };
     } else {
@@ -364,8 +236,12 @@ var KNOWN_UNAVAILABLE_MODELS = /* @__PURE__ */ new Set([
   "gpt-5.6-luna",
   "grok-4.5",
   "grok-4.6",
+  "muse-spark-1.3",
+  "muse-spark-1.2",
   "muse-spark-1.3-contributor",
   "muse-spark-1.2-contributor",
+  "muse-spark-1.3-contributor-free",
+  "muse-spark-1.2-contributor-free",
   "kimi-k2.5",
   "glm-5",
   "qwen3.7-plus",
@@ -373,10 +249,14 @@ var KNOWN_UNAVAILABLE_MODELS = /* @__PURE__ */ new Set([
   "mimo-v2-pro",
   "mimo-v2-omni",
   "hy3-preview",
-  "minimax-m2.7"
+  "minimax-m2.7",
+  "nemotron-3-ultra-free",
+  "nemotron-3.5-lightning-free",
+  "deepseek-v4-flash-free",
+  "ling-3.0-flash-fin-free"
 ]);
 function filterAvailableGoModels(modelIds) {
-  return modelIds.filter((id) => !KNOWN_UNAVAILABLE_MODELS.has(id));
+  return modelIds.filter((id) => !KNOWN_UNAVAILABLE_MODELS.has(id) && !id.startsWith("muse-"));
 }
 async function checkZenBalance(apiKey) {
   try {
@@ -409,8 +289,8 @@ async function checkZenBalance(apiKey) {
 function getChatLanguageModelsPath(activeExtensionStoragePath) {
   if (activeExtensionStoragePath) {
     try {
-      const derived = path2.resolve(activeExtensionStoragePath, "..", "..", "chatLanguageModels.json");
-      if (fs2.existsSync(path2.dirname(derived))) {
+      const derived = path.resolve(activeExtensionStoragePath, "..", "..", "chatLanguageModels.json");
+      if (fs.existsSync(path.dirname(derived)) || activeExtensionStoragePath.includes(".vscode-server") || activeExtensionStoragePath.includes("Code")) {
         return derived;
       }
     } catch {
@@ -418,43 +298,113 @@ function getChatLanguageModelsPath(activeExtensionStoragePath) {
   }
   const platform = process.platform;
   if (platform === "darwin") {
-    return path2.join(os2.homedir(), "Library", "Application Support", "Code", "User", "chatLanguageModels.json");
+    return path.join(os.homedir(), "Library", "Application Support", "Code", "User", "chatLanguageModels.json");
   }
   if (platform === "win32") {
-    const appData = process.env.APPDATA || path2.join(os2.homedir(), "AppData", "Roaming");
-    return path2.join(appData, "Code", "User", "chatLanguageModels.json");
+    const appData = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+    return path.join(appData, "Code", "User", "chatLanguageModels.json");
   }
-  const serverPath = path2.join(os2.homedir(), ".vscode-server", "data", "User", "chatLanguageModels.json");
-  if (fs2.existsSync(path2.dirname(serverPath))) {
+  const serverDir = path.join(os.homedir(), ".vscode-server");
+  const serverPath = path.join(serverDir, "data", "User", "chatLanguageModels.json");
+  if (fs.existsSync(serverDir) || fs.existsSync(path.dirname(serverPath))) {
     return serverPath;
   }
-  const serverInsidersPath = path2.join(os2.homedir(), ".vscode-server-insiders", "data", "User", "chatLanguageModels.json");
-  if (fs2.existsSync(path2.dirname(serverInsidersPath))) {
+  const serverInsidersDir = path.join(os.homedir(), ".vscode-server-insiders");
+  const serverInsidersPath = path.join(serverInsidersDir, "data", "User", "chatLanguageModels.json");
+  if (fs.existsSync(serverInsidersDir) || fs.existsSync(path.dirname(serverInsidersPath))) {
     return serverInsidersPath;
   }
-  return path2.join(os2.homedir(), ".config", "Code", "User", "chatLanguageModels.json");
+  if (isWSL()) {
+    return serverPath;
+  }
+  return path.join(os.homedir(), ".config", "Code", "User", "chatLanguageModels.json");
 }
 function isWSL() {
   if (process.platform !== "linux") return false;
   if (process.env.WSL_DISTRO_NAME) return true;
   try {
-    const v = fs2.readFileSync("/proc/version", "utf-8");
+    const v = fs.readFileSync("/proc/version", "utf-8");
     return v.toLowerCase().includes("microsoft") || v.toLowerCase().includes("wsl");
   } catch {
     return false;
   }
 }
 function syncWslMirror(sourceFilePath) {
-  if (process.platform !== "win32") return;
+  if (process.platform !== "win32") {
+    if (isWSL()) {
+      try {
+        const potentialUserRoots = [
+          "/mnt/c/Users",
+          "/mnt/d/Users",
+          "/mnt/e/Users",
+          "/c/Users",
+          "/d/Users"
+        ];
+        for (const mntUsers of potentialUserRoots) {
+          if (fs.existsSync(mntUsers)) {
+            let userDirs = [];
+            try {
+              userDirs = fs.readdirSync(mntUsers);
+            } catch {
+            }
+            for (const user of userDirs) {
+              if (["Public", "Default", "Default User", "All Users"].includes(user) || user.startsWith(".")) continue;
+              for (const variant of ["Code", "Code - Insiders"]) {
+                const winDest = path.join(mntUsers, user, "AppData", "Roaming", variant, "User", "chatLanguageModels.json");
+                const winDir = path.dirname(winDest);
+                if (!fs.existsSync(winDir)) {
+                  fs.mkdirSync(winDir, { recursive: true });
+                }
+                fs.copyFileSync(sourceFilePath, winDest);
+              }
+            }
+          }
+        }
+      } catch {
+      }
+    }
+    return;
+  }
   try {
     const driveMatch = sourceFilePath.match(/^([A-Za-z]):\\(.*)$/);
     if (!driveMatch) return;
     const driveLetter = driveMatch[1].toLowerCase();
     const rest = driveMatch[2].replace(/\\/g, "/");
     const wslSourcePath = `/mnt/${driveLetter}/${rest}`;
-    const cmd = `mkdir -p ~/.vscode-server/data/User ~/.config/Code/User && cp "${wslSourcePath}" ~/.vscode-server/data/User/chatLanguageModels.json && cp "${wslSourcePath}" ~/.config/Code/User/chatLanguageModels.json`;
-    cp.exec(`wsl.exe -e bash -c "${cmd}"`, () => {
-    });
+    const subDirs = [
+      ".vscode-server/data/User",
+      ".vscode-server/data/Machine",
+      ".vscode-server-insiders/data/User",
+      ".vscode-server-insiders/data/Machine",
+      ".config/Code/User",
+      ".config/Code - Insiders/User"
+    ];
+    const mkdirCommands = subDirs.map((d) => `mkdir -p ~/"${d}"`).join(" && ");
+    const cpCommands = subDirs.map((d) => `cp "${wslSourcePath}" ~/"${d}/chatLanguageModels.json"`).join(" && ");
+    const fullCmd = `${mkdirCommands} && ${cpCommands}`;
+    try {
+      cp.exec("wsl.exe -l -q", { encoding: "buffer", timeout: 5e3 }, (err, stdout) => {
+        const distros = [];
+        if (!err && stdout) {
+          const text = stdout.toString("utf16le").includes("\0") ? stdout.toString("utf8") : stdout.toString("utf16le");
+          const clean = text.replace(/\0/g, "").split(/\r?\n/).map((s) => s.trim()).filter((s) => s.length > 0 && !s.includes("Windows Subsystem") && !s.startsWith("-"));
+          for (const d of clean) {
+            if (!distros.includes(d)) distros.push(d);
+          }
+        }
+        if (distros.length > 0) {
+          for (const distro of distros) {
+            cp.exec(`wsl.exe -d "${distro}" -e bash -c "${fullCmd}"`, () => {
+            });
+          }
+        }
+        cp.exec(`wsl.exe -e bash -c "${fullCmd}"`, () => {
+        });
+      });
+    } catch {
+      cp.exec(`wsl.exe -e bash -c "${fullCmd}"`, () => {
+      });
+    }
   } catch {
   }
 }
@@ -464,10 +414,12 @@ function getAllChatLanguageModelsPaths(activeExtensionStoragePath) {
   paths.push(primary);
   if (process.platform === "linux") {
     const serverCandidates = [
-      path2.join(os2.homedir(), ".vscode-server", "data", "User", "chatLanguageModels.json"),
-      path2.join(os2.homedir(), ".vscode-server-insiders", "data", "User", "chatLanguageModels.json"),
-      path2.join(os2.homedir(), ".config", "Code", "User", "chatLanguageModels.json"),
-      path2.join(os2.homedir(), ".config", "Code - Insiders", "User", "chatLanguageModels.json")
+      path.join(os.homedir(), ".vscode-server", "data", "User", "chatLanguageModels.json"),
+      path.join(os.homedir(), ".vscode-server", "data", "Machine", "chatLanguageModels.json"),
+      path.join(os.homedir(), ".vscode-server-insiders", "data", "User", "chatLanguageModels.json"),
+      path.join(os.homedir(), ".vscode-server-insiders", "data", "Machine", "chatLanguageModels.json"),
+      path.join(os.homedir(), ".config", "Code", "User", "chatLanguageModels.json"),
+      path.join(os.homedir(), ".config", "Code - Insiders", "User", "chatLanguageModels.json")
     ];
     for (const sc of serverCandidates) {
       if (!paths.includes(sc)) {
@@ -477,14 +429,27 @@ function getAllChatLanguageModelsPaths(activeExtensionStoragePath) {
   }
   if (isWSL()) {
     try {
-      const mntCUsers = "/mnt/c/Users";
-      if (fs2.existsSync(mntCUsers)) {
-        for (const user of fs2.readdirSync(mntCUsers)) {
-          if (["Public", "Default", "Default User", "All Users"].includes(user) || user.startsWith(".")) continue;
-          for (const variant of ["Code", "Code - Insiders"]) {
-            const winPath = path2.join(mntCUsers, user, "AppData", "Roaming", variant, "User", "chatLanguageModels.json");
-            if (!paths.includes(winPath)) {
-              paths.push(winPath);
+      const potentialUserRoots = [
+        "/mnt/c/Users",
+        "/mnt/d/Users",
+        "/mnt/e/Users",
+        "/c/Users",
+        "/d/Users"
+      ];
+      for (const mntUsers of potentialUserRoots) {
+        if (fs.existsSync(mntUsers)) {
+          let userDirs = [];
+          try {
+            userDirs = fs.readdirSync(mntUsers);
+          } catch {
+          }
+          for (const user of userDirs) {
+            if (["Public", "Default", "Default User", "All Users"].includes(user) || user.startsWith(".")) continue;
+            for (const variant of ["Code", "Code - Insiders"]) {
+              const winPath = path.join(mntUsers, user, "AppData", "Roaming", variant, "User", "chatLanguageModels.json");
+              if (!paths.includes(winPath)) {
+                paths.push(winPath);
+              }
             }
           }
         }
@@ -493,22 +458,51 @@ function getAllChatLanguageModelsPaths(activeExtensionStoragePath) {
     }
   }
   if (process.platform === "win32") {
+    const appData = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+    const winVariants = [
+      path.join(appData, "Code", "User", "chatLanguageModels.json"),
+      path.join(appData, "Code - Insiders", "User", "chatLanguageModels.json")
+    ];
+    for (const wv of winVariants) {
+      if (!paths.includes(wv)) {
+        paths.push(wv);
+      }
+    }
     for (const prefix of ["\\\\wsl.localhost", "\\\\wsl$"]) {
       try {
-        if (fs2.existsSync(prefix)) {
-          for (const distro of fs2.readdirSync(prefix)) {
-            const home = path2.join(prefix, distro, "home");
-            if (fs2.existsSync(home)) {
-              for (const u of fs2.readdirSync(home)) {
-                const wslPaths = [
-                  path2.join(home, u, ".vscode-server", "data", "User", "chatLanguageModels.json"),
-                  path2.join(home, u, ".vscode-server-insiders", "data", "User", "chatLanguageModels.json"),
-                  path2.join(home, u, ".config", "Code", "User", "chatLanguageModels.json")
-                ];
-                for (const wp of wslPaths) {
-                  if (!paths.includes(wp)) {
-                    paths.push(wp);
-                  }
+        if (fs.existsSync(prefix)) {
+          let distros = [];
+          try {
+            distros = fs.readdirSync(prefix);
+          } catch {
+          }
+          for (const distro of distros) {
+            const userHomes = [];
+            const home = path.join(prefix, distro, "home");
+            if (fs.existsSync(home)) {
+              try {
+                for (const u of fs.readdirSync(home)) {
+                  userHomes.push(path.join(home, u));
+                }
+              } catch {
+              }
+            }
+            const rootHome = path.join(prefix, distro, "root");
+            if (fs.existsSync(rootHome)) {
+              userHomes.push(rootHome);
+            }
+            for (const h of userHomes) {
+              const wslPaths = [
+                path.join(h, ".vscode-server", "data", "User", "chatLanguageModels.json"),
+                path.join(h, ".vscode-server", "data", "Machine", "chatLanguageModels.json"),
+                path.join(h, ".vscode-server-insiders", "data", "User", "chatLanguageModels.json"),
+                path.join(h, ".vscode-server-insiders", "data", "Machine", "chatLanguageModels.json"),
+                path.join(h, ".config", "Code", "User", "chatLanguageModels.json"),
+                path.join(h, ".config", "Code - Insiders", "User", "chatLanguageModels.json")
+              ];
+              for (const wp of wslPaths) {
+                if (!paths.includes(wp)) {
+                  paths.push(wp);
                 }
               }
             }
@@ -522,11 +516,11 @@ function getAllChatLanguageModelsPaths(activeExtensionStoragePath) {
 }
 function readChatLanguageModels(targetPath) {
   const filePath = targetPath || getChatLanguageModelsPath();
-  if (!fs2.existsSync(filePath)) {
+  if (!fs.existsSync(filePath)) {
     return [];
   }
   try {
-    const raw = fs2.readFileSync(filePath, "utf-8");
+    const raw = fs.readFileSync(filePath, "utf-8");
     if (!raw.trim()) {
       return [];
     }
@@ -537,21 +531,21 @@ function readChatLanguageModels(targetPath) {
   }
 }
 function createBackup(filePath) {
-  if (!fs2.existsSync(filePath)) {
+  if (!fs.existsSync(filePath)) {
     return null;
   }
-  const dir = path2.dirname(filePath);
-  const baseName = path2.basename(filePath);
+  const dir = path.dirname(filePath);
+  const baseName = path.basename(filePath);
   const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  const backupPath = path2.join(dir, `${baseName}.bak-${timestamp}`);
-  fs2.copyFileSync(filePath, backupPath);
+  const backupPath = path.join(dir, `${baseName}.bak-${timestamp}`);
+  fs.copyFileSync(filePath, backupPath);
   try {
-    const files = fs2.readdirSync(dir);
+    const files = fs.readdirSync(dir);
     const backups = files.filter((f) => f.startsWith(`${baseName}.bak-`)).sort().reverse();
     if (backups.length > 3) {
       for (const old of backups.slice(3)) {
         try {
-          fs2.unlinkSync(path2.join(dir, old));
+          fs.unlinkSync(path.join(dir, old));
         } catch {
         }
       }
@@ -571,11 +565,11 @@ function writeProvidersToConfig(providers, targetPath, storagePath) {
       if (!primaryBackup) {
         primaryBackup = backupPath;
       }
-      const dir = path2.dirname(filePath);
-      if (!fs2.existsSync(dir)) {
-        fs2.mkdirSync(dir, { recursive: true });
+      const dir = path.dirname(filePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
       }
-      fs2.writeFileSync(filePath, JSON.stringify(mergedConfig, null, 4), "utf-8");
+      fs.writeFileSync(filePath, JSON.stringify(mergedConfig, null, 4), "utf-8");
     } catch (err) {
       console.error(`Failed writing to ${filePath}: ${err.message}`);
     }
@@ -603,7 +597,8 @@ async function syncOpenCodeModels(apiKey, options = {}) {
     try {
       hasZenCredits = await checkZenBalance(apiKey);
       if (hasZenCredits) {
-        zenModelIds = await fetchOpenCodeModels(apiKey, "zen");
+        const rawZenIds = await fetchOpenCodeModels(apiKey, "zen");
+        zenModelIds = filterAvailableGoModels(rawZenIds);
       } else {
         console.log("No active Zen credit balance detected. Skipping paid Zen catalog to avoid 401 retry timeouts.");
       }
@@ -618,7 +613,7 @@ async function syncOpenCodeModels(apiKey, options = {}) {
   }
   let zenCount = 0;
   for (const id of zenModelIds) {
-    if (!goSet.has(id)) {
+    if (!goSet.has(id) && !KNOWN_UNAVAILABLE_MODELS.has(id) && !id.startsWith("muse-")) {
       const isFree = filterFreeModels([id]).length > 0;
       models.push(enrichModel(id, { isGo: false, isFree }));
       zenCount++;
@@ -642,6 +637,197 @@ async function syncOpenCodeModels(apiKey, options = {}) {
     targetPath,
     backupPath
   };
+}
+
+// src/auth.ts
+var SECRET_KEY = "opencode_api_key";
+function getStoredOpenCodeKey(customPath) {
+  if (customPath) {
+    try {
+      if (fs2.existsSync(customPath)) {
+        const raw = fs2.readFileSync(customPath, "utf-8");
+        const data = JSON.parse(raw);
+        const key = data["opencode-go"]?.key || data["opencode"]?.key;
+        if (typeof key === "string" && key.trim().length > 0) {
+          return key.trim();
+        }
+      }
+    } catch {
+    }
+    return null;
+  }
+  const candidatePaths = [];
+  const home = os2.homedir();
+  candidatePaths.push(path2.join(home, ".local", "share", "opencode", "auth.json"));
+  candidatePaths.push(path2.join(home, ".config", "opencode", "auth.json"));
+  if (process.env.LOCALAPPDATA) {
+    candidatePaths.push(path2.join(process.env.LOCALAPPDATA, "opencode", "auth.json"));
+  }
+  if (process.env.APPDATA) {
+    candidatePaths.push(path2.join(process.env.APPDATA, "opencode", "auth.json"));
+  }
+  if (process.env.USERPROFILE) {
+    candidatePaths.push(path2.join(process.env.USERPROFILE, ".local", "share", "opencode", "auth.json"));
+    candidatePaths.push(path2.join(process.env.USERPROFILE, ".config", "opencode", "auth.json"));
+  }
+  if (process.platform === "win32") {
+    for (const prefix of ["\\\\wsl.localhost", "\\\\wsl$"]) {
+      try {
+        if (fs2.existsSync(prefix)) {
+          let distros = [];
+          try {
+            distros = fs2.readdirSync(prefix);
+          } catch {
+          }
+          for (const distro of distros) {
+            const homeDir = path2.join(prefix, distro, "home");
+            if (fs2.existsSync(homeDir)) {
+              let users = [];
+              try {
+                users = fs2.readdirSync(homeDir);
+              } catch {
+              }
+              for (const u of users) {
+                candidatePaths.push(path2.join(homeDir, u, ".local", "share", "opencode", "auth.json"));
+                candidatePaths.push(path2.join(homeDir, u, ".config", "opencode", "auth.json"));
+              }
+            }
+            const rootDir = path2.join(prefix, distro, "root");
+            if (fs2.existsSync(rootDir)) {
+              candidatePaths.push(path2.join(rootDir, ".local", "share", "opencode", "auth.json"));
+              candidatePaths.push(path2.join(rootDir, ".config", "opencode", "auth.json"));
+            }
+          }
+        }
+      } catch {
+      }
+    }
+  }
+  if (process.platform === "linux") {
+    const userRoots = ["/mnt/c/Users", "/mnt/d/Users", "/mnt/e/Users", "/c/Users", "/d/Users"];
+    for (const root of userRoots) {
+      if (fs2.existsSync(root)) {
+        let users = [];
+        try {
+          users = fs2.readdirSync(root);
+        } catch {
+        }
+        for (const u of users) {
+          if (["Public", "Default", "Default User", "All Users"].includes(u) || u.startsWith(".")) continue;
+          candidatePaths.push(path2.join(root, u, "AppData", "Local", "opencode", "auth.json"));
+          candidatePaths.push(path2.join(root, u, "AppData", "Roaming", "opencode", "auth.json"));
+          candidatePaths.push(path2.join(root, u, ".local", "share", "opencode", "auth.json"));
+          candidatePaths.push(path2.join(root, u, ".config", "opencode", "auth.json"));
+        }
+      }
+    }
+  }
+  for (const authPath of candidatePaths) {
+    try {
+      if (fs2.existsSync(authPath)) {
+        const raw = fs2.readFileSync(authPath, "utf-8");
+        const data = JSON.parse(raw);
+        const key = data["opencode-go"]?.key || data["opencode"]?.key;
+        if (typeof key === "string" && key.trim().length > 0) {
+          return key.trim();
+        }
+      }
+    } catch {
+    }
+  }
+  return null;
+}
+function getKeyFromExistingConfig(customPath) {
+  const pathsToCheck = [];
+  if (customPath) {
+    pathsToCheck.push(customPath);
+  } else {
+    try {
+      pathsToCheck.push(...getAllChatLanguageModelsPaths());
+    } catch {
+      const fallback = process.platform === "darwin" ? path2.join(os2.homedir(), "Library", "Application Support", "Code", "User", "chatLanguageModels.json") : process.platform === "win32" ? path2.join(process.env.APPDATA || path2.join(os2.homedir(), "AppData", "Roaming"), "Code", "User", "chatLanguageModels.json") : path2.join(os2.homedir(), ".config", "Code", "User", "chatLanguageModels.json");
+      pathsToCheck.push(fallback);
+    }
+  }
+  for (const configPath of pathsToCheck) {
+    try {
+      if (fs2.existsSync(configPath)) {
+        const raw = fs2.readFileSync(configPath, "utf-8");
+        const data = JSON.parse(raw);
+        if (Array.isArray(data)) {
+          const entry = data.find(
+            (e) => e && (e.name === "OpenCode" || e.name === "OpenCode Go" || e.name === "OpenCode Zen Free" || /^(customprovider|custom endpoint|customendpoint)$/i.test(e.name || "") || Array.isArray(e.models) && e.models.some((m) => typeof m?.url === "string" && m.url.includes("opencode.ai")))
+          );
+          if (entry?.apiKey && typeof entry.apiKey === "string" && entry.apiKey.trim().startsWith("sk-")) {
+            return entry.apiKey.trim();
+          }
+        }
+      }
+    } catch {
+    }
+  }
+  return null;
+}
+async function resolveApiKey(secrets, promptIfMissing = true, vscodeWindow) {
+  const stored = await secrets.get(SECRET_KEY);
+  if (stored && stored.trim().length > 0) {
+    return stored.trim();
+  }
+  const autoFound = getStoredOpenCodeKey();
+  if (autoFound) {
+    await secrets.store(SECRET_KEY, autoFound);
+    return autoFound;
+  }
+  const fromExisting = getKeyFromExistingConfig();
+  if (fromExisting) {
+    await secrets.store(SECRET_KEY, fromExisting);
+    return fromExisting;
+  }
+  if (promptIfMissing && vscodeWindow) {
+    const entered = await vscodeWindow.showInputBox({
+      title: "OpenCode API Key",
+      prompt: "Enter your OpenCode API Key (starts with sk-)",
+      password: true,
+      ignoreFocusOut: true,
+      validateInput: (value) => {
+        if (!value || value.trim().length === 0) {
+          return "API Key cannot be empty";
+        }
+        if (!value.trim().startsWith("sk-")) {
+          return "OpenCode API keys typically start with sk-";
+        }
+        return null;
+      }
+    });
+    if (entered && entered.trim().length > 0) {
+      const cleanKey = entered.trim();
+      await secrets.store(SECRET_KEY, cleanKey);
+      return cleanKey;
+    }
+  }
+  return void 0;
+}
+async function promptAndSetApiKey(secrets, vscodeWindow) {
+  const currentKey = await secrets.get(SECRET_KEY);
+  const entered = await vscodeWindow.showInputBox({
+    title: "OpenCode API Key",
+    prompt: "Enter your OpenCode API Key (starts with sk-)",
+    value: currentKey || "",
+    password: true,
+    ignoreFocusOut: true,
+    validateInput: (value) => {
+      if (!value || value.trim().length === 0) {
+        return "API Key cannot be empty";
+      }
+      return null;
+    }
+  });
+  if (entered && entered.trim().length > 0) {
+    const cleanKey = entered.trim();
+    await secrets.store(SECRET_KEY, cleanKey);
+    return cleanKey;
+  }
+  return void 0;
 }
 
 // src/usage.ts
@@ -819,7 +1005,7 @@ async function activate(context) {
       }
     }),
     vscode.commands.registerCommand("opencode-copilot-sync.openConfig", async () => {
-      const p = getChatLanguageModelsPath();
+      const p = getChatLanguageModelsPath(context.globalStorageUri?.fsPath);
       try {
         const doc = await vscode.workspace.openTextDocument(p);
         await vscode.window.showTextDocument(doc);

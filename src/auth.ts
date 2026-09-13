@@ -1,7 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import * as cp from 'node:child_process';
 import type * as vscode from 'vscode';
+import { getAllChatLanguageModelsPaths } from './syncer.js';
 
 export const SECRET_KEY = 'opencode_api_key';
 
@@ -27,12 +29,16 @@ export function getStoredOpenCodeKey(customPath?: string): string | null {
   candidatePaths.push(path.join(home, '.local', 'share', 'opencode', 'auth.json'));
   candidatePaths.push(path.join(home, '.config', 'opencode', 'auth.json'));
 
-  // 2. Windows-specific local AppData
+  // 2. Windows-specific local AppData / UserProfile
   if (process.env.LOCALAPPDATA) {
     candidatePaths.push(path.join(process.env.LOCALAPPDATA, 'opencode', 'auth.json'));
   }
   if (process.env.APPDATA) {
     candidatePaths.push(path.join(process.env.APPDATA, 'opencode', 'auth.json'));
+  }
+  if (process.env.USERPROFILE) {
+    candidatePaths.push(path.join(process.env.USERPROFILE, '.local', 'share', 'opencode', 'auth.json'));
+    candidatePaths.push(path.join(process.env.USERPROFILE, '.config', 'opencode', 'auth.json'));
   }
 
   // 3. If running on Windows, also check WSL network shares
@@ -40,14 +46,26 @@ export function getStoredOpenCodeKey(customPath?: string): string | null {
     for (const prefix of ['\\\\wsl.localhost', '\\\\wsl$']) {
       try {
         if (fs.existsSync(prefix)) {
-          const distros = fs.readdirSync(prefix);
+          let distros: string[] = [];
+          try {
+            distros = fs.readdirSync(prefix);
+          } catch {}
           for (const distro of distros) {
             const homeDir = path.join(prefix, distro, 'home');
             if (fs.existsSync(homeDir)) {
-              for (const u of fs.readdirSync(homeDir)) {
+              let users: string[] = [];
+              try {
+                users = fs.readdirSync(homeDir);
+              } catch {}
+              for (const u of users) {
                 candidatePaths.push(path.join(homeDir, u, '.local', 'share', 'opencode', 'auth.json'));
                 candidatePaths.push(path.join(homeDir, u, '.config', 'opencode', 'auth.json'));
               }
+            }
+            const rootDir = path.join(prefix, distro, 'root');
+            if (fs.existsSync(rootDir)) {
+              candidatePaths.push(path.join(rootDir, '.local', 'share', 'opencode', 'auth.json'));
+              candidatePaths.push(path.join(rootDir, '.config', 'opencode', 'auth.json'));
             }
           }
         }
@@ -55,17 +73,24 @@ export function getStoredOpenCodeKey(customPath?: string): string | null {
     }
   }
 
-  // 4. If running inside WSL, also check Windows user directories
-  if (process.platform === 'linux' && fs.existsSync('/mnt/c/Users')) {
-    try {
-      for (const u of fs.readdirSync('/mnt/c/Users')) {
-        if (['Public', 'Default', 'Default User', 'All Users'].includes(u) || u.startsWith('.')) continue;
-        candidatePaths.push(path.join('/mnt/c/Users', u, 'AppData', 'Local', 'opencode', 'auth.json'));
-        candidatePaths.push(path.join('/mnt/c/Users', u, 'AppData', 'Roaming', 'opencode', 'auth.json'));
-        candidatePaths.push(path.join('/mnt/c/Users', u, '.local', 'share', 'opencode', 'auth.json'));
-        candidatePaths.push(path.join('/mnt/c/Users', u, '.config', 'opencode', 'auth.json'));
+  // 4. If running inside Linux/WSL, also check Windows user directories across mounts
+  if (process.platform === 'linux') {
+    const userRoots = ['/mnt/c/Users', '/mnt/d/Users', '/mnt/e/Users', '/c/Users', '/d/Users'];
+    for (const root of userRoots) {
+      if (fs.existsSync(root)) {
+        let users: string[] = [];
+        try {
+          users = fs.readdirSync(root);
+        } catch {}
+        for (const u of users) {
+          if (['Public', 'Default', 'Default User', 'All Users'].includes(u) || u.startsWith('.')) continue;
+          candidatePaths.push(path.join(root, u, 'AppData', 'Local', 'opencode', 'auth.json'));
+          candidatePaths.push(path.join(root, u, 'AppData', 'Roaming', 'opencode', 'auth.json'));
+          candidatePaths.push(path.join(root, u, '.local', 'share', 'opencode', 'auth.json'));
+          candidatePaths.push(path.join(root, u, '.config', 'opencode', 'auth.json'));
+        }
       }
-    } catch {}
+    }
   }
 
   for (const authPath of candidatePaths) {
@@ -85,26 +110,46 @@ export function getStoredOpenCodeKey(customPath?: string): string | null {
 }
 
 export function getKeyFromExistingConfig(customPath?: string): string | null {
-  try {
-    const configPath =
-      customPath ||
-      (process.platform === 'darwin'
-        ? path.join(os.homedir(), 'Library', 'Application Support', 'Code', 'User', 'chatLanguageModels.json')
-        : process.platform === 'win32'
-          ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Code', 'User', 'chatLanguageModels.json')
-          : path.join(os.homedir(), '.config', 'Code', 'User', 'chatLanguageModels.json'));
+  const pathsToCheck: string[] = [];
+  if (customPath) {
+    pathsToCheck.push(customPath);
+  } else {
+    try {
+      pathsToCheck.push(...getAllChatLanguageModelsPaths());
+    } catch {
+      const fallback =
+        process.platform === 'darwin'
+          ? path.join(os.homedir(), 'Library', 'Application Support', 'Code', 'User', 'chatLanguageModels.json')
+          : process.platform === 'win32'
+            ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Code', 'User', 'chatLanguageModels.json')
+            : path.join(os.homedir(), '.config', 'Code', 'User', 'chatLanguageModels.json');
+      pathsToCheck.push(fallback);
+    }
+  }
 
-    if (fs.existsSync(configPath)) {
-      const raw = fs.readFileSync(configPath, 'utf-8');
-      const data = JSON.parse(raw);
-      if (Array.isArray(data)) {
-        const entry = data.find((e) => e && (e.name === 'OpenCode' || e.name === 'OpenCode Go'));
-        if (entry?.apiKey && typeof entry.apiKey === 'string' && entry.apiKey.trim().startsWith('sk-')) {
-          return entry.apiKey.trim();
+  for (const configPath of pathsToCheck) {
+    try {
+      if (fs.existsSync(configPath)) {
+        const raw = fs.readFileSync(configPath, 'utf-8');
+        const data = JSON.parse(raw);
+        if (Array.isArray(data)) {
+          const entry = data.find(
+            (e) =>
+              e &&
+              (e.name === 'OpenCode' ||
+                e.name === 'OpenCode Go' ||
+                e.name === 'OpenCode Zen Free' ||
+                /^(customprovider|custom endpoint|customendpoint)$/i.test(e.name || '') ||
+                (Array.isArray(e.models) &&
+                  e.models.some((m: any) => typeof m?.url === 'string' && m.url.includes('opencode.ai'))))
+          );
+          if (entry?.apiKey && typeof entry.apiKey === 'string' && entry.apiKey.trim().startsWith('sk-')) {
+            return entry.apiKey.trim();
+          }
         }
       }
-    }
-  } catch {}
+    } catch {}
+  }
   return null;
 }
 

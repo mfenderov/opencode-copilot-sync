@@ -36,3 +36,17 @@ test('filterAvailableGoModels filters out known broken/unavailable models', () =
     'minimax-m3'
   ]);
 });
+
+test('filterAvailableGoModels filters out muse models including muse-spark-1.3-contributor-free', () => {
+  const models = [
+    'kimi-k3',
+    'muse-spark-1.3-contributor-free',
+    'muse-spark-1.2-contributor-free',
+    'muse-spark-1.3-contributor',
+    'muse-spark-1.3',
+    'big-pickle'
+  ];
+  const available = filterAvailableGoModels(models);
+  assert.deepEqual(available, ['kimi-k3', 'big-pickle']);
+});
+

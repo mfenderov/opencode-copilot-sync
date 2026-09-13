@@ -11,6 +11,12 @@ test('getChatLanguageModelsPath returns a path ending in chatLanguageModels.json
   assert.ok(p.endsWith('chatLanguageModels.json'));
 });
 
+test('getChatLanguageModelsPath derives server path from activeExtensionStoragePath', () => {
+  const mockServerStorage = path.join(os.homedir(), '.vscode-server', 'data', 'User', 'globalStorage', 'mfenderov.opencode-copilot-sync');
+  const derived = getChatLanguageModelsPath(mockServerStorage);
+  assert.equal(derived, path.join(os.homedir(), '.vscode-server', 'data', 'User', 'chatLanguageModels.json'));
+});
+
 test('getAllChatLanguageModelsPaths includes candidates', () => {
   const paths = getAllChatLanguageModelsPaths();
   assert.ok(paths.length >= 1);

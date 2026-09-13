@@ -26,13 +26,38 @@ export function buildProviderEntry(
   };
 }
 
+export function isOpenCodeLegacyOrCustomEntry(entry: any): boolean {
+  if (!entry || entry.vendor !== 'customendpoint') {
+    return false;
+  }
+  const name = typeof entry.name === 'string' ? entry.name.trim() : '';
+  if (name === 'OpenCode Go' || name === 'OpenCode Zen Free') {
+    return true;
+  }
+  const hasOpenCodeModels =
+    Array.isArray(entry.models) &&
+    entry.models.some((m: any) => typeof m?.url === 'string' && m.url.includes('opencode.ai'));
+
+  if (hasOpenCodeModels) {
+    return true;
+  }
+
+  if (/^(customprovider|custom endpoint|customendpoint)$/i.test(name)) {
+    if (typeof entry.apiKey === 'string' && entry.apiKey.trim().startsWith('sk-')) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export function mergeChatLanguageModels(
   existingConfig: any[],
   newProviders: ProviderEntry[]
 ): any[] {
   const addingUnifiedOpenCode = newProviders.some((p) => p.name === 'OpenCode');
   const result = existingConfig.filter((entry) => {
-    if (addingUnifiedOpenCode && (entry?.name === 'OpenCode Go' || entry?.name === 'OpenCode Zen Free')) {
+    if (addingUnifiedOpenCode && isOpenCodeLegacyOrCustomEntry(entry) && entry?.name !== 'OpenCode') {
       return false;
     }
     return true;
@@ -48,9 +73,17 @@ export function mergeChatLanguageModels(
       const incomingModels = newProvider.models || [];
       const modelsToKeep = incomingModels.length > 0 ? incomingModels : existingModels;
 
+      // Preserve SecretStorage reference if VS Code migrated apiKey to ${input:...}
+      const existingApiKey = result[idx].apiKey;
+      const apiKey =
+        typeof existingApiKey === 'string' && existingApiKey.startsWith('${input:')
+          ? existingApiKey
+          : newProvider.apiKey;
+
       result[idx] = {
         ...result[idx],
         ...newProvider,
+        apiKey,
         models: modelsToKeep,
       };
     } else {

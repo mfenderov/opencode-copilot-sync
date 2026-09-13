@@ -132,7 +132,7 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     }),
     vscode.commands.registerCommand('opencode-copilot-sync.openConfig', async () => {
-      const p = getChatLanguageModelsPath();
+      const p = getChatLanguageModelsPath(context.globalStorageUri?.fsPath);
       try {
         const doc = await vscode.workspace.openTextDocument(p);
         await vscode.window.showTextDocument(doc);

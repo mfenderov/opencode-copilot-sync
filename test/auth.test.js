@@ -38,3 +38,33 @@ test('getKeyFromExistingConfig extracts valid OpenCode API key from chatLanguage
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+test('getKeyFromExistingConfig extracts key from Customprovider or Custom Endpoint entry', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-auth-test-custom-'));
+  const testFile = path.join(tmpDir, 'chatLanguageModels.json');
+  const dummy = [
+    {
+      name: 'Customprovider',
+      vendor: 'customendpoint',
+      apiKey: 'sk-custom-provider-key-999',
+      models: [{ id: 'deepseek-v4-flash', url: 'https://opencode.ai/zen/go/v1/chat/completions' }]
+    }
+  ];
+  fs.writeFileSync(testFile, JSON.stringify(dummy), 'utf-8');
+
+  const key = getKeyFromExistingConfig(testFile);
+  assert.equal(key, 'sk-custom-provider-key-999');
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test('getKeyFromExistingConfig returns null if file has no matching provider or key', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-auth-test-empty-'));
+  const testFile = path.join(tmpDir, 'chatLanguageModels.json');
+  fs.writeFileSync(testFile, JSON.stringify([{ name: 'Other', apiKey: 'sk-other' }]), 'utf-8');
+
+  const key = getKeyFromExistingConfig(testFile);
+  assert.equal(key, null);
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+

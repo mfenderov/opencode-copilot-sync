@@ -4,13 +4,17 @@ import * as os from 'node:os';
 import * as cp from 'node:child_process';
 import { buildProviderEntry, mergeChatLanguageModels, type ProviderEntry } from './config.js';
 import { enrichModel } from './enricher.js';
-import { fetchOpenCodeModels, filterFreeModels, filterAvailableGoModels, checkZenBalance } from './fetcher.js';
+import { fetchOpenCodeModels, filterFreeModels, filterAvailableGoModels, checkZenBalance, KNOWN_UNAVAILABLE_MODELS } from './fetcher.js';
 
 export function getChatLanguageModelsPath(activeExtensionStoragePath?: string): string {
   if (activeExtensionStoragePath) {
     try {
       const derived = path.resolve(activeExtensionStoragePath, '..', '..', 'chatLanguageModels.json');
-      if (fs.existsSync(path.dirname(derived))) {
+      if (
+        fs.existsSync(path.dirname(derived)) ||
+        activeExtensionStoragePath.includes('.vscode-server') ||
+        activeExtensionStoragePath.includes('Code')
+      ) {
         return derived;
       }
     } catch {}
@@ -26,13 +30,20 @@ export function getChatLanguageModelsPath(activeExtensionStoragePath?: string): 
   }
 
   // Linux / WSL: check if VS Code Server data directory exists
-  const serverPath = path.join(os.homedir(), '.vscode-server', 'data', 'User', 'chatLanguageModels.json');
-  if (fs.existsSync(path.dirname(serverPath))) {
+  const serverDir = path.join(os.homedir(), '.vscode-server');
+  const serverPath = path.join(serverDir, 'data', 'User', 'chatLanguageModels.json');
+  if (fs.existsSync(serverDir) || fs.existsSync(path.dirname(serverPath))) {
     return serverPath;
   }
-  const serverInsidersPath = path.join(os.homedir(), '.vscode-server-insiders', 'data', 'User', 'chatLanguageModels.json');
-  if (fs.existsSync(path.dirname(serverInsidersPath))) {
+  const serverInsidersDir = path.join(os.homedir(), '.vscode-server-insiders');
+  const serverInsidersPath = path.join(serverInsidersDir, 'data', 'User', 'chatLanguageModels.json');
+  if (fs.existsSync(serverInsidersDir) || fs.existsSync(path.dirname(serverInsidersPath))) {
     return serverInsidersPath;
+  }
+
+  // If in WSL, default to .vscode-server even if not yet created on disk
+  if (isWSL()) {
+    return serverPath;
   }
 
   return path.join(os.homedir(), '.config', 'Code', 'User', 'chatLanguageModels.json');
@@ -50,7 +61,40 @@ export function isWSL(): boolean {
 }
 
 export function syncWslMirror(sourceFilePath: string): void {
-  if (process.platform !== 'win32') return;
+  if (process.platform !== 'win32') {
+    // If running inside WSL, mirror back to Windows host AppData
+    if (isWSL()) {
+      try {
+        const potentialUserRoots = [
+          '/mnt/c/Users',
+          '/mnt/d/Users',
+          '/mnt/e/Users',
+          '/c/Users',
+          '/d/Users',
+        ];
+        for (const mntUsers of potentialUserRoots) {
+          if (fs.existsSync(mntUsers)) {
+            let userDirs: string[] = [];
+            try {
+              userDirs = fs.readdirSync(mntUsers);
+            } catch {}
+            for (const user of userDirs) {
+              if (['Public', 'Default', 'Default User', 'All Users'].includes(user) || user.startsWith('.')) continue;
+              for (const variant of ['Code', 'Code - Insiders']) {
+                const winDest = path.join(mntUsers, user, 'AppData', 'Roaming', variant, 'User', 'chatLanguageModels.json');
+                const winDir = path.dirname(winDest);
+                if (!fs.existsSync(winDir)) {
+                  fs.mkdirSync(winDir, { recursive: true });
+                }
+                fs.copyFileSync(sourceFilePath, winDest);
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+    return;
+  }
 
   try {
     const driveMatch = sourceFilePath.match(/^([A-Za-z]):\\(.*)$/);
@@ -60,8 +104,50 @@ export function syncWslMirror(sourceFilePath: string): void {
     const rest = driveMatch[2].replace(/\\/g, '/');
     const wslSourcePath = `/mnt/${driveLetter}/${rest}`;
 
-    const cmd = `mkdir -p ~/.vscode-server/data/User ~/.config/Code/User && cp "${wslSourcePath}" ~/.vscode-server/data/User/chatLanguageModels.json && cp "${wslSourcePath}" ~/.config/Code/User/chatLanguageModels.json`;
-    cp.exec(`wsl.exe -e bash -c "${cmd}"`, () => {});
+    const subDirs = [
+      '.vscode-server/data/User',
+      '.vscode-server/data/Machine',
+      '.vscode-server-insiders/data/User',
+      '.vscode-server-insiders/data/Machine',
+      '.config/Code/User',
+      '.config/Code - Insiders/User',
+    ];
+    const mkdirCommands = subDirs.map((d) => `mkdir -p ~/"${d}"`).join(' && ');
+    const cpCommands = subDirs.map((d) => `cp "${wslSourcePath}" ~/"${d}/chatLanguageModels.json"`).join(' && ');
+    const fullCmd = `${mkdirCommands} && ${cpCommands}`;
+
+    // 1. Enumerate all installed WSL distributions via wsl.exe -l -q
+    try {
+      cp.exec('wsl.exe -l -q', { encoding: 'buffer', timeout: 5000 }, (err, stdout) => {
+        const distros: string[] = [];
+        if (!err && stdout) {
+          // wsl.exe -l -q outputs UTF-16LE or UTF-8
+          const text = stdout.toString('utf16le').includes('\0')
+            ? stdout.toString('utf8')
+            : stdout.toString('utf16le');
+          const clean = text
+            .replace(/\0/g, '')
+            .split(/\r?\n/)
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0 && !s.includes('Windows Subsystem') && !s.startsWith('-'));
+          for (const d of clean) {
+            if (!distros.includes(d)) distros.push(d);
+          }
+        }
+
+        // If distros found, mirror to each specific distro
+        if (distros.length > 0) {
+          for (const distro of distros) {
+            cp.exec(`wsl.exe -d "${distro}" -e bash -c "${fullCmd}"`, () => {});
+          }
+        }
+        // Always also run against default distro as fallback
+        cp.exec(`wsl.exe -e bash -c "${fullCmd}"`, () => {});
+      });
+    } catch {
+      // Fallback: run on default distro
+      cp.exec(`wsl.exe -e bash -c "${fullCmd}"`, () => {});
+    }
   } catch {}
 }
 
@@ -70,11 +156,13 @@ export function getAllChatLanguageModelsPaths(activeExtensionStoragePath?: strin
   const primary = getChatLanguageModelsPath(activeExtensionStoragePath);
   paths.push(primary);
 
-  // Linux / WSL: unconditionally include all possible server and client locations
+  // Linux / WSL: unconditionally include all possible server (User + Machine) and client locations
   if (process.platform === 'linux') {
     const serverCandidates = [
       path.join(os.homedir(), '.vscode-server', 'data', 'User', 'chatLanguageModels.json'),
+      path.join(os.homedir(), '.vscode-server', 'data', 'Machine', 'chatLanguageModels.json'),
       path.join(os.homedir(), '.vscode-server-insiders', 'data', 'User', 'chatLanguageModels.json'),
+      path.join(os.homedir(), '.vscode-server-insiders', 'data', 'Machine', 'chatLanguageModels.json'),
       path.join(os.homedir(), '.config', 'Code', 'User', 'chatLanguageModels.json'),
       path.join(os.homedir(), '.config', 'Code - Insiders', 'User', 'chatLanguageModels.json'),
     ];
@@ -87,14 +175,26 @@ export function getAllChatLanguageModelsPaths(activeExtensionStoragePath?: strin
 
   if (isWSL()) {
     try {
-      const mntCUsers = '/mnt/c/Users';
-      if (fs.existsSync(mntCUsers)) {
-        for (const user of fs.readdirSync(mntCUsers)) {
-          if (['Public', 'Default', 'Default User', 'All Users'].includes(user) || user.startsWith('.')) continue;
-          for (const variant of ['Code', 'Code - Insiders']) {
-            const winPath = path.join(mntCUsers, user, 'AppData', 'Roaming', variant, 'User', 'chatLanguageModels.json');
-            if (!paths.includes(winPath)) {
-              paths.push(winPath);
+      const potentialUserRoots = [
+        '/mnt/c/Users',
+        '/mnt/d/Users',
+        '/mnt/e/Users',
+        '/c/Users',
+        '/d/Users',
+      ];
+      for (const mntUsers of potentialUserRoots) {
+        if (fs.existsSync(mntUsers)) {
+          let userDirs: string[] = [];
+          try {
+            userDirs = fs.readdirSync(mntUsers);
+          } catch {}
+          for (const user of userDirs) {
+            if (['Public', 'Default', 'Default User', 'All Users'].includes(user) || user.startsWith('.')) continue;
+            for (const variant of ['Code', 'Code - Insiders']) {
+              const winPath = path.join(mntUsers, user, 'AppData', 'Roaming', variant, 'User', 'chatLanguageModels.json');
+              if (!paths.includes(winPath)) {
+                paths.push(winPath);
+              }
             }
           }
         }
@@ -102,24 +202,53 @@ export function getAllChatLanguageModelsPaths(activeExtensionStoragePath?: strin
     } catch {}
   }
 
-  // Windows host checking WSL network shares
+  // Windows host checking local AppData variants and WSL network shares
   if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+    const winVariants = [
+      path.join(appData, 'Code', 'User', 'chatLanguageModels.json'),
+      path.join(appData, 'Code - Insiders', 'User', 'chatLanguageModels.json'),
+    ];
+    for (const wv of winVariants) {
+      if (!paths.includes(wv)) {
+        paths.push(wv);
+      }
+    }
+
     for (const prefix of ['\\\\wsl.localhost', '\\\\wsl$']) {
       try {
         if (fs.existsSync(prefix)) {
-          for (const distro of fs.readdirSync(prefix)) {
+          let distros: string[] = [];
+          try {
+            distros = fs.readdirSync(prefix);
+          } catch {}
+          for (const distro of distros) {
+            const userHomes: string[] = [];
             const home = path.join(prefix, distro, 'home');
             if (fs.existsSync(home)) {
-              for (const u of fs.readdirSync(home)) {
-                const wslPaths = [
-                  path.join(home, u, '.vscode-server', 'data', 'User', 'chatLanguageModels.json'),
-                  path.join(home, u, '.vscode-server-insiders', 'data', 'User', 'chatLanguageModels.json'),
-                  path.join(home, u, '.config', 'Code', 'User', 'chatLanguageModels.json'),
-                ];
-                for (const wp of wslPaths) {
-                  if (!paths.includes(wp)) {
-                    paths.push(wp);
-                  }
+              try {
+                for (const u of fs.readdirSync(home)) {
+                  userHomes.push(path.join(home, u));
+                }
+              } catch {}
+            }
+            const rootHome = path.join(prefix, distro, 'root');
+            if (fs.existsSync(rootHome)) {
+              userHomes.push(rootHome);
+            }
+
+            for (const h of userHomes) {
+              const wslPaths = [
+                path.join(h, '.vscode-server', 'data', 'User', 'chatLanguageModels.json'),
+                path.join(h, '.vscode-server', 'data', 'Machine', 'chatLanguageModels.json'),
+                path.join(h, '.vscode-server-insiders', 'data', 'User', 'chatLanguageModels.json'),
+                path.join(h, '.vscode-server-insiders', 'data', 'Machine', 'chatLanguageModels.json'),
+                path.join(h, '.config', 'Code', 'User', 'chatLanguageModels.json'),
+                path.join(h, '.config', 'Code - Insiders', 'User', 'chatLanguageModels.json'),
+              ];
+              for (const wp of wslPaths) {
+                if (!paths.includes(wp)) {
+                  paths.push(wp);
                 }
               }
             }
@@ -243,7 +372,8 @@ export async function syncOpenCodeModels(
     try {
       hasZenCredits = await checkZenBalance(apiKey);
       if (hasZenCredits) {
-        zenModelIds = await fetchOpenCodeModels(apiKey, 'zen');
+        const rawZenIds = await fetchOpenCodeModels(apiKey, 'zen');
+        zenModelIds = filterAvailableGoModels(rawZenIds);
       } else {
         console.log('No active Zen credit balance detected. Skipping paid Zen catalog to avoid 401 retry timeouts.');
       }
@@ -263,7 +393,7 @@ export async function syncOpenCodeModels(
   // Zen models that are NOT in Go (only added if user has Zen balance)
   let zenCount = 0;
   for (const id of zenModelIds) {
-    if (!goSet.has(id)) {
+    if (!goSet.has(id) && !KNOWN_UNAVAILABLE_MODELS.has(id) && !id.startsWith('muse-')) {
       const isFree = filterFreeModels([id]).length > 0;
       models.push(enrichModel(id, { isGo: false, isFree }));
       zenCount++;
