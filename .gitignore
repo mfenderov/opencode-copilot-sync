@@ -3,3 +3,6 @@ out/
 *.bak*
 *.vsix
 .DS_Store
+.vscode-test/
+.test-user-data/
+.test-extensions/
