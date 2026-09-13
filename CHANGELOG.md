@@ -2,12 +2,18 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.8.0 - 2026-09-13
+#### Features
+- first-class native Language Model Chat Provider: registers `vendor: "opencode"` directly via `vscode.lm.registerLanguageModelChatProvider`
+- permanent model availability: models no longer depend on Copilot's `customendpoint` BYOK policy gate and never disappear after window loading
+- cross-platform native streaming: works seamlessly on macOS, Windows, and Remote-WSL with streaming SSE and tool calling
+
+- - -
 ## v0.7.2 - 2026-09-13
 #### Bug Fixes
 - (**release**) specify tag_name in softprops/action-gh-release - (ee81edc) - Mark Fenderov
 
 - - -
-
 ## v0.7.1 - 2026-09-13
 #### Bug Fixes
 - filter defunct `muse-*` models returning HTTP 500 to prevent retry timeouts

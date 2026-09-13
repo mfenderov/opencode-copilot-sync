@@ -19,47 +19,29 @@ exports.run = async function () {
   assert.strictEqual(syncExt.isActive, true, 'opencode-copilot-sync must be active');
   console.log('[E2E] opencode-copilot-sync is ACTIVE!');
 
-  // 2. Check ltmoerdani extension if present
-  const ltExt = vscode.extensions.getExtension('ltmoerdani.opencode-copilot-chat');
-  console.log('[E2E] ltmoerdani.opencode-copilot-chat found:', !!ltExt);
-  if (ltExt) {
-    if (!ltExt.isActive) {
-      console.log('[E2E] Activating ltmoerdani.opencode-copilot-chat...');
-      await ltExt.activate();
-    }
-    console.log('[E2E] ltmoerdani.opencode-copilot-chat is ACTIVE!');
+  // 2. Discover native OpenCode models contributed by our extension!
+  const opencodeModels = await vscode.lm.selectChatModels({ vendor: 'opencode' });
+  console.log(`\n[E2E] Discovered ${opencodeModels.length} native OpenCode models via vscode.lm:`);
+  for (const m of opencodeModels.slice(0, 8)) {
+    console.log(`  - [${m.vendor}] ${m.name} (${m.id})`);
+  }
+  assert.ok(opencodeModels.length >= 20, `Must discover at least 20 native OpenCode models, got ${opencodeModels.length}`);
 
-    // Test querying OpenCode Go models via native VS Code LM API
-    const goModels = await vscode.lm.selectChatModels({ vendor: 'opencodego' });
-    console.log(`[E2E] Discovered ${goModels.length} OpenCode Go models via native LM API:`);
-    for (const m of goModels.slice(0, 5)) {
-      console.log(`  - [${m.vendor}] ${m.name} (${m.id})`);
+  // Test live request to OpenCode through native VS Code Language Model API!
+  const liveModel = opencodeModels.find(m => m.id === 'kimi-k3') || opencodeModels[0];
+  if (liveModel) {
+    console.log(`\n[E2E] >>> Sending live prompt to native model: ${liveModel.name} (${liveModel.id})...`);
+    const resp = await liveModel.sendRequest(
+      [vscode.LanguageModelChatMessage.User('Hello! Please reply with "Pong" and nothing else.')],
+      {},
+      new vscode.CancellationTokenSource().token
+    );
+    let streamedText = '';
+    for await (const chunk of resp.text) {
+      streamedText += chunk;
     }
-
-    // Test querying OpenCode Zen models via native VS Code LM API
-    const zenModels = await vscode.lm.selectChatModels({ vendor: 'opencodezen' });
-    console.log(`[E2E] Discovered ${zenModels.length} OpenCode Zen models via native LM API:`);
-    for (const m of zenModels.slice(0, 5)) {
-      console.log(`  - [${m.vendor}] ${m.name} (${m.id})`);
-    }
-
-    // Test sending an actual live prompt to a model!
-    const testModel = goModels[0] || zenModels[0];
-    if (testModel) {
-      console.log(`\n[E2E] >>> Testing prompt to model: ${testModel.name} (${testModel.id})...`);
-      try {
-        const messages = [vscode.LanguageModelChatMessage.User('Hello! Answer in one word: Pong')];
-        const response = await testModel.sendRequest(messages, {}, new vscode.CancellationTokenSource().token);
-        let reply = '';
-        for await (const chunk of response.text) {
-          reply += chunk;
-        }
-        console.log(`[E2E] >>> Model streamed response: "${reply.trim()}"`);
-        assert.ok(reply.length > 0, 'Model must stream back a non-empty response');
-      } catch (err) {
-        console.log(`[E2E] Note on model prompt: ${err.message}`);
-      }
-    }
+    console.log(`[E2E] >>> Live model streamed response: "${streamedText.trim()}"`);
+    assert.ok(streamedText.length > 0, 'Model must stream back a non-empty response');
   }
 
   // 3. Query all language models across all vendors in VS Code
@@ -68,6 +50,16 @@ exports.run = async function () {
   for (const m of allModels.slice(0, 10)) {
     console.log(`  - [${m.vendor}] ${m.name} (${m.id})`);
   }
+
+  const customModels = await vscode.lm.selectChatModels({ vendor: 'customendpoint' });
+  console.log(`\n[E2E] Discovered ${customModels.length} customendpoint models:`);
+  for (const m of customModels) {
+    console.log(`  - [${m.vendor}] ${m.name} (${m.id})`);
+  }
+
+  const allCommands = await vscode.commands.getCommands(true);
+  const lmCommands = allCommands.filter(c => c.includes('lm.') || c.includes('languageModel'));
+  console.log('\n[E2E] LM Commands:', lmCommands);
 
   // 4. Trigger manual sync command
   console.log('\n[E2E] Executing command opencode-copilot-sync.sync...');

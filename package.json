@@ -2,7 +2,7 @@
   "name": "opencode-copilot-sync",
   "displayName": "OpenCode Models for Copilot",
   "description": "Automatically sync OpenCode Zen & Go models to GitHub Copilot in VS Code",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "type": "module",
   "publisher": "mfenderov",
   "license": "MIT",
@@ -42,12 +42,19 @@
   ],
   "activationEvents": [
     "onStartupFinished",
+    "onLanguageModelChatProvider:opencode",
     "onCommand:opencode-copilot-sync.sync",
     "onCommand:opencode-copilot-sync.setApiKey",
     "onCommand:opencode-copilot-sync.openConfig"
   ],
   "main": "./dist/extension.cjs",
   "contributes": {
+    "languageModelChatProviders": [
+      {
+        "vendor": "opencode",
+        "displayName": "OpenCode"
+      }
+    ],
     "commands": [
       {
         "command": "opencode-copilot-sync.sync",

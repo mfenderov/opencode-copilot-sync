@@ -34,7 +34,7 @@ __export(extension_exports, {
   deactivate: () => deactivate
 });
 module.exports = __toCommonJS(extension_exports);
-var vscode = __toESM(require("vscode"), 1);
+var vscode2 = __toESM(require("vscode"), 1);
 
 // src/auth.ts
 var fs2 = __toESM(require("node:fs"), 1);
@@ -894,20 +894,232 @@ function formatUsageTooltip(usage) {
   ].join("\n");
 }
 
+// src/provider.ts
+var vscode = __toESM(require("vscode"), 1);
+var VERIFIED_OPENCODE_MODELS = [
+  { id: "minimax-m3", name: "MiniMax M3 (OpenCode)", family: "minimax-m3", contextWindow: 1048576, maxOutputTokens: 131072, vision: false },
+  { id: "minimax-m2.5", name: "MiniMax M2.5 (OpenCode)", family: "minimax-m2.5", contextWindow: 1048576, maxOutputTokens: 131072, vision: false },
+  { id: "kimi-k3", name: "Kimi K3 (OpenCode)", family: "kimi-k3", contextWindow: 1048576, maxOutputTokens: 65536, vision: true },
+  { id: "kimi-k2.7-code", name: "Kimi K2.7 Code (OpenCode)", family: "kimi-k2.7-code", contextWindow: 1048576, maxOutputTokens: 65536, vision: true },
+  { id: "kimi-k2.6", name: "Kimi K2.6 (OpenCode)", family: "kimi-k2.6", contextWindow: 1048576, maxOutputTokens: 65536, vision: true },
+  { id: "longcat-2.0", name: "Longcat 2.0 (OpenCode)", family: "longcat-2.0", contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
+  { id: "glm-5.2", name: "GLM 5.2 (OpenCode)", family: "glm-5.2", contextWindow: 1048576, maxOutputTokens: 131072, vision: true },
+  { id: "glm-5.3-flash", name: "GLM 5.3 Flash (OpenCode)", family: "glm-5.3-flash", contextWindow: 1048576, maxOutputTokens: 131072, vision: true },
+  { id: "glm-5.3", name: "GLM 5.3 (OpenCode)", family: "glm-5.3", contextWindow: 1048576, maxOutputTokens: 131072, vision: true },
+  { id: "glm-5.1", name: "GLM 5.1 (OpenCode)", family: "glm-5.1", contextWindow: 1048576, maxOutputTokens: 131072, vision: true },
+  { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro (OpenCode)", family: "deepseek-v4-pro", contextWindow: 1048576, maxOutputTokens: 131072, vision: false },
+  { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash (OpenCode)", family: "deepseek-v4-flash", contextWindow: 1048576, maxOutputTokens: 131072, vision: false },
+  { id: "deepseek-flash", name: "DeepSeek Flash (OpenCode)", family: "deepseek-flash", contextWindow: 1048576, maxOutputTokens: 131072, vision: false },
+  { id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash (OpenCode)", family: "deepseek-v4.1-flash", contextWindow: 1048576, maxOutputTokens: 131072, vision: false },
+  { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek V4 Flash Vision Exp (OpenCode)", family: "deepseek-v4-flash-vision-exp", contextWindow: 1048576, maxOutputTokens: 131072, vision: true },
+  { id: "qwen3.7-max", name: "Qwen3.7 Max (OpenCode)", family: "qwen3.7-max", contextWindow: 1e6, maxOutputTokens: 131072, vision: true },
+  { id: "qwen3.8-max", name: "Qwen3.8 Max (OpenCode)", family: "qwen3.8-max", contextWindow: 1e6, maxOutputTokens: 131072, vision: true },
+  { id: "qwen3.8-flash", name: "Qwen3.8 Flash (OpenCode)", family: "qwen3.8-flash", contextWindow: 1e6, maxOutputTokens: 131072, vision: true },
+  { id: "qwen3.6-plus", name: "Qwen3.6 Plus (OpenCode)", family: "qwen3.6-plus", contextWindow: 1e6, maxOutputTokens: 131072, vision: true },
+  { id: "mimo-v2.5-pro", name: "MiMo V2.5 Pro (OpenCode)", family: "mimo-v2.5-pro", contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
+  { id: "mimo-v2.5", name: "MiMo V2.5 (OpenCode)", family: "mimo-v2.5", contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
+  { id: "hy4-preview", name: "Hy4 Preview (OpenCode)", family: "hy4-preview", contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
+  { id: "hy3", name: "Hy3 (OpenCode)", family: "hy3", contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
+  { id: "omen-alpha", name: "Omen Alpha (OpenCode)", family: "omen-alpha", contextWindow: 1048576, maxOutputTokens: 65536, vision: false }
+];
+var OpenCodeChatProvider = class {
+  constructor(context) {
+    this.context = context;
+  }
+  _onDidChange = new vscode.EventEmitter();
+  onDidChangeLanguageModelChatInformation = this._onDidChange.event;
+  refresh() {
+    this._onDidChange.fire();
+  }
+  async provideLanguageModelChatInformation(_options, _token) {
+    return VERIFIED_OPENCODE_MODELS.map((m) => ({
+      id: m.id,
+      name: m.name,
+      family: m.family,
+      version: "1.0.0",
+      maxInputTokens: m.contextWindow - m.maxOutputTokens,
+      maxOutputTokens: m.maxOutputTokens,
+      capabilities: {
+        imageInput: m.vision,
+        toolCalling: true
+      }
+    }));
+  }
+  async provideLanguageModelChatResponse(model, messages, options, progress, token) {
+    const apiKey = await this.context.secrets.get("opencode_api_key") || getStoredOpenCodeKey(this.context.globalStorageUri?.fsPath) || getStoredOpenCodeKey();
+    if (!apiKey) {
+      throw new Error(
+        'OpenCode API key not found. Please run "OpenCode: Set API Key" command to configure your key.'
+      );
+    }
+    const formattedMessages = [];
+    for (const msg of messages) {
+      const role = msg.role === vscode.LanguageModelChatMessageRole.User ? "user" : "assistant";
+      let textContent = "";
+      const toolCalls = [];
+      for (const part of msg.content) {
+        if (part instanceof vscode.LanguageModelTextPart) {
+          textContent += part.value;
+        } else if (part instanceof vscode.LanguageModelToolCallPart) {
+          toolCalls.push({
+            id: part.callId,
+            type: "function",
+            function: {
+              name: part.name,
+              arguments: typeof part.input === "string" ? part.input : JSON.stringify(part.input)
+            }
+          });
+        } else if (part instanceof vscode.LanguageModelToolResultPart) {
+          let resultStr = "";
+          if (typeof part.content === "string") {
+            resultStr = part.content;
+          } else if (Array.isArray(part.content)) {
+            resultStr = part.content.map((p) => p.value || JSON.stringify(p)).join("\n");
+          } else {
+            resultStr = JSON.stringify(part.content);
+          }
+          formattedMessages.push({
+            role: "tool",
+            tool_call_id: part.callId,
+            content: resultStr
+          });
+        }
+      }
+      if (textContent || toolCalls.length > 0) {
+        const entry = { role, content: textContent };
+        if (toolCalls.length > 0) {
+          entry.tool_calls = toolCalls;
+        }
+        formattedMessages.push(entry);
+      }
+    }
+    let toolsPayload = void 0;
+    if (options.tools && options.tools.length > 0) {
+      toolsPayload = options.tools.map((t) => ({
+        type: "function",
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.inputSchema || { type: "object", properties: {} }
+        }
+      }));
+    }
+    const abortController = new AbortController();
+    token.onCancellationRequested(() => abortController.abort());
+    const url = "https://opencode.ai/zen/go/v1/chat/completions";
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "x-opencode-session": "vscode-copilot"
+      },
+      body: JSON.stringify({
+        model: model.id,
+        messages: formattedMessages,
+        tools: toolsPayload,
+        stream: true
+      }),
+      signal: abortController.signal
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`OpenCode API error (${res.status} ${res.statusText}): ${errText}`);
+    }
+    if (!res.body) {
+      throw new Error("OpenCode API returned empty body");
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const pendingToolCalls = /* @__PURE__ */ new Map();
+    try {
+      while (true) {
+        if (token.isCancellationRequested) break;
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith(":")) continue;
+          if (trimmed === "data: [DONE]") continue;
+          if (trimmed.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(trimmed.slice(6));
+              const choice = data.choices?.[0];
+              if (!choice) continue;
+              if (choice.delta?.content) {
+                progress.report(new vscode.LanguageModelTextPart(choice.delta.content));
+              }
+              if (choice.delta?.tool_calls) {
+                for (const tc of choice.delta.tool_calls) {
+                  const idx = tc.index ?? 0;
+                  const current = pendingToolCalls.get(idx) || { id: "", name: "", args: "" };
+                  if (tc.id) current.id = tc.id;
+                  if (tc.function?.name) current.name += tc.function.name;
+                  if (tc.function?.arguments) current.args += tc.function.arguments;
+                  pendingToolCalls.set(idx, current);
+                }
+              }
+              if (choice.finish_reason === "tool_calls" || choice.finish_reason === "stop" && pendingToolCalls.size > 0) {
+                for (const [, call] of pendingToolCalls) {
+                  let parsedArgs = {};
+                  try {
+                    parsedArgs = JSON.parse(call.args);
+                  } catch {
+                    parsedArgs = { raw: call.args };
+                  }
+                  progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+                }
+                pendingToolCalls.clear();
+              }
+            } catch {
+            }
+          }
+        }
+      }
+    } finally {
+      if (pendingToolCalls.size > 0) {
+        for (const [, call] of pendingToolCalls) {
+          let parsedArgs = {};
+          try {
+            parsedArgs = JSON.parse(call.args);
+          } catch {
+            parsedArgs = { raw: call.args };
+          }
+          progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+        }
+        pendingToolCalls.clear();
+      }
+    }
+  }
+  provideTokenCount(_model, text, _token) {
+    const raw = typeof text === "string" ? text : JSON.stringify(text);
+    return Promise.resolve(Math.ceil(raw.length / 4));
+  }
+};
+
 // src/extension.ts
 async function activate(context) {
-  const outputChannel = vscode.window.createOutputChannel("OpenCode Copilot Sync");
+  const outputChannel = vscode2.window.createOutputChannel("OpenCode Copilot Sync");
   context.subscriptions.push(outputChannel);
+  const chatProvider = new OpenCodeChatProvider(context);
+  context.subscriptions.push(
+    vscode2.lm.registerLanguageModelChatProvider("opencode", chatProvider)
+  );
+  outputChannel.appendLine("Registered native OpenCode LanguageModelChatProvider with VS Code.");
   try {
-    const agentHostCfg = vscode.workspace.getConfiguration("chat.agentHost");
+    const agentHostCfg = vscode2.workspace.getConfiguration("chat.agentHost");
     if (!agentHostCfg.get("byokModels.enabled", false)) {
-      await agentHostCfg.update("byokModels.enabled", true, vscode.ConfigurationTarget.Global);
+      await agentHostCfg.update("byokModels.enabled", true, vscode2.ConfigurationTarget.Global);
       outputChannel.appendLine("Enabled chat.agentHost.byokModels.enabled for Agent Mode support.");
     }
   } catch (err) {
     outputChannel.appendLine(`Note: Could not set chat.agentHost.byokModels.enabled: ${err.message}`);
   }
-  const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+  const statusBarItem = vscode2.window.createStatusBarItem(vscode2.StatusBarAlignment.Right, 99);
   statusBarItem.text = "$(hubot) OpenCode";
   statusBarItem.tooltip = "Click to sync OpenCode models & refresh usage";
   statusBarItem.command = "opencode-copilot-sync.sync";
@@ -920,7 +1132,7 @@ async function activate(context) {
       const res = await fetchOpenCodeUsage(key);
       if (res.ok) {
         statusBarItem.text = formatStatusBarText(res.usage);
-        const md = new vscode.MarkdownString(formatUsageTooltip(res.usage));
+        const md = new vscode2.MarkdownString(formatUsageTooltip(res.usage));
         md.isTrusted = true;
         statusBarItem.tooltip = md;
       } else if (res.reason === "no-subscription") {
@@ -932,20 +1144,20 @@ async function activate(context) {
   }
   async function performSync(interactive) {
     try {
-      const config2 = vscode.workspace.getConfiguration("opencode");
+      const config2 = vscode2.workspace.getConfiguration("opencode");
       const includeGo = config2.get("includeGoModels", true);
       const includeZen = config2.get("includeZenModels", true);
-      const apiKey = await resolveApiKey(context.secrets, interactive, vscode.window);
+      const apiKey = await resolveApiKey(context.secrets, interactive, vscode2.window);
       if (!apiKey) {
         if (interactive) {
-          vscode.window.showWarningMessage("OpenCode sync cancelled: No API key provided.");
+          vscode2.window.showWarningMessage("OpenCode sync cancelled: No API key provided.");
         } else {
-          vscode.window.showInformationMessage(
+          vscode2.window.showInformationMessage(
             "OpenCode Copilot Sync: Set your API key to sync OpenCode models to Copilot.",
             "Set API Key"
           ).then((choice) => {
             if (choice === "Set API Key") {
-              vscode.commands.executeCommand("opencode-copilot-sync.setApiKey");
+              vscode2.commands.executeCommand("opencode-copilot-sync.setApiKey");
             }
           });
         }
@@ -955,9 +1167,9 @@ async function activate(context) {
       statusBarItem.tooltip = "Syncing OpenCode models...";
       const storagePath = context.globalStorageUri?.fsPath;
       if (interactive) {
-        await vscode.window.withProgress(
+        await vscode2.window.withProgress(
           {
-            location: vscode.ProgressLocation.Notification,
+            location: vscode2.ProgressLocation.Notification,
             title: "OpenCode: Fetching models and syncing to Copilot...",
             cancellable: false
           },
@@ -966,13 +1178,13 @@ async function activate(context) {
             outputChannel.appendLine(
               `Synced ${result.totalCount} unified OpenCode models (${result.goCount} Go + ${result.zenCount} Zen) to ${result.targetPath}`
             );
-            vscode.window.showInformationMessage(
+            vscode2.window.showInformationMessage(
               `Synced ${result.totalCount} OpenCode models (${result.goCount} Go flat-rate + ${result.zenCount} Zen exclusive) to Copilot!`,
               "Open Models File"
             ).then((choice) => {
               if (choice === "Open Models File") {
-                vscode.workspace.openTextDocument(result.targetPath).then((doc) => {
-                  vscode.window.showTextDocument(doc);
+                vscode2.workspace.openTextDocument(result.targetPath).then((doc) => {
+                  vscode2.window.showTextDocument(doc);
                 });
               }
             });
@@ -984,37 +1196,38 @@ async function activate(context) {
           `[Startup] Synced ${result.totalCount} unified OpenCode models (${result.goCount} Go + ${result.zenCount} Zen) to ${result.targetPath}`
         );
       }
+      chatProvider.refresh();
       await updateUsageMeter(apiKey);
     } catch (err) {
       outputChannel.appendLine(`[Sync Error] ${err.message}`);
       if (interactive) {
-        vscode.window.showErrorMessage(`OpenCode sync failed: ${err.message}`);
+        vscode2.window.showErrorMessage(`OpenCode sync failed: ${err.message}`);
       }
       statusBarItem.text = "$(hubot) OpenCode";
       statusBarItem.tooltip = "OpenCode models synced with Copilot (click to re-sync)";
     }
   }
   context.subscriptions.push(
-    vscode.commands.registerCommand("opencode-copilot-sync.sync", () => performSync(true)),
-    vscode.commands.registerCommand("opencode-copilot-sync.refreshUsage", () => updateUsageMeter()),
-    vscode.commands.registerCommand("opencode-copilot-sync.setApiKey", async () => {
-      const key = await promptAndSetApiKey(context.secrets, vscode.window);
+    vscode2.commands.registerCommand("opencode-copilot-sync.sync", () => performSync(true)),
+    vscode2.commands.registerCommand("opencode-copilot-sync.refreshUsage", () => updateUsageMeter()),
+    vscode2.commands.registerCommand("opencode-copilot-sync.setApiKey", async () => {
+      const key = await promptAndSetApiKey(context.secrets, vscode2.window);
       if (key) {
-        vscode.window.showInformationMessage("OpenCode API Key updated! Syncing models now...");
+        vscode2.window.showInformationMessage("OpenCode API Key updated! Syncing models now...");
         await performSync(true);
       }
     }),
-    vscode.commands.registerCommand("opencode-copilot-sync.openConfig", async () => {
+    vscode2.commands.registerCommand("opencode-copilot-sync.openConfig", async () => {
       const p = getChatLanguageModelsPath(context.globalStorageUri?.fsPath);
       try {
-        const doc = await vscode.workspace.openTextDocument(p);
-        await vscode.window.showTextDocument(doc);
+        const doc = await vscode2.workspace.openTextDocument(p);
+        await vscode2.window.showTextDocument(doc);
       } catch (err) {
-        vscode.window.showErrorMessage(`Unable to open config: ${err.message}`);
+        vscode2.window.showErrorMessage(`Unable to open config: ${err.message}`);
       }
     })
   );
-  const config = vscode.workspace.getConfiguration("opencode");
+  const config = vscode2.workspace.getConfiguration("opencode");
   const autoSync = config.get("autoSyncOnStartup", true);
   if (autoSync) {
     setTimeout(() => {

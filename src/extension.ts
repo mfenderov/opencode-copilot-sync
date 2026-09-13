@@ -2,10 +2,18 @@ import * as vscode from 'vscode';
 import { resolveApiKey, promptAndSetApiKey } from './auth.js';
 import { syncOpenCodeModels, getChatLanguageModelsPath } from './syncer.js';
 import { fetchOpenCodeUsage, formatStatusBarText, formatUsageTooltip } from './usage.js';
+import { OpenCodeChatProvider } from './provider.js';
 
 export async function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel('OpenCode Copilot Sync');
   context.subscriptions.push(outputChannel);
+
+  // Register first-class native Language Model Chat Provider in VS Code
+  const chatProvider = new OpenCodeChatProvider(context);
+  context.subscriptions.push(
+    vscode.lm.registerLanguageModelChatProvider('opencode', chatProvider)
+  );
+  outputChannel.appendLine('Registered native OpenCode LanguageModelChatProvider with VS Code.');
 
   // Auto-enable VS Code's experimental Agent Host BYOK bridge so custom models appear in Agent Mode
   try {
@@ -108,7 +116,8 @@ export async function activate(context: vscode.ExtensionContext) {
         );
       }
 
-      // Refresh usage meter after successful sync
+      // Refresh usage meter and native model provider after successful sync
+      chatProvider.refresh();
       await updateUsageMeter(apiKey);
     } catch (err: any) {
       outputChannel.appendLine(`[Sync Error] ${err.message}`);
