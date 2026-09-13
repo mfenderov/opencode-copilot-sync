@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.6.1 - 2026-09-13
+#### Bug Fixes
+- (**ci**) add retry loop to vsce publish to handle transient gallery timeouts - (ceadd07) - Mark Fenderov
+
+- - -
+
 ## v0.6.0 - 2026-09-13
 #### Features
 - add in-editor @vscode/test-electron E2E testing suite - (a63803a) - Mark Fenderov
