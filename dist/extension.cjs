@@ -195,6 +195,7 @@ async function promptAndSetApiKey(secrets, vscodeWindow) {
 var fs2 = __toESM(require("node:fs"), 1);
 var path2 = __toESM(require("node:path"), 1);
 var os2 = __toESM(require("node:os"), 1);
+var cp = __toESM(require("node:child_process"), 1);
 
 // src/enricher.ts
 function formatModelName(id, suffix = "(OpenCode)") {
@@ -359,6 +360,50 @@ async function fetchOpenCodeModels(apiKey, catalog = "go") {
 function filterFreeModels(modelIds) {
   return modelIds.filter((id) => id.includes("free") || id === "big-pickle");
 }
+var KNOWN_UNAVAILABLE_MODELS = /* @__PURE__ */ new Set([
+  "gpt-5.6-luna",
+  "grok-4.5",
+  "grok-4.6",
+  "muse-spark-1.3-contributor",
+  "muse-spark-1.2-contributor",
+  "kimi-k2.5",
+  "glm-5",
+  "qwen3.7-plus",
+  "qwen3.5-plus",
+  "mimo-v2-pro",
+  "mimo-v2-omni",
+  "hy3-preview",
+  "minimax-m2.7"
+]);
+function filterAvailableGoModels(modelIds) {
+  return modelIds.filter((id) => !KNOWN_UNAVAILABLE_MODELS.has(id));
+}
+async function checkZenBalance(apiKey) {
+  try {
+    const res = await fetch("https://opencode.ai/zen/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-6",
+        messages: [{ role: "user", content: "ping" }],
+        max_tokens: 1
+      }),
+      signal: AbortSignal.timeout(3e3)
+    });
+    if (res.status === 401) {
+      const text = await res.text();
+      if (text.includes("Insufficient balance") || text.includes("CreditsError")) {
+        return false;
+      }
+    }
+    return res.status === 200 || res.status === 400;
+  } catch {
+    return false;
+  }
+}
 
 // src/syncer.ts
 function getChatLanguageModelsPath(activeExtensionStoragePath) {
@@ -399,6 +444,20 @@ function isWSL() {
     return false;
   }
 }
+function syncWslMirror(sourceFilePath) {
+  if (process.platform !== "win32") return;
+  try {
+    const driveMatch = sourceFilePath.match(/^([A-Za-z]):\\(.*)$/);
+    if (!driveMatch) return;
+    const driveLetter = driveMatch[1].toLowerCase();
+    const rest = driveMatch[2].replace(/\\/g, "/");
+    const wslSourcePath = `/mnt/${driveLetter}/${rest}`;
+    const cmd = `mkdir -p ~/.vscode-server/data/User ~/.config/Code/User && cp "${wslSourcePath}" ~/.vscode-server/data/User/chatLanguageModels.json && cp "${wslSourcePath}" ~/.config/Code/User/chatLanguageModels.json`;
+    cp.exec(`wsl.exe -e bash -c "${cmd}"`, () => {
+    });
+  } catch {
+  }
+}
 function getAllChatLanguageModelsPaths(activeExtensionStoragePath) {
   const paths = [];
   const primary = getChatLanguageModelsPath(activeExtensionStoragePath);
@@ -411,7 +470,7 @@ function getAllChatLanguageModelsPaths(activeExtensionStoragePath) {
       path2.join(os2.homedir(), ".config", "Code - Insiders", "User", "chatLanguageModels.json")
     ];
     for (const sc of serverCandidates) {
-      if (fs2.existsSync(path2.dirname(sc)) && !paths.includes(sc)) {
+      if (!paths.includes(sc)) {
         paths.push(sc);
       }
     }
@@ -424,7 +483,7 @@ function getAllChatLanguageModelsPaths(activeExtensionStoragePath) {
           if (["Public", "Default", "Default User", "All Users"].includes(user) || user.startsWith(".")) continue;
           for (const variant of ["Code", "Code - Insiders"]) {
             const winPath = path2.join(mntCUsers, user, "AppData", "Roaming", variant, "User", "chatLanguageModels.json");
-            if (fs2.existsSync(path2.dirname(winPath)) && !paths.includes(winPath)) {
+            if (!paths.includes(winPath)) {
               paths.push(winPath);
             }
           }
@@ -447,7 +506,7 @@ function getAllChatLanguageModelsPaths(activeExtensionStoragePath) {
                   path2.join(home, u, ".config", "Code", "User", "chatLanguageModels.json")
                 ];
                 for (const wp of wslPaths) {
-                  if (fs2.existsSync(path2.dirname(wp)) && !paths.includes(wp)) {
+                  if (!paths.includes(wp)) {
                     paths.push(wp);
                   }
                 }
@@ -521,6 +580,9 @@ function writeProvidersToConfig(providers, targetPath, storagePath) {
       console.error(`Failed writing to ${filePath}: ${err.message}`);
     }
   }
+  if (filePaths.length > 0) {
+    syncWslMirror(filePaths[0]);
+  }
   return { targetPath: filePaths[0], backupPath: primaryBackup };
 }
 async function syncOpenCodeModels(apiKey, options = {}) {
@@ -530,16 +592,23 @@ async function syncOpenCodeModels(apiKey, options = {}) {
   let zenModelIds = [];
   if (includeGo) {
     try {
-      goModelIds = await fetchOpenCodeModels(apiKey, "go");
+      const rawGoIds = await fetchOpenCodeModels(apiKey, "go");
+      goModelIds = filterAvailableGoModels(rawGoIds);
     } catch (err) {
       console.error(`Failed to fetch Go models: ${err.message}`);
     }
   }
+  let hasZenCredits = false;
   if (includeZen) {
     try {
-      zenModelIds = await fetchOpenCodeModels(apiKey, "zen");
+      hasZenCredits = await checkZenBalance(apiKey);
+      if (hasZenCredits) {
+        zenModelIds = await fetchOpenCodeModels(apiKey, "zen");
+      } else {
+        console.log("No active Zen credit balance detected. Skipping paid Zen catalog to avoid 401 retry timeouts.");
+      }
     } catch (err) {
-      console.error(`Failed to fetch Zen models: ${err.message}`);
+      console.error(`Failed to check/fetch Zen models: ${err.message}`);
     }
   }
   const goSet = new Set(goModelIds);

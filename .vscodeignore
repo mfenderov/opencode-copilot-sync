@@ -6,4 +6,7 @@ tsconfig.json
 .gitignore
 .github/**
 *.vsix
+.vscode-test/**
+.test-user-data/**
+.test-extensions/**
 

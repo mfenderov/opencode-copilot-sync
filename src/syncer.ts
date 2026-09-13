@@ -1,9 +1,10 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import * as cp from 'node:child_process';
 import { buildProviderEntry, mergeChatLanguageModels, type ProviderEntry } from './config.js';
 import { enrichModel } from './enricher.js';
-import { fetchOpenCodeModels, filterFreeModels } from './fetcher.js';
+import { fetchOpenCodeModels, filterFreeModels, filterAvailableGoModels, checkZenBalance } from './fetcher.js';
 
 export function getChatLanguageModelsPath(activeExtensionStoragePath?: string): string {
   if (activeExtensionStoragePath) {
@@ -48,12 +49,28 @@ export function isWSL(): boolean {
   }
 }
 
+export function syncWslMirror(sourceFilePath: string): void {
+  if (process.platform !== 'win32') return;
+
+  try {
+    const driveMatch = sourceFilePath.match(/^([A-Za-z]):\\(.*)$/);
+    if (!driveMatch) return;
+
+    const driveLetter = driveMatch[1].toLowerCase();
+    const rest = driveMatch[2].replace(/\\/g, '/');
+    const wslSourcePath = `/mnt/${driveLetter}/${rest}`;
+
+    const cmd = `mkdir -p ~/.vscode-server/data/User ~/.config/Code/User && cp "${wslSourcePath}" ~/.vscode-server/data/User/chatLanguageModels.json && cp "${wslSourcePath}" ~/.config/Code/User/chatLanguageModels.json`;
+    cp.exec(`wsl.exe -e bash -c "${cmd}"`, () => {});
+  } catch {}
+}
+
 export function getAllChatLanguageModelsPaths(activeExtensionStoragePath?: string): string[] {
   const paths: string[] = [];
   const primary = getChatLanguageModelsPath(activeExtensionStoragePath);
   paths.push(primary);
 
-  // Linux / WSL: check all possible server and client locations
+  // Linux / WSL: unconditionally include all possible server and client locations
   if (process.platform === 'linux') {
     const serverCandidates = [
       path.join(os.homedir(), '.vscode-server', 'data', 'User', 'chatLanguageModels.json'),
@@ -62,7 +79,7 @@ export function getAllChatLanguageModelsPaths(activeExtensionStoragePath?: strin
       path.join(os.homedir(), '.config', 'Code - Insiders', 'User', 'chatLanguageModels.json'),
     ];
     for (const sc of serverCandidates) {
-      if (fs.existsSync(path.dirname(sc)) && !paths.includes(sc)) {
+      if (!paths.includes(sc)) {
         paths.push(sc);
       }
     }
@@ -76,7 +93,7 @@ export function getAllChatLanguageModelsPaths(activeExtensionStoragePath?: strin
           if (['Public', 'Default', 'Default User', 'All Users'].includes(user) || user.startsWith('.')) continue;
           for (const variant of ['Code', 'Code - Insiders']) {
             const winPath = path.join(mntCUsers, user, 'AppData', 'Roaming', variant, 'User', 'chatLanguageModels.json');
-            if (fs.existsSync(path.dirname(winPath)) && !paths.includes(winPath)) {
+            if (!paths.includes(winPath)) {
               paths.push(winPath);
             }
           }
@@ -100,7 +117,7 @@ export function getAllChatLanguageModelsPaths(activeExtensionStoragePath?: strin
                   path.join(home, u, '.config', 'Code', 'User', 'chatLanguageModels.json'),
                 ];
                 for (const wp of wslPaths) {
-                  if (fs.existsSync(path.dirname(wp)) && !paths.includes(wp)) {
+                  if (!paths.includes(wp)) {
                     paths.push(wp);
                   }
                 }
@@ -192,6 +209,11 @@ export function writeProvidersToConfig(
     }
   }
 
+  // If on Windows, trigger automated mirror into WSL vscode-server
+  if (filePaths.length > 0) {
+    syncWslMirror(filePaths[0]);
+  }
+
   return { targetPath: filePaths[0], backupPath: primaryBackup };
 }
 
@@ -208,18 +230,25 @@ export async function syncOpenCodeModels(
   // 1. Fetch OpenCode Go catalog
   if (includeGo) {
     try {
-      goModelIds = await fetchOpenCodeModels(apiKey, 'go');
+      const rawGoIds = await fetchOpenCodeModels(apiKey, 'go');
+      goModelIds = filterAvailableGoModels(rawGoIds);
     } catch (err: any) {
       console.error(`Failed to fetch Go models: ${err.message}`);
     }
   }
 
-  // 2. Fetch OpenCode Zen catalog
+  // 2. Fetch OpenCode Zen catalog if user has active Zen credits
+  let hasZenCredits = false;
   if (includeZen) {
     try {
-      zenModelIds = await fetchOpenCodeModels(apiKey, 'zen');
+      hasZenCredits = await checkZenBalance(apiKey);
+      if (hasZenCredits) {
+        zenModelIds = await fetchOpenCodeModels(apiKey, 'zen');
+      } else {
+        console.log('No active Zen credit balance detected. Skipping paid Zen catalog to avoid 401 retry timeouts.');
+      }
     } catch (err: any) {
-      console.error(`Failed to fetch Zen models: ${err.message}`);
+      console.error(`Failed to check/fetch Zen models: ${err.message}`);
     }
   }
 
@@ -231,7 +260,7 @@ export async function syncOpenCodeModels(
     models.push(enrichModel(id, { isGo: true }));
   }
 
-  // Zen models that are NOT in Go (Free tier + proprietary models like Claude/GPT)
+  // Zen models that are NOT in Go (only added if user has Zen balance)
   let zenCount = 0;
   for (const id of zenModelIds) {
     if (!goSet.has(id)) {

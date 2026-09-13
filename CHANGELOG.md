@@ -2,12 +2,18 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.7.0 - 2026-09-13
+#### Features
+- automated WSL mirror: syncs `chatLanguageModels.json` directly into WSL `.vscode-server` locations with zero manual copying
+- health & credit validation: checks Zen credits balance and filters unavailable models to eliminate 401/400/500 retry timeouts
+- lightweight package bundling: ignores test runner cache artifacts
+
+- - -
 ## v0.6.1 - 2026-09-13
 #### Bug Fixes
 - (**ci**) add retry loop to vsce publish to handle transient gallery timeouts - (ceadd07) - Mark Fenderov
 
 - - -
-
 ## v0.6.0 - 2026-09-13
 #### Features
 - add in-editor @vscode/test-electron E2E testing suite - (a63803a) - Mark Fenderov

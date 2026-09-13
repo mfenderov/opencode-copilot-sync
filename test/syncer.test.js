@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readChatLanguageModels, getChatLanguageModelsPath, writeProvidersToConfig } from '../out/syncer.js';
+import { readChatLanguageModels, getChatLanguageModelsPath, getAllChatLanguageModelsPaths, syncWslMirror, writeProvidersToConfig } from '../out/syncer.js';
 import { buildProviderEntry } from '../out/config.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,6 +9,18 @@ import os from 'node:os';
 test('getChatLanguageModelsPath returns a path ending in chatLanguageModels.json', () => {
   const p = getChatLanguageModelsPath();
   assert.ok(p.endsWith('chatLanguageModels.json'));
+});
+
+test('getAllChatLanguageModelsPaths includes candidates', () => {
+  const paths = getAllChatLanguageModelsPaths();
+  assert.ok(paths.length >= 1);
+  assert.ok(paths[0].endsWith('chatLanguageModels.json'));
+});
+
+test('syncWslMirror executes safely without error on non-windows platform', () => {
+  assert.doesNotThrow(() => {
+    syncWslMirror('/Users/test/chatLanguageModels.json');
+  });
 });
 
 test('writeProvidersToConfig updates temp config without touching real files', () => {
