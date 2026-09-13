@@ -51,4 +51,14 @@ jobs:
 
       - name: Publish to VS Code Marketplace
         if: env.VSCE_PAT != ''
-        run: npx @vscode/vsce publish -p "$VSCE_PAT" --packagePath opencode-copilot-sync-*.vsix --no-dependencies
+        run: |
+          for i in 1 2 3; do
+            echo "Attempt $i to publish to VS Code Marketplace..."
+            if npx @vscode/vsce publish -p "$VSCE_PAT" --packagePath opencode-copilot-sync-*.vsix --no-dependencies; then
+              echo "Published successfully!"
+              exit 0
+            fi
+            echo "Publish attempt $i failed, waiting 15s before retry..."
+            sleep 15
+          done
+          exit 1
