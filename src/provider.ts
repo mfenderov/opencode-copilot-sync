@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { getStoredOpenCodeKey } from './auth.js';
+import { getStoredOpenCodeKey, getKeyFromExistingConfig } from './auth.js';
 import { filterAvailableGoModels } from './fetcher.js';
 
 export interface OpenCodeModelMeta {
@@ -63,7 +63,8 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         imageInput: m.vision,
         toolCalling: true,
       },
-    }));
+      isBYOK: true,
+    } as any));
   }
 
   async provideLanguageModelChatResponse(
@@ -76,7 +77,9 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     const apiKey =
       (await this.context.secrets.get('opencode_api_key')) ||
       getStoredOpenCodeKey(this.context.globalStorageUri?.fsPath) ||
-      getStoredOpenCodeKey();
+      getStoredOpenCodeKey() ||
+      getKeyFromExistingConfig(this.context.globalStorageUri?.fsPath) ||
+      getKeyFromExistingConfig();
 
     if (!apiKey) {
       throw new Error(

@@ -135,6 +135,7 @@ function enrichModel(modelId, options = {}) {
   const model = {
     id: modelId,
     name,
+    family: "gpt-5-5",
     url: baseUrl,
     apiType: "chat-completions",
     toolCalling: true,
@@ -942,11 +943,12 @@ var OpenCodeChatProvider = class {
       capabilities: {
         imageInput: m.vision,
         toolCalling: true
-      }
+      },
+      isBYOK: true
     }));
   }
   async provideLanguageModelChatResponse(model, messages, options, progress, token) {
-    const apiKey = await this.context.secrets.get("opencode_api_key") || getStoredOpenCodeKey(this.context.globalStorageUri?.fsPath) || getStoredOpenCodeKey();
+    const apiKey = await this.context.secrets.get("opencode_api_key") || getStoredOpenCodeKey(this.context.globalStorageUri?.fsPath) || getStoredOpenCodeKey() || getKeyFromExistingConfig(this.context.globalStorageUri?.fsPath) || getKeyFromExistingConfig();
     if (!apiKey) {
       throw new Error(
         'OpenCode API key not found. Please run "OpenCode: Set API Key" command to configure your key.'
@@ -1110,6 +1112,17 @@ async function activate(context) {
     vscode2.lm.registerLanguageModelChatProvider("opencode", chatProvider)
   );
   outputChannel.appendLine("Registered native OpenCode LanguageModelChatProvider with VS Code.");
+  try {
+    const storedSecret = await context.secrets.get("opencode_api_key");
+    if (!storedSecret) {
+      const discoveredKey = await resolveApiKey(context.secrets, false);
+      if (discoveredKey) {
+        await context.secrets.store("opencode_api_key", discoveredKey);
+        outputChannel.appendLine("Seeded OpenCode API key into SecretStorage.");
+      }
+    }
+  } catch {
+  }
   try {
     const agentHostCfg = vscode2.workspace.getConfiguration("chat.agentHost");
     if (!agentHostCfg.get("byokModels.enabled", false)) {

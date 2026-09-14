@@ -8,6 +8,7 @@ export interface CustomEndpointModel {
   id: string;
   name: string;
   url: string;
+  family?: string;
   apiType: 'chat-completions';
   toolCalling: boolean;
   vision: boolean;
@@ -122,6 +123,7 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
   const model: CustomEndpointModel = {
     id: modelId,
     name,
+    family: 'gpt-5-5',
     url: baseUrl,
     apiType: 'chat-completions',
     toolCalling: true,

@@ -2,6 +2,13 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.9.1 - 2026-09-14
+#### Bug Fixes
+- add `isBYOK: true` to native LanguageModelChatProvider models so they appear and work in Agent Mode
+- set `family: "gpt-5-5"` on customendpoint models to bypass Copilot's 128-tool limit check in Agent Mode
+- auto-seed API key from `chatLanguageModels.json` and local configs into SecretStorage on activation to prevent missing API key errors
+
+- - -
 ## v0.9.0 - 2026-09-13
 #### Features
 - first-class native LanguageModelChatProvider for permanent model availability - (ebd7e01) - Mark Fenderov

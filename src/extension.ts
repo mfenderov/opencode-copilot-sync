@@ -15,6 +15,18 @@ export async function activate(context: vscode.ExtensionContext) {
   );
   outputChannel.appendLine('Registered native OpenCode LanguageModelChatProvider with VS Code.');
 
+  // Automatically discover and seed API key into SecretStorage if not already set
+  try {
+    const storedSecret = await context.secrets.get('opencode_api_key');
+    if (!storedSecret) {
+      const discoveredKey = await resolveApiKey(context.secrets, false);
+      if (discoveredKey) {
+        await context.secrets.store('opencode_api_key', discoveredKey);
+        outputChannel.appendLine('Seeded OpenCode API key into SecretStorage.');
+      }
+    }
+  } catch {}
+
   // Auto-enable VS Code's experimental Agent Host BYOK bridge so custom models appear in Agent Mode
   try {
     const agentHostCfg = vscode.workspace.getConfiguration('chat.agentHost');
