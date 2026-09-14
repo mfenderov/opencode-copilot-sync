@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.12.1 - 2026-09-14
+#### Tests
+- add WSL reproduction test script demonstrating failure modes - (d9eb86c) - Mark Fenderov
+
+- - -
+
 ## v0.12.0 - 2026-09-14
 #### Features
 - pull all models dynamically and label with (OpenCode Go) / (OpenCode Zen) / (OpenCode Free) - (9f94bfe) - Mark Fenderov
