@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.12.0 - 2026-09-14
+#### Features
+- pull all models dynamically and label with (OpenCode Go) / (OpenCode Zen) / (OpenCode Free) - (9f94bfe) - Mark Fenderov
+
+- - -
+
 ## v0.11.0 - 2026-09-14
 #### Features
 - restore thinking UI via configurationSchema, add all free models including Muse 1.3, and robust streaming - (8ee4094) - Mark Fenderov
