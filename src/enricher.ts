@@ -10,7 +10,7 @@ export interface CustomEndpointModel {
   name: string;
   url: string;
   family?: string;
-  apiType: 'chat-completions';
+  apiType: 'chat-completions' | 'messages' | 'responses';
   toolCalling: boolean;
   vision: boolean;
   contextWindow: number;
@@ -18,7 +18,7 @@ export interface CustomEndpointModel {
   maxOutputTokens: number;
   thinking: boolean;
   supportsReasoningEffort?: string[];
-  reasoningEffortFormat?: 'chat-completions';
+  reasoningEffortFormat?: string;
   requestHeaders?: Record<string, string>;
   modelOptions?: {
     temperature: number | null;
@@ -58,116 +58,148 @@ export function formatModelName(id: string, suffix: string = '(OpenCode)'): stri
 export function enrichModel(modelId: string, options: EnrichOptions = {}): CustomEndpointModel {
   const isGo = options.isGo ?? true;
   const isFree = options.isFree ?? false;
-  const baseUrl = isGo
-    ? 'https://opencode.ai/zen/go/v1/chat/completions'
-    : 'https://opencode.ai/zen/v1/chat/completions';
+  const devMeta = options.modelsDevData;
+  const lower = modelId.toLowerCase();
+
+  // 1. Determine transport dynamically: check provider hint from models.dev first
+  const isResponses =
+    devMeta?.provider?.npm === '@ai-sdk/openai' ||
+    lower.includes('muse') ||
+    lower.includes('gpt-') ||
+    lower.includes('grok-');
+
+  const isMessages =
+    devMeta?.provider?.npm === '@ai-sdk/anthropic' ||
+    lower.includes('claude');
+
+  let apiType: 'chat-completions' | 'messages' | 'responses' = 'chat-completions';
+  let modelUrl: string;
+
+  if (isMessages) {
+    apiType = 'messages';
+    modelUrl = isGo ? 'https://opencode.ai/zen/go/v1' : 'https://opencode.ai/zen/v1';
+  } else if (isResponses) {
+    apiType = 'responses';
+    modelUrl = isGo ? 'https://opencode.ai/zen/go/v1' : 'https://opencode.ai/zen/v1';
+  } else {
+    apiType = 'chat-completions';
+    modelUrl = isGo
+      ? 'https://opencode.ai/zen/go/v1/chat/completions'
+      : 'https://opencode.ai/zen/v1/chat/completions';
+  }
 
   const defaultSuffix = isGo ? '(OpenCode Go)' : isFree ? '(OpenCode Free)' : '(OpenCode Zen)';
   const suffix = options.suffix || defaultSuffix;
   const name = formatModelName(modelId, suffix);
-  const lower = modelId.toLowerCase();
 
-  let contextWindow = 1048576;
-  let maxOutputTokens = 65536;
-  let vision = false;
-  let thinking = true;
+  // 2. Derive limits and capabilities dynamically from models.dev if available
+  let contextWindow = devMeta?.limit?.context || 1048576;
+  let maxOutputTokens = devMeta?.limit?.output || 65536;
+  let vision = devMeta?.modalities?.input?.includes('image') ?? false;
+  let thinking = devMeta?.reasoning !== undefined ? devMeta.reasoning : true;
 
-  if (lower.includes('deepseek')) {
-    contextWindow = 1048576;
-    maxOutputTokens = 131072;
-    vision = lower.includes('vision');
-  } else if (lower.includes('glm')) {
-    contextWindow = 1048576;
-    maxOutputTokens = 131072;
-    vision = true;
-  } else if (lower.includes('kimi')) {
-    contextWindow = 1048576;
-    maxOutputTokens = 65536;
-    vision = true;
-  } else if (lower.includes('qwen')) {
-    contextWindow = 1000000;
-    maxOutputTokens = 131072;
-    vision = true;
-    thinking = false;
-  } else if (lower.includes('minimax')) {
-    contextWindow = 1048576;
-    maxOutputTokens = 131072;
-    vision = false;
-    thinking = false;
-  } else if (lower.includes('claude')) {
-    if (lower.includes('haiku')) {
-      contextWindow = 200000;
-      maxOutputTokens = 64000;
+  if (!devMeta) {
+    if (lower.includes('deepseek')) {
+      contextWindow = 1048576;
+      maxOutputTokens = 131072;
+      vision = lower.includes('vision');
+    } else if (lower.includes('glm')) {
+      contextWindow = 1048576;
+      maxOutputTokens = 131072;
+      vision = true;
+    } else if (lower.includes('kimi')) {
+      contextWindow = 1048576;
+      maxOutputTokens = 65536;
+      vision = true;
+    } else if (lower.includes('qwen')) {
+      contextWindow = 1000000;
+      maxOutputTokens = 131072;
+      vision = true;
       thinking = false;
-    } else {
+    } else if (lower.includes('minimax')) {
+      contextWindow = 1048576;
+      maxOutputTokens = 131072;
+      vision = false;
+      thinking = false;
+    } else if (lower.includes('claude')) {
+      if (lower.includes('haiku')) {
+        contextWindow = 200000;
+        maxOutputTokens = 64000;
+        thinking = false;
+      } else {
+        contextWindow = 1000000;
+        maxOutputTokens = 128000;
+        thinking = true;
+      }
+      vision = true;
+    } else if (lower.includes('gpt')) {
+      if (lower.includes('mini') || lower.includes('nano')) {
+        contextWindow = 128000;
+        maxOutputTokens = 16384;
+      } else {
+        contextWindow = 1000000;
+        maxOutputTokens = 128000;
+      }
+      vision = true;
+      thinking = true;
+    } else if (lower.includes('gemini')) {
+      contextWindow = 1000000;
+      maxOutputTokens = 65536;
+      vision = true;
+      thinking = lower.includes('thinking');
+    } else if (lower.includes('grok')) {
+      contextWindow = 1000000;
+      maxOutputTokens = 65536;
+      vision = true;
+      thinking = true;
+    } else if (lower.includes('mimo')) {
+      contextWindow = 1048576;
+      maxOutputTokens = 65536;
+      vision = lower.includes('omni');
+      thinking = true;
+    } else if (lower.includes('nemotron')) {
       contextWindow = 1000000;
       maxOutputTokens = 128000;
+      vision = false;
+      thinking = true;
+    } else if (lower.includes('muse')) {
+      contextWindow = 1000000;
+      maxOutputTokens = 65536;
+      vision = false;
+      thinking = true;
+    } else if (lower.includes('longcat')) {
+      contextWindow = 1048576;
+      maxOutputTokens = 65536;
+      vision = false;
+      thinking = false;
+    } else if (lower.includes('omen') || lower.includes('hy4')) {
+      contextWindow = 1048576;
+      maxOutputTokens = 65536;
+      vision = false;
       thinking = true;
     }
-    vision = true;
-  } else if (lower.includes('gpt')) {
-    if (lower.includes('mini') || lower.includes('nano')) {
-      contextWindow = 128000;
-      maxOutputTokens = 16384;
-    } else {
-      contextWindow = 1000000;
-      maxOutputTokens = 128000;
-    }
-    vision = true;
-    thinking = true;
-  } else if (lower.includes('gemini')) {
-    contextWindow = 1000000;
-    maxOutputTokens = 65536;
-    vision = true;
-    thinking = lower.includes('thinking');
-  } else if (lower.includes('grok')) {
-    contextWindow = 1000000;
-    maxOutputTokens = 65536;
-    vision = true;
-    thinking = true;
-  } else if (lower.includes('mimo')) {
-    contextWindow = 1048576;
-    maxOutputTokens = 65536;
-    vision = lower.includes('omni');
-    thinking = true;
-  } else if (lower.includes('nemotron')) {
-    contextWindow = 1000000;
-    maxOutputTokens = 128000;
-    vision = false;
-    thinking = true;
-  } else if (lower.includes('muse')) {
-    contextWindow = 1000000;
-    maxOutputTokens = 65536;
-    vision = false;
-    thinking = false;
-  } else if (lower.includes('longcat')) {
-    contextWindow = 1048576;
-    maxOutputTokens = 65536;
-    vision = false;
-    thinking = false;
-  } else if (lower.includes('omen') || lower.includes('hy4')) {
-    contextWindow = 1048576;
-    maxOutputTokens = 65536;
-    vision = false;
-    thinking = true;
   }
 
   const maxInputTokens = contextWindow - maxOutputTokens;
+  const devEfforts = devMeta?.reasoning_options?.find((o: any) => o.type === 'effort')?.values;
+  const supportsReasoningEffort = devEfforts && Array.isArray(devEfforts) && devEfforts.length > 0
+    ? devEfforts
+    : thinking ? ['low', 'medium', 'high', 'xhigh', 'max'] : undefined;
 
   const model: CustomEndpointModel = {
     id: modelId,
     name,
     family: 'gpt-5-5',
-    url: baseUrl,
-    apiType: 'chat-completions',
+    url: modelUrl,
+    apiType,
     toolCalling: true,
     vision,
     contextWindow,
     maxInputTokens,
     maxOutputTokens,
     thinking,
-    supportsReasoningEffort: thinking ? ['low', 'medium', 'high', 'xhigh', 'max'] : undefined,
-    reasoningEffortFormat: thinking ? 'chat-completions' : undefined,
+    supportsReasoningEffort,
+    reasoningEffortFormat: apiType,
     modelOptions: {
       temperature: null,
       top_p: null,

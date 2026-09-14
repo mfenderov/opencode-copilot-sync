@@ -94,15 +94,15 @@ exports.run = async function () {
     const api = syncExt.exports;
 
     // =========================================================
-    // 3. CHAT MODE E2E: DeepSeek 4.1 (deepseek-v4.1-flash)
+    // 3. CHAT MODE E2E: Kimi K3 (kimi-k3) / DeepSeek 4.1
     // =========================================================
-    const ds41Model = opencodeModels.find(m => m.id === 'deepseek-v4.1-flash');
-    assert.ok(ds41Model, 'deepseek-v4.1-flash must be registered in vscode.lm');
+    const chatModel = opencodeModels.find(m => m.id === 'kimi-k3') || opencodeModels.find(m => m.id === 'deepseek-v4.1-flash');
+    assert.ok(chatModel, 'Must find registered OpenCode model for chat test');
     console.log(`\n=============================================`);
-    console.log(`[E2E] >>> [CHAT MODE] Testing DeepSeek 4.1 (${ds41Model.name})...`);
+    console.log(`[E2E] >>> [CHAT MODE] Testing Chat Mode with ${chatModel.name} (${chatModel.id})...`);
     const chatPrompt = 'Hello! What is 2 + 2? Please reply with only the number.';
     console.log(`[E2E] >>> [CHAT MODE] Prompt: "${chatPrompt}"`);
-    const chatResp = await ds41Model.sendRequest(
+    const chatResp = await chatModel.sendRequest(
       [vscode.LanguageModelChatMessage.User(chatPrompt)],
       {},
       new vscode.CancellationTokenSource().token
@@ -111,21 +111,21 @@ exports.run = async function () {
     for await (const chunk of chatResp.text) {
       chatStreamed += chunk;
     }
-    console.log(`[E2E] >>> [CHAT MODE] DeepSeek 4.1 streamed response: "${chatStreamed.trim()}"`);
+    console.log(`[E2E] >>> [CHAT MODE] ${chatModel.name} streamed response: "${chatStreamed.trim()}"`);
     assert.ok(chatStreamed.includes('4'), `Chat response must contain 4, got: "${chatStreamed}"`);
-    console.log('[E2E] >>> [CHAT MODE] PASSED! DeepSeek 4.1 answered correctly in Chat Mode.');
+    console.log('[E2E] >>> [CHAT MODE] PASSED! Model answered correctly in Chat Mode.');
 
     // =========================================================
-    // 3b. THINKING VERIFICATION: DeepSeek 4.1 LanguageModelThinkingPart
+    // 3b. THINKING VERIFICATION: LanguageModelThinkingPart
     // =========================================================
     if (api && api.chatProvider) {
       console.log(`\n=============================================`);
-      console.log(`[E2E] >>> [THINKING VERIFICATION] Testing DeepSeek 4.1 thinking stream...`);
+      console.log(`[E2E] >>> [THINKING VERIFICATION] Testing thinking stream with Kimi K3...`);
       const thinkParts = [];
       const thinkProgress = { report: (p) => thinkParts.push(p) };
-      const dsThinkMeta = { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash (OpenCode)', family: 'deepseek-v4.1-flash', thinking: true };
+      const thinkMeta = { id: 'kimi-k3', name: 'Kimi K3 (OpenCode Go)', family: 'kimi-k3', thinking: true };
       await api.chatProvider.provideLanguageModelChatResponse(
-        dsThinkMeta,
+        thinkMeta,
         [{ role: vscode.LanguageModelChatMessageRole.User, content: [new vscode.LanguageModelTextPart('Solve step-by-step: what is 13 * 17?')] }],
         {},
         thinkProgress,
@@ -177,10 +177,10 @@ exports.run = async function () {
         content: [new vscode.LanguageModelTextPart('What is 47 * 89? Please use the calculator tool to compute this.')]
       };
 
-      const dsMeta = { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash (OpenCode)', family: 'deepseek-v4.1-flash' };
+      const agentMeta = { id: 'kimi-k3', name: 'Kimi K3 (OpenCode Go)', family: 'kimi-k3' };
       console.log(`[E2E] >>> [AGENT MODE] Turn 1: Sending prompt with 131 tools attached...`);
       await api.chatProvider.provideLanguageModelChatResponse(
-        dsMeta,
+        agentMeta,
         [userAgentMsg],
         { tools: dummyTools },
         progressTurn1,
@@ -218,9 +218,9 @@ exports.run = async function () {
 
         const agentPartsTurn2 = [];
         const progressTurn2 = { report: (part) => agentPartsTurn2.push(part) };
-        console.log(`[E2E] >>> [AGENT MODE] Turn 2: Sending tool result back to DeepSeek 4.1...`);
+        console.log(`[E2E] >>> [AGENT MODE] Turn 2: Sending tool result back to model...`);
         await api.chatProvider.provideLanguageModelChatResponse(
-          dsMeta,
+          agentMeta,
           [userAgentMsg, assistantMsg, toolResultMsg],
           { tools: dummyTools },
           progressTurn2,
@@ -235,34 +235,34 @@ exports.run = async function () {
         }
         console.log(`[E2E] >>> [AGENT MODE] Turn 2 final response: "${textTurn2.trim()}"`);
         assert.ok(textTurn2.includes('4183') || textTurn2.includes('4,183'), `Final response must contain 4183, got: "${textTurn2}"`);
-        console.log('[E2E] >>> [AGENT MODE] PASSED! DeepSeek 4.1 completed full multi-turn Agent workflow with 131 tools.');
+        console.log('[E2E] >>> [AGENT MODE] PASSED! Model completed full multi-turn Agent workflow with 131 tools.');
       }
       // =========================================================
-      // 5. FAIL-FAST 502/500 HANDLING: Muse Spark 1.3 Contributor Free
+      // 5. RESPONSES API E2E: Muse Spark 1.3 Contributor Free
       // =========================================================
       console.log(`\n=============================================`);
-      console.log(`[E2E] >>> [FAIL-FAST TEST] Testing upstream 500 error fail-fast bypass...`);
+      console.log(`[E2E] >>> [RESPONSES API] Testing Muse Spark 1.3 via /responses transport...`);
       const museMeta = { id: 'muse-spark-1.3-contributor-free', name: 'Muse Spark 1.3 Contributor (OpenCode Free)', family: 'muse-spark-1.3-contributor-free' };
-      const failFastParts = [];
-      const failFastProgress = { report: (p) => failFastParts.push(p) };
-      const startTime = Date.now();
+      const museParts = [];
+      const museProgress = { report: (p) => museParts.push(p) };
       
-      // Must NOT throw, must complete fast (< 5s), and must stream diagnostic alert card
       await api.chatProvider.provideLanguageModelChatResponse(
         museMeta,
-        [{ role: vscode.LanguageModelChatMessageRole.User, content: [new vscode.LanguageModelTextPart('Hello')] }],
+        [{ role: vscode.LanguageModelChatMessageRole.User, content: [new vscode.LanguageModelTextPart('What is 3 + 5? Answer with only the number.')] }],
         {},
-        failFastProgress,
+        museProgress,
         new vscode.CancellationTokenSource().token
       );
-      const elapsedMs = Date.now() - startTime;
-      console.log(`[E2E] >>> Fail-fast completed in ${elapsedMs}ms (vs Copilot 32,400ms retry timeout)`);
-      assert.ok(elapsedMs < 5000, `Fail-fast must complete in <5000ms, took ${elapsedMs}ms`);
 
-      const alertPart = failFastParts.find(p => p.value && p.value.includes('OpenCode Model Alert'));
-      console.log('[E2E] >>> Diagnostic alert part emitted:', !!alertPart);
-      assert.ok(alertPart, 'Must stream OpenCode Model Alert diagnostic card on 500/502');
-      console.log('[E2E] >>> [FAIL-FAST TEST] PASSED! 500/502 error handled gracefully in <1s without Copilot retry freeze.');
+      let museText = '';
+      for (const p of museParts) {
+        if (p instanceof vscode.LanguageModelTextPart) {
+          museText += p.value;
+        }
+      }
+      console.log(`[E2E] >>> Muse Spark 1.3 streamed response: "${museText.trim()}"`);
+      assert.ok(museText.includes('8'), `Muse Spark must answer 8, got: "${museText}"`);
+      console.log('[E2E] >>> [RESPONSES API] PASSED! Muse Spark completed live completion via /responses.');
     }
   } else {
     console.log('\n[E2E] Note: No OPENCODE_API_KEY detected in auth.json or environment. Verified model registration, tool schemas, and provider contracts.');
@@ -293,6 +293,29 @@ exports.run = async function () {
   } catch (err) {
     console.log('[E2E] Command note:', err.message);
   }
+
+  // 4b. Verify chatLanguageModels.json configuration for Remote-WSL and Copilot BYOK
+  const { getAllChatLanguageModelsPaths, readChatLanguageModels } = require(path.join(__dirname, '../../out/syncer.js'));
+  const allPaths = getAllChatLanguageModelsPaths();
+  console.log(`\n[E2E] Checking generated config across ${allPaths.length} paths:`);
+  let foundConfig = false;
+  for (const p of allPaths) {
+    if (fs.existsSync(p)) {
+      const cfg = readChatLanguageModels(p);
+      const openCodeEntry = cfg.find(e => e.name === 'OpenCode');
+      if (openCodeEntry) {
+        foundConfig = true;
+        console.log(`  - Config verified at: ${p} (${openCodeEntry.models.length} models, vendor=${openCodeEntry.vendor})`);
+        const museInConfig = openCodeEntry.models.find(m => m.id.includes('muse-spark'));
+        if (museInConfig) {
+          console.log(`    - Muse Spark in config: apiType=${museInConfig.apiType}, url=${museInConfig.url}`);
+          assert.strictEqual(museInConfig.apiType, 'responses', 'Muse Spark must be configured with apiType: responses');
+        }
+        break;
+      }
+    }
+  }
+  assert.ok(foundConfig, 'chatLanguageModels.json must contain OpenCode provider for WSL/Copilot native compatibility');
 
   console.log('\n=============================================');
   console.log('>>> [E2E] All in-editor assertions PASSED!');

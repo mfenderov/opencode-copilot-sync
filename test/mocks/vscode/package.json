@@ -1,0 +1,6 @@
+{
+  "name": "vscode",
+  "version": "1.125.0",
+  "type": "module",
+  "main": "index.js"
+}

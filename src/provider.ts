@@ -51,6 +51,11 @@ export const VERIFIED_OPENCODE_MODELS: OpenCodeModelMeta[] = [
   { id: 'muse-spark-1.2-contributor-free', name: 'Muse Spark 1.2 Contributor (OpenCode Free)', family: 'muse-spark-1.2-contributor-free', catalog: 'zen', isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
 ];
 
+export function isResponsesModel(modelId: string): boolean {
+  const lower = modelId.toLowerCase();
+  return lower.includes('muse') || lower.includes('gpt-') || lower.includes('grok-');
+}
+
 export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChangeLanguageModelChatInformation = this._onDidChange.event;
@@ -96,24 +101,41 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
   ): Promise<vscode.LanguageModelChatInformation[]> {
     return this._models.map((m) => {
       const supportsReasoning = m.thinking !== false;
-      const reasoningSchema = supportsReasoning
-        ? {
-            properties: {
-              reasoningEffort: {
-                type: 'string',
-                title: 'Thinking Effort',
-                enum: ['low', 'medium', 'high'],
-                enumItemLabels: ['Low', 'Medium', 'High'],
-                enumDescriptions: [
-                  'Faster responses with less reasoning',
-                  'Balanced reasoning and speed',
-                  'Maximum reasoning depth',
-                ],
-                default: 'medium',
-              },
-            },
-          }
-        : undefined;
+      const properties: Record<string, any> = {};
+
+      if (supportsReasoning) {
+        properties.reasoningEffort = {
+          type: 'string',
+          title: 'Thinking Effort',
+          enum: ['low', 'medium', 'high', 'max'],
+          enumItemLabels: ['Low', 'Medium', 'High', 'Max'],
+          enumDescriptions: [
+            'Faster responses with less reasoning',
+            'Balanced reasoning and speed',
+            'Deep reasoning',
+            'Maximum reasoning depth',
+          ],
+          default: 'medium',
+          group: 'navigation',
+        };
+      }
+
+      if (m.contextWindow > 256000) {
+        properties.contextTier = {
+          type: 'string',
+          title: 'Context Size',
+          enum: ['default', 'long_context'],
+          enumItemLabels: ['Standard (128K)', 'Extended (1M)'],
+          enumDescriptions: [
+            'Standard context window for faster generation and lower token usage',
+            'Full extended context window for large codebase analysis',
+          ],
+          default: 'default',
+          group: 'tokens',
+        };
+      }
+
+      const configurationSchema = Object.keys(properties).length > 0 ? { properties } : undefined;
 
       return {
         id: m.id,
@@ -128,10 +150,10 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
           toolCalling: true,
           thinking: supportsReasoning,
         },
-        supportsReasoningEffort: supportsReasoning ? ['low', 'medium', 'high'] : undefined,
-        supportedReasoningEfforts: supportsReasoning ? ['low', 'medium', 'high'] : undefined,
+        supportsReasoningEffort: supportsReasoning ? ['low', 'medium', 'high', 'max'] : undefined,
+        supportedReasoningEfforts: supportsReasoning ? ['low', 'medium', 'high', 'max'] : undefined,
         defaultReasoningEffort: supportsReasoning ? 'medium' : undefined,
-        configurationSchema: reasoningSchema,
+        configurationSchema,
         isBYOK: true,
       } as any;
     });
@@ -244,23 +266,34 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
       model.id.includes('community') ||
       model.id === 'big-pickle' ||
       (model as any).isFree === true;
-    const url = isFreeOrZen
-      ? 'https://opencode.ai/zen/v1/chat/completions'
-      : 'https://opencode.ai/zen/go/v1/chat/completions';
+
+    const lowerId = model.id.toLowerCase();
+    const isResponses = isResponsesModel(model.id);
+
+    const baseUrl = isFreeOrZen
+      ? 'https://opencode.ai/zen/v1'
+      : 'https://opencode.ai/zen/go/v1';
+    const url = isResponses ? `${baseUrl}/responses` : `${baseUrl}/chat/completions`;
 
     const reasoningEffort =
       (options as any)?.modelConfiguration?.reasoningEffort ||
       (options as any)?.configuration?.reasoningEffort;
 
-    const requestBody: any = {
-      model: model.id,
-      messages: formattedMessages,
-      tools: toolsPayload,
-      stream: true,
-    };
-    if (reasoningEffort) {
-      requestBody.reasoning_effort = reasoningEffort;
-    }
+    const requestBody: any = isResponses
+      ? {
+          model: model.id,
+          input: formattedMessages,
+          tools: toolsPayload,
+          stream: true,
+          ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
+        }
+      : {
+          model: model.id,
+          messages: formattedMessages,
+          tools: toolsPayload,
+          stream: true,
+          ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+        };
 
     const sessionId = `ses_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 
@@ -349,14 +382,69 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         const lines = buffer.split('\n');
         buffer = lines.pop() ?? '';
 
+        let isDone = false;
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed || trimmed.startsWith(':')) continue;
-          if (trimmed === 'data: [DONE]') continue;
+          if (trimmed === 'data: [DONE]') {
+            isDone = true;
+            break;
+          }
 
           if (trimmed.startsWith('data: ')) {
             try {
               const data = JSON.parse(trimmed.slice(6));
+
+              // 1. Handle OpenAI Responses API stream format (used by Muse, GPT, Grok)
+              if (data.type === 'response.completed') {
+                isDone = true;
+                break;
+              }
+
+              if (data.type === 'response.output_text.delta') {
+                const delta = typeof data.delta === 'string' ? data.delta : data.delta?.text || data.delta?.value || '';
+                if (delta) {
+                  progress.report(new vscode.LanguageModelTextPart(delta));
+                }
+                continue;
+              }
+
+              if (data.type === 'response.output_item.added' && data.item?.type === 'function_call') {
+                const idx = typeof data.output_index === 'number' ? data.output_index : 0;
+                pendingToolCalls.set(idx, {
+                  id: data.item.call_id || data.item.id || `call_${Date.now()}`,
+                  name: data.item.name || '',
+                  args: data.item.arguments || '',
+                });
+                continue;
+              }
+
+              if (data.type === 'response.function_call_arguments.delta') {
+                const idx = typeof data.output_index === 'number' ? data.output_index : 0;
+                const current = pendingToolCalls.get(idx) || { id: '', name: '', args: '' };
+                const delta = typeof data.delta === 'string' ? data.delta : data.delta?.arguments || '';
+                current.args += delta;
+                pendingToolCalls.set(idx, current);
+                continue;
+              }
+
+              if (data.type === 'response.output_item.done' && data.item?.type === 'function_call') {
+                const idx = typeof data.output_index === 'number' ? data.output_index : 0;
+                const call = pendingToolCalls.get(idx);
+                if (call) {
+                  let parsedArgs: any = {};
+                  try {
+                    parsedArgs = JSON.parse(call.args);
+                  } catch {
+                    parsedArgs = { raw: call.args };
+                  }
+                  progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+                  pendingToolCalls.delete(idx);
+                }
+                continue;
+              }
+
+              // 2. Handle OpenAI Chat Completions API stream format (used by DeepSeek, Kimi, GLM, MiMo, Qwen)
               const choice = data.choices?.[0];
               if (!choice) continue;
 
@@ -471,9 +559,15 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
                 }
                 pendingToolCalls.clear();
               }
+
+              if (choice.finish_reason === 'stop') {
+                isDone = true;
+                break;
+              }
             } catch {}
           }
         }
+        if (isDone) break;
       }
     } catch (streamErr: any) {
       if (token.isCancellationRequested) {

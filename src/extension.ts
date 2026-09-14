@@ -31,14 +31,6 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   } catch {}
 
-  // Clean up any legacy customendpoint OpenCode entries from chatLanguageModels.json
-  try {
-    const cleaned = cleanupLegacyOpenCodeCustomEndpoints(context.globalStorageUri?.fsPath);
-    if (cleaned.length > 0) {
-      outputChannel.appendLine(`Purged legacy OpenCode customendpoint entries from: ${cleaned.join(', ')}`);
-    }
-  } catch {}
-
   // Auto-enable VS Code's experimental Agent Host BYOK bridge so custom models appear in Agent Mode
   try {
     const agentHostCfg = vscode.workspace.getConfiguration('chat.agentHost');

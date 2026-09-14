@@ -76,109 +76,127 @@ function formatModelName(id, suffix = "(OpenCode)") {
 function enrichModel(modelId, options = {}) {
   const isGo = options.isGo ?? true;
   const isFree = options.isFree ?? false;
-  const baseUrl = isGo ? "https://opencode.ai/zen/go/v1/chat/completions" : "https://opencode.ai/zen/v1/chat/completions";
+  const devMeta = options.modelsDevData;
+  const lower = modelId.toLowerCase();
+  const isResponses = devMeta?.provider?.npm === "@ai-sdk/openai" || lower.includes("muse") || lower.includes("gpt-") || lower.includes("grok-");
+  const isMessages = devMeta?.provider?.npm === "@ai-sdk/anthropic" || lower.includes("claude");
+  let apiType = "chat-completions";
+  let modelUrl;
+  if (isMessages) {
+    apiType = "messages";
+    modelUrl = isGo ? "https://opencode.ai/zen/go/v1" : "https://opencode.ai/zen/v1";
+  } else if (isResponses) {
+    apiType = "responses";
+    modelUrl = isGo ? "https://opencode.ai/zen/go/v1" : "https://opencode.ai/zen/v1";
+  } else {
+    apiType = "chat-completions";
+    modelUrl = isGo ? "https://opencode.ai/zen/go/v1/chat/completions" : "https://opencode.ai/zen/v1/chat/completions";
+  }
   const defaultSuffix = isGo ? "(OpenCode Go)" : isFree ? "(OpenCode Free)" : "(OpenCode Zen)";
   const suffix = options.suffix || defaultSuffix;
   const name = formatModelName(modelId, suffix);
-  const lower = modelId.toLowerCase();
-  let contextWindow = 1048576;
-  let maxOutputTokens = 65536;
-  let vision = false;
-  let thinking = true;
-  if (lower.includes("deepseek")) {
-    contextWindow = 1048576;
-    maxOutputTokens = 131072;
-    vision = lower.includes("vision");
-  } else if (lower.includes("glm")) {
-    contextWindow = 1048576;
-    maxOutputTokens = 131072;
-    vision = true;
-  } else if (lower.includes("kimi")) {
-    contextWindow = 1048576;
-    maxOutputTokens = 65536;
-    vision = true;
-  } else if (lower.includes("qwen")) {
-    contextWindow = 1e6;
-    maxOutputTokens = 131072;
-    vision = true;
-    thinking = false;
-  } else if (lower.includes("minimax")) {
-    contextWindow = 1048576;
-    maxOutputTokens = 131072;
-    vision = false;
-    thinking = false;
-  } else if (lower.includes("claude")) {
-    if (lower.includes("haiku")) {
-      contextWindow = 2e5;
-      maxOutputTokens = 64e3;
+  let contextWindow = devMeta?.limit?.context || 1048576;
+  let maxOutputTokens = devMeta?.limit?.output || 65536;
+  let vision = devMeta?.modalities?.input?.includes("image") ?? false;
+  let thinking = devMeta?.reasoning !== void 0 ? devMeta.reasoning : true;
+  if (!devMeta) {
+    if (lower.includes("deepseek")) {
+      contextWindow = 1048576;
+      maxOutputTokens = 131072;
+      vision = lower.includes("vision");
+    } else if (lower.includes("glm")) {
+      contextWindow = 1048576;
+      maxOutputTokens = 131072;
+      vision = true;
+    } else if (lower.includes("kimi")) {
+      contextWindow = 1048576;
+      maxOutputTokens = 65536;
+      vision = true;
+    } else if (lower.includes("qwen")) {
+      contextWindow = 1e6;
+      maxOutputTokens = 131072;
+      vision = true;
       thinking = false;
-    } else {
+    } else if (lower.includes("minimax")) {
+      contextWindow = 1048576;
+      maxOutputTokens = 131072;
+      vision = false;
+      thinking = false;
+    } else if (lower.includes("claude")) {
+      if (lower.includes("haiku")) {
+        contextWindow = 2e5;
+        maxOutputTokens = 64e3;
+        thinking = false;
+      } else {
+        contextWindow = 1e6;
+        maxOutputTokens = 128e3;
+        thinking = true;
+      }
+      vision = true;
+    } else if (lower.includes("gpt")) {
+      if (lower.includes("mini") || lower.includes("nano")) {
+        contextWindow = 128e3;
+        maxOutputTokens = 16384;
+      } else {
+        contextWindow = 1e6;
+        maxOutputTokens = 128e3;
+      }
+      vision = true;
+      thinking = true;
+    } else if (lower.includes("gemini")) {
+      contextWindow = 1e6;
+      maxOutputTokens = 65536;
+      vision = true;
+      thinking = lower.includes("thinking");
+    } else if (lower.includes("grok")) {
+      contextWindow = 1e6;
+      maxOutputTokens = 65536;
+      vision = true;
+      thinking = true;
+    } else if (lower.includes("mimo")) {
+      contextWindow = 1048576;
+      maxOutputTokens = 65536;
+      vision = lower.includes("omni");
+      thinking = true;
+    } else if (lower.includes("nemotron")) {
       contextWindow = 1e6;
       maxOutputTokens = 128e3;
+      vision = false;
+      thinking = true;
+    } else if (lower.includes("muse")) {
+      contextWindow = 1e6;
+      maxOutputTokens = 65536;
+      vision = false;
+      thinking = true;
+    } else if (lower.includes("longcat")) {
+      contextWindow = 1048576;
+      maxOutputTokens = 65536;
+      vision = false;
+      thinking = false;
+    } else if (lower.includes("omen") || lower.includes("hy4")) {
+      contextWindow = 1048576;
+      maxOutputTokens = 65536;
+      vision = false;
       thinking = true;
     }
-    vision = true;
-  } else if (lower.includes("gpt")) {
-    if (lower.includes("mini") || lower.includes("nano")) {
-      contextWindow = 128e3;
-      maxOutputTokens = 16384;
-    } else {
-      contextWindow = 1e6;
-      maxOutputTokens = 128e3;
-    }
-    vision = true;
-    thinking = true;
-  } else if (lower.includes("gemini")) {
-    contextWindow = 1e6;
-    maxOutputTokens = 65536;
-    vision = true;
-    thinking = lower.includes("thinking");
-  } else if (lower.includes("grok")) {
-    contextWindow = 1e6;
-    maxOutputTokens = 65536;
-    vision = true;
-    thinking = true;
-  } else if (lower.includes("mimo")) {
-    contextWindow = 1048576;
-    maxOutputTokens = 65536;
-    vision = lower.includes("omni");
-    thinking = true;
-  } else if (lower.includes("nemotron")) {
-    contextWindow = 1e6;
-    maxOutputTokens = 128e3;
-    vision = false;
-    thinking = true;
-  } else if (lower.includes("muse")) {
-    contextWindow = 1e6;
-    maxOutputTokens = 65536;
-    vision = false;
-    thinking = false;
-  } else if (lower.includes("longcat")) {
-    contextWindow = 1048576;
-    maxOutputTokens = 65536;
-    vision = false;
-    thinking = false;
-  } else if (lower.includes("omen") || lower.includes("hy4")) {
-    contextWindow = 1048576;
-    maxOutputTokens = 65536;
-    vision = false;
-    thinking = true;
   }
   const maxInputTokens = contextWindow - maxOutputTokens;
+  const devEfforts = devMeta?.reasoning_options?.find((o) => o.type === "effort")?.values;
+  const supportsReasoningEffort = devEfforts && Array.isArray(devEfforts) && devEfforts.length > 0 ? devEfforts : thinking ? ["low", "medium", "high", "xhigh", "max"] : void 0;
   const model = {
     id: modelId,
     name,
     family: "gpt-5-5",
-    url: baseUrl,
-    apiType: "chat-completions",
+    url: modelUrl,
+    apiType,
     toolCalling: true,
     vision,
     contextWindow,
     maxInputTokens,
     maxOutputTokens,
     thinking,
-    supportsReasoningEffort: thinking ? ["low", "medium", "high", "xhigh", "max"] : void 0,
-    reasoningEffortFormat: thinking ? "chat-completions" : void 0,
+    supportsReasoningEffort,
+    reasoningEffortFormat: apiType,
     modelOptions: {
       temperature: null,
       top_p: null
@@ -211,13 +229,6 @@ function isOpenCodeLegacyOrCustomEntry(entry) {
     }
   }
   return false;
-}
-function purgeOpenCodeFromChatLanguageModels(existingConfig) {
-  if (!Array.isArray(existingConfig)) return [];
-  return existingConfig.filter((entry) => {
-    if (!entry) return false;
-    return !isOpenCodeLegacyOrCustomEntry(entry) && entry.name !== "OpenCode";
-  });
 }
 function mergeChatLanguageModels(existingConfig, newProviders) {
   const addingUnifiedOpenCode = newProviders.some((p) => p.name === "OpenCode");
@@ -269,6 +280,18 @@ async function fetchOpenCodeModels(apiKey, catalog = "go") {
     throw new Error("Invalid response structure: expected data array");
   }
   return json.data.map((m) => m.id).filter(Boolean);
+}
+async function fetchModelsDevMetadata() {
+  try {
+    const res = await fetch("https://models.dev/api.json", {
+      signal: AbortSignal.timeout(5e3)
+    });
+    if (!res.ok) return {};
+    const data = await res.json();
+    return data["opencode"]?.models || {};
+  } catch {
+    return {};
+  }
 }
 function filterFreeModels(modelIds) {
   return modelIds.filter(
@@ -351,6 +374,51 @@ function syncWslMirror(sourceFilePath) {
                   fs.mkdirSync(winDir, { recursive: true });
                 }
                 fs.copyFileSync(sourceFilePath, winDest);
+              }
+            }
+          }
+        }
+        const potentialDistroRoots = ["/mnt/wsl/instances", "/mnt/wsl"];
+        for (const distroRoot of potentialDistroRoots) {
+          if (fs.existsSync(distroRoot)) {
+            let distros = [];
+            try {
+              distros = fs.readdirSync(distroRoot);
+            } catch {
+            }
+            for (const distro of distros) {
+              if (distro.startsWith(".") || distro === "resolv.conf" || distro === "wslg" || distro === "instances") continue;
+              const distroHome = path.join(distroRoot, distro, "home");
+              const userHomes = [];
+              if (fs.existsSync(distroHome)) {
+                try {
+                  for (const u of fs.readdirSync(distroHome)) {
+                    userHomes.push(path.join(distroHome, u));
+                  }
+                } catch {
+                }
+              }
+              const rootHome = path.join(distroRoot, distro, "root");
+              if (fs.existsSync(rootHome)) {
+                userHomes.push(rootHome);
+              }
+              for (const h of userHomes) {
+                const targetSubDirs = [
+                  ".vscode-server/data/User",
+                  ".vscode-server/data/Machine",
+                  ".vscode-server-insiders/data/User",
+                  ".vscode-server-insiders/data/Machine",
+                  ".config/Code/User",
+                  ".config/Code - Insiders/User"
+                ];
+                for (const sub of targetSubDirs) {
+                  const target = path.join(h, sub, "chatLanguageModels.json");
+                  const targetDir = path.dirname(target);
+                  if (!fs.existsSync(targetDir)) {
+                    fs.mkdirSync(targetDir, { recursive: true });
+                  }
+                  fs.copyFileSync(sourceFilePath, target);
+                }
               }
             }
           }
@@ -460,6 +528,48 @@ function getAllChatLanguageModelsPaths(activeExtensionStoragePath) {
           }
         }
       }
+      const potentialDistroRoots = ["/mnt/wsl/instances", "/mnt/wsl"];
+      for (const distroRoot of potentialDistroRoots) {
+        if (fs.existsSync(distroRoot)) {
+          let distros = [];
+          try {
+            distros = fs.readdirSync(distroRoot);
+          } catch {
+          }
+          for (const distro of distros) {
+            if (distro.startsWith(".") || distro === "resolv.conf" || distro === "wslg" || distro === "instances") continue;
+            const distroHome = path.join(distroRoot, distro, "home");
+            const userHomes = [];
+            if (fs.existsSync(distroHome)) {
+              try {
+                for (const u of fs.readdirSync(distroHome)) {
+                  userHomes.push(path.join(distroHome, u));
+                }
+              } catch {
+              }
+            }
+            const rootHome = path.join(distroRoot, distro, "root");
+            if (fs.existsSync(rootHome)) {
+              userHomes.push(rootHome);
+            }
+            for (const h of userHomes) {
+              const distroPaths = [
+                path.join(h, ".vscode-server", "data", "User", "chatLanguageModels.json"),
+                path.join(h, ".vscode-server", "data", "Machine", "chatLanguageModels.json"),
+                path.join(h, ".vscode-server-insiders", "data", "User", "chatLanguageModels.json"),
+                path.join(h, ".vscode-server-insiders", "data", "Machine", "chatLanguageModels.json"),
+                path.join(h, ".config", "Code", "User", "chatLanguageModels.json"),
+                path.join(h, ".config", "Code - Insiders", "User", "chatLanguageModels.json")
+              ];
+              for (const dp of distroPaths) {
+                if (!paths.includes(dp)) {
+                  paths.push(dp);
+                }
+              }
+            }
+          }
+        }
+      }
     } catch {
     }
   }
@@ -542,7 +652,7 @@ function createBackup(filePath) {
   }
   const dir = path.dirname(filePath);
   const baseName = path.basename(filePath);
-  const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+  const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-") + "-" + Math.random().toString(36).slice(2, 8);
   const backupPath = path.join(dir, `${baseName}.bak-${timestamp}`);
   fs.copyFileSync(filePath, backupPath);
   try {
@@ -560,18 +670,37 @@ function createBackup(filePath) {
   }
   return backupPath;
 }
-function safeWriteFileSync(filePath, data) {
+function safeWriteFileSync(filePath, data, options) {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
+  const mode = typeof options === "number" ? options : options?.mode;
   const tmpPath = `${filePath}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
   try {
-    fs.writeFileSync(tmpPath, data, "utf-8");
+    fs.writeFileSync(tmpPath, data, { encoding: "utf-8", mode: mode ?? 420 });
+    if (mode !== void 0 && process.platform !== "win32") {
+      try {
+        fs.chmodSync(tmpPath, mode);
+      } catch {
+      }
+    }
     fs.renameSync(tmpPath, filePath);
+    if (mode !== void 0 && process.platform !== "win32") {
+      try {
+        fs.chmodSync(filePath, mode);
+      } catch {
+      }
+    }
   } catch {
     try {
-      fs.writeFileSync(filePath, data, "utf-8");
+      fs.writeFileSync(filePath, data, { encoding: "utf-8", mode: mode ?? 420 });
+      if (mode !== void 0 && process.platform !== "win32") {
+        try {
+          fs.chmodSync(filePath, mode);
+        } catch {
+        }
+      }
     } finally {
       try {
         if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
@@ -579,25 +708,6 @@ function safeWriteFileSync(filePath, data) {
       }
     }
   }
-}
-function cleanupLegacyOpenCodeCustomEndpoints(storagePath) {
-  const filePaths = getAllChatLanguageModelsPaths(storagePath);
-  const cleaned = [];
-  for (const filePath of filePaths) {
-    try {
-      if (!fs.existsSync(filePath)) continue;
-      const existing = readChatLanguageModels(filePath);
-      const purged = purgeOpenCodeFromChatLanguageModels(existing);
-      if (purged.length !== existing.length) {
-        createBackup(filePath);
-        safeWriteFileSync(filePath, JSON.stringify(purged, null, 4));
-        cleaned.push(filePath);
-      }
-    } catch (err) {
-      console.error(`Failed cleaning legacy customendpoints in ${filePath}: ${err.message}`);
-    }
-  }
-  return cleaned;
 }
 function writeProvidersToConfig(providers, targetPath, storagePath) {
   const filePaths = targetPath ? [targetPath] : getAllChatLanguageModelsPaths(storagePath);
@@ -641,17 +751,22 @@ async function syncOpenCodeModels(apiKey, options = {}) {
       console.error(`Failed to fetch Zen models: ${err.message}`);
     }
   }
+  let modelsDevMap = {};
+  try {
+    modelsDevMap = await fetchModelsDevMetadata();
+  } catch {
+  }
   const goSet = new Set(goModelIds);
   const models = [];
   for (const id of goModelIds) {
-    models.push(enrichModel(id, { isGo: true, suffix: "(OpenCode Go)" }));
+    models.push(enrichModel(id, { isGo: true, suffix: "(OpenCode Go)", modelsDevData: modelsDevMap[id] }));
   }
   let zenCount = 0;
   for (const id of zenModelIds) {
     if (!goSet.has(id)) {
       const isFree = filterFreeModels([id]).length > 0;
       const suffix = isFree ? "(OpenCode Free)" : "(OpenCode Zen)";
-      models.push(enrichModel(id, { isGo: false, isFree, suffix }));
+      models.push(enrichModel(id, { isGo: false, isFree, suffix, modelsDevData: modelsDevMap[id] }));
       zenCount++;
     }
   }
@@ -660,23 +775,16 @@ async function syncOpenCodeModels(apiKey, options = {}) {
   }
   let targetPath = options.targetPath || getChatLanguageModelsPath(options.storagePath);
   let backupPath = null;
-  if (options.targetPath) {
-    const unifiedProvider = {
-      name: "OpenCode",
-      vendor: "customendpoint",
-      apiKey,
-      apiType: "chat-completions",
-      models
-    };
-    const res = writeProvidersToConfig([unifiedProvider], options.targetPath, options.storagePath);
-    targetPath = res.targetPath;
-    backupPath = res.backupPath;
-  } else {
-    const cleaned = cleanupLegacyOpenCodeCustomEndpoints(options.storagePath);
-    if (cleaned.length > 0) {
-      backupPath = createBackup(cleaned[0]);
-    }
-  }
+  const unifiedProvider = {
+    name: "OpenCode",
+    vendor: "customendpoint",
+    apiKey,
+    apiType: "chat-completions",
+    models
+  };
+  const res = writeProvidersToConfig([unifiedProvider], options.targetPath, options.storagePath);
+  targetPath = res.targetPath;
+  backupPath = res.backupPath;
   return {
     goCount: goModelIds.length,
     zenCount,
@@ -984,6 +1092,10 @@ var VERIFIED_OPENCODE_MODELS = [
   { id: "muse-spark-1.3-contributor-free", name: "Muse Spark 1.3 Contributor (OpenCode Free)", family: "muse-spark-1.3-contributor-free", catalog: "zen", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
   { id: "muse-spark-1.2-contributor-free", name: "Muse Spark 1.2 Contributor (OpenCode Free)", family: "muse-spark-1.2-contributor-free", catalog: "zen", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false }
 ];
+function isResponsesModel(modelId) {
+  const lower = modelId.toLowerCase();
+  return lower.includes("muse") || lower.includes("gpt-") || lower.includes("grok-");
+}
 var OpenCodeChatProvider = class {
   constructor(context) {
     this.context = context;
@@ -1025,22 +1137,38 @@ var OpenCodeChatProvider = class {
   async provideLanguageModelChatInformation(_options, _token) {
     return this._models.map((m) => {
       const supportsReasoning = m.thinking !== false;
-      const reasoningSchema = supportsReasoning ? {
-        properties: {
-          reasoningEffort: {
-            type: "string",
-            title: "Thinking Effort",
-            enum: ["low", "medium", "high"],
-            enumItemLabels: ["Low", "Medium", "High"],
-            enumDescriptions: [
-              "Faster responses with less reasoning",
-              "Balanced reasoning and speed",
-              "Maximum reasoning depth"
-            ],
-            default: "medium"
-          }
-        }
-      } : void 0;
+      const properties = {};
+      if (supportsReasoning) {
+        properties.reasoningEffort = {
+          type: "string",
+          title: "Thinking Effort",
+          enum: ["low", "medium", "high", "max"],
+          enumItemLabels: ["Low", "Medium", "High", "Max"],
+          enumDescriptions: [
+            "Faster responses with less reasoning",
+            "Balanced reasoning and speed",
+            "Deep reasoning",
+            "Maximum reasoning depth"
+          ],
+          default: "medium",
+          group: "navigation"
+        };
+      }
+      if (m.contextWindow > 256e3) {
+        properties.contextTier = {
+          type: "string",
+          title: "Context Size",
+          enum: ["default", "long_context"],
+          enumItemLabels: ["Standard (128K)", "Extended (1M)"],
+          enumDescriptions: [
+            "Standard context window for faster generation and lower token usage",
+            "Full extended context window for large codebase analysis"
+          ],
+          default: "default",
+          group: "tokens"
+        };
+      }
+      const configurationSchema = Object.keys(properties).length > 0 ? { properties } : void 0;
       return {
         id: m.id,
         name: m.name,
@@ -1054,10 +1182,10 @@ var OpenCodeChatProvider = class {
           toolCalling: true,
           thinking: supportsReasoning
         },
-        supportsReasoningEffort: supportsReasoning ? ["low", "medium", "high"] : void 0,
-        supportedReasoningEfforts: supportsReasoning ? ["low", "medium", "high"] : void 0,
+        supportsReasoningEffort: supportsReasoning ? ["low", "medium", "high", "max"] : void 0,
+        supportedReasoningEfforts: supportsReasoning ? ["low", "medium", "high", "max"] : void 0,
         defaultReasoningEffort: supportsReasoning ? "medium" : void 0,
-        configurationSchema: reasoningSchema,
+        configurationSchema,
         isBYOK: true
       };
     });
@@ -1131,17 +1259,24 @@ var OpenCodeChatProvider = class {
     token.onCancellationRequested(() => abortController.abort());
     const meta = this._models.find((m) => m.id === model.id);
     const isFreeOrZen = meta?.catalog === "zen" || meta?.isFree === true || model.id.includes("free") || model.id.includes("contributor") || model.id.includes("community") || model.id === "big-pickle" || model.isFree === true;
-    const url = isFreeOrZen ? "https://opencode.ai/zen/v1/chat/completions" : "https://opencode.ai/zen/go/v1/chat/completions";
+    const lowerId = model.id.toLowerCase();
+    const isResponses = isResponsesModel(model.id);
+    const baseUrl = isFreeOrZen ? "https://opencode.ai/zen/v1" : "https://opencode.ai/zen/go/v1";
+    const url = isResponses ? `${baseUrl}/responses` : `${baseUrl}/chat/completions`;
     const reasoningEffort = options?.modelConfiguration?.reasoningEffort || options?.configuration?.reasoningEffort;
-    const requestBody = {
+    const requestBody = isResponses ? {
+      model: model.id,
+      input: formattedMessages,
+      tools: toolsPayload,
+      stream: true,
+      ...reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}
+    } : {
       model: model.id,
       messages: formattedMessages,
       tools: toolsPayload,
-      stream: true
+      stream: true,
+      ...reasoningEffort ? { reasoning_effort: reasoningEffort } : {}
     };
-    if (reasoningEffort) {
-      requestBody.reasoning_effort = reasoningEffort;
-    }
     const sessionId = `ses_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
     const res = await fetch(url, {
       method: "POST",
@@ -1211,13 +1346,60 @@ var OpenCodeChatProvider = class {
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
+        let isDone = false;
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed || trimmed.startsWith(":")) continue;
-          if (trimmed === "data: [DONE]") continue;
+          if (trimmed === "data: [DONE]") {
+            isDone = true;
+            break;
+          }
           if (trimmed.startsWith("data: ")) {
             try {
               const data = JSON.parse(trimmed.slice(6));
+              if (data.type === "response.completed") {
+                isDone = true;
+                break;
+              }
+              if (data.type === "response.output_text.delta") {
+                const delta = typeof data.delta === "string" ? data.delta : data.delta?.text || data.delta?.value || "";
+                if (delta) {
+                  progress.report(new vscode.LanguageModelTextPart(delta));
+                }
+                continue;
+              }
+              if (data.type === "response.output_item.added" && data.item?.type === "function_call") {
+                const idx = typeof data.output_index === "number" ? data.output_index : 0;
+                pendingToolCalls.set(idx, {
+                  id: data.item.call_id || data.item.id || `call_${Date.now()}`,
+                  name: data.item.name || "",
+                  args: data.item.arguments || ""
+                });
+                continue;
+              }
+              if (data.type === "response.function_call_arguments.delta") {
+                const idx = typeof data.output_index === "number" ? data.output_index : 0;
+                const current = pendingToolCalls.get(idx) || { id: "", name: "", args: "" };
+                const delta = typeof data.delta === "string" ? data.delta : data.delta?.arguments || "";
+                current.args += delta;
+                pendingToolCalls.set(idx, current);
+                continue;
+              }
+              if (data.type === "response.output_item.done" && data.item?.type === "function_call") {
+                const idx = typeof data.output_index === "number" ? data.output_index : 0;
+                const call = pendingToolCalls.get(idx);
+                if (call) {
+                  let parsedArgs = {};
+                  try {
+                    parsedArgs = JSON.parse(call.args);
+                  } catch {
+                    parsedArgs = { raw: call.args };
+                  }
+                  progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+                  pendingToolCalls.delete(idx);
+                }
+                continue;
+              }
               const choice = data.choices?.[0];
               if (!choice) continue;
               const rawReasoning = choice.delta?.reasoning_content || choice.delta?.thought || choice.delta?.reasoning || (Array.isArray(choice.delta?.reasoning_details) ? choice.delta.reasoning_details.map((d) => d.text || "").join("") : void 0);
@@ -1316,10 +1498,15 @@ var OpenCodeChatProvider = class {
                 }
                 pendingToolCalls.clear();
               }
+              if (choice.finish_reason === "stop") {
+                isDone = true;
+                break;
+              }
             } catch {
             }
           }
         }
+        if (isDone) break;
       }
     } catch (streamErr) {
       if (token.isCancellationRequested) {
@@ -1374,13 +1561,6 @@ async function activate(context) {
         await context.secrets.store("opencode_api_key", discoveredKey);
         outputChannel.appendLine("Seeded OpenCode API key into SecretStorage.");
       }
-    }
-  } catch {
-  }
-  try {
-    const cleaned = cleanupLegacyOpenCodeCustomEndpoints(context.globalStorageUri?.fsPath);
-    if (cleaned.length > 0) {
-      outputChannel.appendLine(`Purged legacy OpenCode customendpoint entries from: ${cleaned.join(", ")}`);
     }
   } catch {
   }

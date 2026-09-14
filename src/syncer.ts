@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as cp from 'node:child_process';
 import { buildProviderEntry, mergeChatLanguageModels, purgeOpenCodeFromChatLanguageModels, type ProviderEntry } from './config.js';
 import { enrichModel } from './enricher.js';
-import { fetchOpenCodeModels, filterFreeModels, filterAvailableGoModels, checkZenBalance, KNOWN_UNAVAILABLE_MODELS } from './fetcher.js';
+import { fetchOpenCodeModels, fetchModelsDevMetadata, filterFreeModels, filterAvailableGoModels, checkZenBalance, KNOWN_UNAVAILABLE_MODELS } from './fetcher.js';
 
 export function getChatLanguageModelsPath(activeExtensionStoragePath?: string): string {
   if (activeExtensionStoragePath) {
@@ -91,6 +91,51 @@ export function syncWslMirror(sourceFilePath: string): void {
                   fs.mkdirSync(winDir, { recursive: true });
                 }
                 fs.copyFileSync(sourceFilePath, winDest);
+              }
+            }
+          }
+        }
+
+        // Mirror across sibling distros mounted under /mnt/wsl/instances or /mnt/wsl
+        const potentialDistroRoots = ['/mnt/wsl/instances', '/mnt/wsl'];
+        for (const distroRoot of potentialDistroRoots) {
+          if (fs.existsSync(distroRoot)) {
+            let distros: string[] = [];
+            try {
+              distros = fs.readdirSync(distroRoot);
+            } catch {}
+            for (const distro of distros) {
+              if (distro.startsWith('.') || distro === 'resolv.conf' || distro === 'wslg' || distro === 'instances') continue;
+              const distroHome = path.join(distroRoot, distro, 'home');
+              const userHomes: string[] = [];
+              if (fs.existsSync(distroHome)) {
+                try {
+                  for (const u of fs.readdirSync(distroHome)) {
+                    userHomes.push(path.join(distroHome, u));
+                  }
+                } catch {}
+              }
+              const rootHome = path.join(distroRoot, distro, 'root');
+              if (fs.existsSync(rootHome)) {
+                userHomes.push(rootHome);
+              }
+              for (const h of userHomes) {
+                const targetSubDirs = [
+                  '.vscode-server/data/User',
+                  '.vscode-server/data/Machine',
+                  '.vscode-server-insiders/data/User',
+                  '.vscode-server-insiders/data/Machine',
+                  '.config/Code/User',
+                  '.config/Code - Insiders/User',
+                ];
+                for (const sub of targetSubDirs) {
+                  const target = path.join(h, sub, 'chatLanguageModels.json');
+                  const targetDir = path.dirname(target);
+                  if (!fs.existsSync(targetDir)) {
+                    fs.mkdirSync(targetDir, { recursive: true });
+                  }
+                  fs.copyFileSync(sourceFilePath, target);
+                }
               }
             }
           }
@@ -216,6 +261,48 @@ export function getAllChatLanguageModelsPaths(activeExtensionStoragePath?: strin
           }
         }
       }
+
+      // Discover sibling distro config paths under /mnt/wsl/instances or /mnt/wsl
+      const potentialDistroRoots = ['/mnt/wsl/instances', '/mnt/wsl'];
+      for (const distroRoot of potentialDistroRoots) {
+        if (fs.existsSync(distroRoot)) {
+          let distros: string[] = [];
+          try {
+            distros = fs.readdirSync(distroRoot);
+          } catch {}
+          for (const distro of distros) {
+            if (distro.startsWith('.') || distro === 'resolv.conf' || distro === 'wslg' || distro === 'instances') continue;
+            const distroHome = path.join(distroRoot, distro, 'home');
+            const userHomes: string[] = [];
+            if (fs.existsSync(distroHome)) {
+              try {
+                for (const u of fs.readdirSync(distroHome)) {
+                  userHomes.push(path.join(distroHome, u));
+                }
+              } catch {}
+            }
+            const rootHome = path.join(distroRoot, distro, 'root');
+            if (fs.existsSync(rootHome)) {
+              userHomes.push(rootHome);
+            }
+            for (const h of userHomes) {
+              const distroPaths = [
+                path.join(h, '.vscode-server', 'data', 'User', 'chatLanguageModels.json'),
+                path.join(h, '.vscode-server', 'data', 'Machine', 'chatLanguageModels.json'),
+                path.join(h, '.vscode-server-insiders', 'data', 'User', 'chatLanguageModels.json'),
+                path.join(h, '.vscode-server-insiders', 'data', 'Machine', 'chatLanguageModels.json'),
+                path.join(h, '.config', 'Code', 'User', 'chatLanguageModels.json'),
+                path.join(h, '.config', 'Code - Insiders', 'User', 'chatLanguageModels.json'),
+              ];
+              for (const dp of distroPaths) {
+                if (!paths.includes(dp)) {
+                  paths.push(dp);
+                }
+              }
+            }
+          }
+        }
+      }
     } catch {}
   }
 
@@ -301,7 +388,7 @@ export function createBackup(filePath: string): string | null {
   }
   const dir = path.dirname(filePath);
   const baseName = path.basename(filePath);
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-') + '-' + Math.random().toString(36).slice(2, 8);
   const backupPath = path.join(dir, `${baseName}.bak-${timestamp}`);
 
   fs.copyFileSync(filePath, backupPath);
@@ -326,18 +413,34 @@ export function createBackup(filePath: string): string | null {
   return backupPath;
 }
 
-export function safeWriteFileSync(filePath: string, data: string): void {
+export function safeWriteFileSync(filePath: string, data: string, options?: { mode?: number } | number): void {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
+  const mode = typeof options === 'number' ? options : options?.mode;
   const tmpPath = `${filePath}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
   try {
-    fs.writeFileSync(tmpPath, data, 'utf-8');
+    fs.writeFileSync(tmpPath, data, { encoding: 'utf-8', mode: mode ?? 0o644 });
+    if (mode !== undefined && process.platform !== 'win32') {
+      try {
+        fs.chmodSync(tmpPath, mode);
+      } catch {}
+    }
     fs.renameSync(tmpPath, filePath);
+    if (mode !== undefined && process.platform !== 'win32') {
+      try {
+        fs.chmodSync(filePath, mode);
+      } catch {}
+    }
   } catch {
     try {
-      fs.writeFileSync(filePath, data, 'utf-8');
+      fs.writeFileSync(filePath, data, { encoding: 'utf-8', mode: mode ?? 0o644 });
+      if (mode !== undefined && process.platform !== 'win32') {
+        try {
+          fs.chmodSync(filePath, mode);
+        } catch {}
+      }
     } finally {
       try {
         if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
@@ -430,12 +533,18 @@ export async function syncOpenCodeModels(
     }
   }
 
+  // 0. Fetch live model metadata from models.dev for dynamic limits and capabilities
+  let modelsDevMap: Record<string, any> = {};
+  try {
+    modelsDevMap = await fetchModelsDevMetadata();
+  } catch {}
+
   const goSet = new Set(goModelIds);
   const models = [];
 
   // Go models first (flat subscription rate) -> (OpenCode Go)
   for (const id of goModelIds) {
-    models.push(enrichModel(id, { isGo: true, suffix: '(OpenCode Go)' }));
+    models.push(enrichModel(id, { isGo: true, suffix: '(OpenCode Go)', modelsDevData: modelsDevMap[id] }));
   }
 
   // Zen models that are NOT in Go -> (OpenCode Free) or (OpenCode Zen)
@@ -444,7 +553,7 @@ export async function syncOpenCodeModels(
     if (!goSet.has(id)) {
       const isFree = filterFreeModels([id]).length > 0;
       const suffix = isFree ? '(OpenCode Free)' : '(OpenCode Zen)';
-      models.push(enrichModel(id, { isGo: false, isFree, suffix }));
+      models.push(enrichModel(id, { isGo: false, isFree, suffix, modelsDevData: modelsDevMap[id] }));
       zenCount++;
     }
   }
@@ -456,25 +565,18 @@ export async function syncOpenCodeModels(
   let targetPath = options.targetPath || getChatLanguageModelsPath(options.storagePath);
   let backupPath: string | null = null;
 
-  if (options.targetPath) {
-    // Explicit target path provided (e.g. in unit tests)
-    const unifiedProvider: ProviderEntry = {
-      name: 'OpenCode',
-      vendor: 'customendpoint',
-      apiKey,
-      apiType: 'chat-completions',
-      models,
-    };
-    const res = writeProvidersToConfig([unifiedProvider], options.targetPath, options.storagePath);
-    targetPath = res.targetPath;
-    backupPath = res.backupPath;
-  } else {
-    // Clean up any legacy customendpoint entries across all VS Code paths so Copilot uses native provider
-    const cleaned = cleanupLegacyOpenCodeCustomEndpoints(options.storagePath);
-    if (cleaned.length > 0) {
-      backupPath = createBackup(cleaned[0]);
-    }
-  }
+  // Write unified OpenCode provider with multi-transport models to chatLanguageModels.json
+  // This guarantees models appear instantly in Remote-WSL, Windows, and macOS without requiring remote extension install.
+  const unifiedProvider: ProviderEntry = {
+    name: 'OpenCode',
+    vendor: 'customendpoint',
+    apiKey,
+    apiType: 'chat-completions',
+    models,
+  };
+  const res = writeProvidersToConfig([unifiedProvider], options.targetPath, options.storagePath);
+  targetPath = res.targetPath;
+  backupPath = res.backupPath;
 
   return {
     goCount: goModelIds.length,

@@ -28,6 +28,19 @@ export async function fetchOpenCodeModels(
   return json.data.map((m) => m.id).filter(Boolean);
 }
 
+export async function fetchModelsDevMetadata(): Promise<Record<string, any>> {
+  try {
+    const res = await fetch('https://models.dev/api.json', {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return {};
+    const data = (await res.json()) as any;
+    return data['opencode']?.models || {};
+  } catch {
+    return {};
+  }
+}
+
 export function filterFreeModels(modelIds: string[]): string[] {
   return modelIds.filter(
     (id) =>
