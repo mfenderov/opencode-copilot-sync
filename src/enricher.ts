@@ -1,6 +1,7 @@
 export interface EnrichOptions {
   isGo?: boolean;
   isFree?: boolean;
+  suffix?: string;
   modelsDevData?: Record<string, any>;
 }
 
@@ -25,9 +26,10 @@ export interface CustomEndpointModel {
   };
 }
 
-function formatModelName(id: string, suffix: string = '(OpenCode)'): string {
-  // Convert "deepseek-v4-flash" -> "DeepSeek V4 Flash (OpenCode)"
-  const parts = id.split(/[-_]/);
+export function formatModelName(id: string, suffix: string = '(OpenCode)'): string {
+  // Normalize version patterns like "-4-6", "-1-3", "-2-7" to "-4.6"
+  const normalized = id.replace(/-(\d+)-(\d+)(?=-|$)/g, '-$1.$2');
+  const parts = normalized.split(/[-_]/);
   const title = parts
     .map((p) => {
       const lower = p.toLowerCase();
@@ -38,6 +40,14 @@ function formatModelName(id: string, suffix: string = '(OpenCode)'): string {
       if (lower === 'kimi') return 'Kimi';
       if (lower === 'minimax') return 'MiniMax';
       if (lower === 'deepseek') return 'DeepSeek';
+      if (lower === 'gemini') return 'Gemini';
+      if (lower === 'claude') return 'Claude';
+      if (lower === 'grok') return 'Grok';
+      if (lower === 'nemotron') return 'Nemotron';
+      if (lower === 'muse') return 'Muse';
+      if (lower === 'spark') return 'Spark';
+      if (lower === 'contributor') return 'Contributor';
+      if (lower === 'free') return 'Free';
       if (/^v\d+/i.test(p)) return p.toUpperCase();
       return p.charAt(0).toUpperCase() + p.slice(1);
     })
@@ -52,7 +62,8 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
     ? 'https://opencode.ai/zen/go/v1/chat/completions'
     : 'https://opencode.ai/zen/v1/chat/completions';
 
-  const suffix = isFree ? '(Zen Free)' : '(OpenCode)';
+  const defaultSuffix = isGo ? '(OpenCode Go)' : isFree ? '(OpenCode Free)' : '(OpenCode Zen)';
+  const suffix = options.suffix || defaultSuffix;
   const name = formatModelName(modelId, suffix);
   const lower = modelId.toLowerCase();
 
@@ -77,10 +88,12 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
     contextWindow = 1000000;
     maxOutputTokens = 131072;
     vision = true;
+    thinking = false;
   } else if (lower.includes('minimax')) {
     contextWindow = 1048576;
     maxOutputTokens = 131072;
     vision = false;
+    thinking = false;
   } else if (lower.includes('claude')) {
     if (lower.includes('haiku')) {
       contextWindow = 200000;
@@ -89,6 +102,7 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
     } else {
       contextWindow = 1000000;
       maxOutputTokens = 128000;
+      thinking = true;
     }
     vision = true;
   } else if (lower.includes('gpt')) {
@@ -100,22 +114,42 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
       maxOutputTokens = 128000;
     }
     vision = true;
+    thinking = true;
+  } else if (lower.includes('gemini')) {
+    contextWindow = 1000000;
+    maxOutputTokens = 65536;
+    vision = true;
+    thinking = lower.includes('thinking');
+  } else if (lower.includes('grok')) {
+    contextWindow = 1000000;
+    maxOutputTokens = 65536;
+    vision = true;
+    thinking = true;
   } else if (lower.includes('mimo')) {
     contextWindow = 1048576;
     maxOutputTokens = 65536;
     vision = lower.includes('omni');
+    thinking = true;
   } else if (lower.includes('nemotron')) {
     contextWindow = 1000000;
     maxOutputTokens = 128000;
     vision = false;
+    thinking = true;
   } else if (lower.includes('muse')) {
     contextWindow = 1000000;
     maxOutputTokens = 65536;
     vision = false;
+    thinking = false;
   } else if (lower.includes('longcat')) {
     contextWindow = 1048576;
     maxOutputTokens = 65536;
     vision = false;
+    thinking = false;
+  } else if (lower.includes('omen') || lower.includes('hy4')) {
+    contextWindow = 1048576;
+    maxOutputTokens = 65536;
+    vision = false;
+    thinking = true;
   }
 
   const maxInputTokens = contextWindow - maxOutputTokens;

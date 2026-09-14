@@ -140,6 +140,8 @@ export async function activate(context: vscode.ExtensionContext) {
             id: m.id,
             name: m.name,
             family: m.family || m.id,
+            catalog: m.url?.includes('/go/') ? 'go' : 'zen',
+            isFree: !!m.isFree,
             contextWindow: m.contextWindow || 1048576,
             maxOutputTokens: m.maxOutputTokens || 65536,
             vision: !!m.vision,

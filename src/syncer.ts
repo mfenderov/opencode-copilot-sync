@@ -410,52 +410,42 @@ export async function syncOpenCodeModels(
   let goModelIds: string[] = [];
   let zenModelIds: string[] = [];
 
-  // 1. Fetch OpenCode Go catalog
+  // 1. Fetch OpenCode Go catalog (pull ALL models from Go)
   if (includeGo) {
     try {
       const rawGoIds = await fetchOpenCodeModels(apiKey, 'go');
-      goModelIds = filterAvailableGoModels(rawGoIds);
+      goModelIds = rawGoIds.filter(Boolean);
     } catch (err: any) {
       console.error(`Failed to fetch Go models: ${err.message}`);
     }
   }
 
-  // 2. Fetch OpenCode Zen catalog (free models are always included, paid models only if credits exist)
-  let hasZenCredits = false;
+  // 2. Fetch OpenCode Zen catalog (pull ALL models from Zen)
   if (includeZen) {
     try {
       const rawZenIds = await fetchOpenCodeModels(apiKey, 'zen');
-      const freeZenIds = filterFreeModels(rawZenIds);
-
-      hasZenCredits = await checkZenBalance(apiKey);
-      if (hasZenCredits) {
-        zenModelIds = filterAvailableGoModels(rawZenIds);
-      } else {
-        console.log('No active Zen credit balance detected. Including verified free Zen models.');
-        zenModelIds = freeZenIds;
-      }
+      zenModelIds = rawZenIds.filter(Boolean);
     } catch (err: any) {
-      console.error(`Failed to check/fetch Zen models: ${err.message}`);
+      console.error(`Failed to fetch Zen models: ${err.message}`);
     }
   }
 
   const goSet = new Set(goModelIds);
   const models = [];
 
-  // Go models first (flat subscription rate)
+  // Go models first (flat subscription rate) -> (OpenCode Go)
   for (const id of goModelIds) {
-    models.push(enrichModel(id, { isGo: true }));
+    models.push(enrichModel(id, { isGo: true, suffix: '(OpenCode Go)' }));
   }
 
-  // Zen models that are NOT in Go (free models always included, paid only if credits exist)
+  // Zen models that are NOT in Go -> (OpenCode Free) or (OpenCode Zen)
   let zenCount = 0;
   for (const id of zenModelIds) {
     if (!goSet.has(id)) {
       const isFree = filterFreeModels([id]).length > 0;
-      if (isFree || (!KNOWN_UNAVAILABLE_MODELS.has(id) && hasZenCredits)) {
-        models.push(enrichModel(id, { isGo: false, isFree }));
-        zenCount++;
-      }
+      const suffix = isFree ? '(OpenCode Free)' : '(OpenCode Zen)';
+      models.push(enrichModel(id, { isGo: false, isFree, suffix }));
+      zenCount++;
     }
   }
 

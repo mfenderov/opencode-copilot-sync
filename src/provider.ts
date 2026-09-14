@@ -1,11 +1,14 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { getStoredOpenCodeKey, getKeyFromExistingConfig } from './auth.js';
-import { filterAvailableGoModels } from './fetcher.js';
 
 export interface OpenCodeModelMeta {
   id: string;
   name: string;
   family: string;
+  catalog?: 'go' | 'zen';
+  isFree?: boolean;
   contextWindow: number;
   maxOutputTokens: number;
   vision: boolean;
@@ -13,39 +16,39 @@ export interface OpenCodeModelMeta {
 }
 
 export const VERIFIED_OPENCODE_MODELS: OpenCodeModelMeta[] = [
-  { id: 'minimax-m3', name: 'MiniMax M3 (OpenCode)', family: 'minimax-m3', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: false },
-  { id: 'minimax-m2.5', name: 'MiniMax M2.5 (OpenCode)', family: 'minimax-m2.5', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: false },
-  { id: 'kimi-k3', name: 'Kimi K3 (OpenCode)', family: 'kimi-k3', contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true },
-  { id: 'kimi-k2.7-code', name: 'Kimi K2.7 Code (OpenCode)', family: 'kimi-k2.7-code', contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true },
-  { id: 'kimi-k2.6', name: 'Kimi K2.6 (OpenCode)', family: 'kimi-k2.6', contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true },
-  { id: 'longcat-2.0', name: 'Longcat 2.0 (OpenCode)', family: 'longcat-2.0', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
-  { id: 'glm-5.2', name: 'GLM 5.2 (OpenCode)', family: 'glm-5.2', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
-  { id: 'glm-5.3-flash', name: 'GLM 5.3 Flash (OpenCode)', family: 'glm-5.3-flash', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
-  { id: 'glm-5.3', name: 'GLM 5.3 (OpenCode)', family: 'glm-5.3', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
-  { id: 'glm-5.1', name: 'GLM 5.1 (OpenCode)', family: 'glm-5.1', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
-  { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro (OpenCode)', family: 'deepseek-v4-pro', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
-  { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash (OpenCode)', family: 'deepseek-v4-flash', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
-  { id: 'deepseek-flash', name: 'DeepSeek Flash (OpenCode)', family: 'deepseek-flash', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
-  { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash (OpenCode)', family: 'deepseek-v4.1-flash', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
-  { id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek V4 Flash Vision Exp (OpenCode)', family: 'deepseek-v4-flash-vision-exp', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
-  { id: 'qwen3.7-max', name: 'Qwen3.7 Max (OpenCode)', family: 'qwen3.7-max', contextWindow: 1000000, maxOutputTokens: 131072, vision: true, thinking: false },
-  { id: 'qwen3.8-max', name: 'Qwen3.8 Max (OpenCode)', family: 'qwen3.8-max', contextWindow: 1000000, maxOutputTokens: 131072, vision: true, thinking: false },
-  { id: 'qwen3.8-flash', name: 'Qwen3.8 Flash (OpenCode)', family: 'qwen3.8-flash', contextWindow: 1000000, maxOutputTokens: 131072, vision: true, thinking: false },
-  { id: 'qwen3.6-plus', name: 'Qwen3.6 Plus (OpenCode)', family: 'qwen3.6-plus', contextWindow: 1000000, maxOutputTokens: 131072, vision: true, thinking: false },
-  { id: 'mimo-v2.5-pro', name: 'MiMo V2.5 Pro (OpenCode)', family: 'mimo-v2.5-pro', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
-  { id: 'mimo-v2.5', name: 'MiMo V2.5 (OpenCode)', family: 'mimo-v2.5', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
-  { id: 'hy4-preview', name: 'Hy4 Preview (OpenCode)', family: 'hy4-preview', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
-  { id: 'hy3', name: 'Hy3 (OpenCode)', family: 'hy3', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
-  { id: 'omen-alpha', name: 'Omen Alpha (OpenCode)', family: 'omen-alpha', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
+  { id: 'minimax-m3', name: 'MiniMax M3 (OpenCode Go)', family: 'minimax-m3', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: false },
+  { id: 'minimax-m2.5', name: 'MiniMax M2.5 (OpenCode Go)', family: 'minimax-m2.5', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: false },
+  { id: 'kimi-k3', name: 'Kimi K3 (OpenCode Go)', family: 'kimi-k3', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true },
+  { id: 'kimi-k2.7-code', name: 'Kimi K2.7 Code (OpenCode Go)', family: 'kimi-k2.7-code', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true },
+  { id: 'kimi-k2.6', name: 'Kimi K2.6 (OpenCode Go)', family: 'kimi-k2.6', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true },
+  { id: 'longcat-2.0', name: 'Longcat 2.0 (OpenCode Go)', family: 'longcat-2.0', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
+  { id: 'glm-5.2', name: 'GLM 5.2 (OpenCode Go)', family: 'glm-5.2', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
+  { id: 'glm-5.3-flash', name: 'GLM 5.3 Flash (OpenCode Go)', family: 'glm-5.3-flash', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
+  { id: 'glm-5.3', name: 'GLM 5.3 (OpenCode Go)', family: 'glm-5.3', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
+  { id: 'glm-5.1', name: 'GLM 5.1 (OpenCode Go)', family: 'glm-5.1', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
+  { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro (OpenCode Go)', family: 'deepseek-v4-pro', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
+  { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash (OpenCode Go)', family: 'deepseek-v4-flash', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
+  { id: 'deepseek-flash', name: 'DeepSeek Flash (OpenCode Go)', family: 'deepseek-flash', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
+  { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash (OpenCode Go)', family: 'deepseek-v4.1-flash', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
+  { id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek V4 Flash Vision Exp (OpenCode Go)', family: 'deepseek-v4-flash-vision-exp', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
+  { id: 'qwen3.7-max', name: 'Qwen3.7 Max (OpenCode Go)', family: 'qwen3.7-max', catalog: 'go', contextWindow: 1000000, maxOutputTokens: 131072, vision: true, thinking: false },
+  { id: 'qwen3.8-max', name: 'Qwen3.8 Max (OpenCode Go)', family: 'qwen3.8-max', catalog: 'go', contextWindow: 1000000, maxOutputTokens: 131072, vision: true, thinking: false },
+  { id: 'qwen3.8-flash', name: 'Qwen3.8 Flash (OpenCode Go)', family: 'qwen3.8-flash', catalog: 'go', contextWindow: 1000000, maxOutputTokens: 131072, vision: true, thinking: false },
+  { id: 'qwen3.6-plus', name: 'Qwen3.6 Plus (OpenCode Go)', family: 'qwen3.6-plus', catalog: 'go', contextWindow: 1000000, maxOutputTokens: 131072, vision: true, thinking: false },
+  { id: 'mimo-v2.5-pro', name: 'MiMo V2.5 Pro (OpenCode Go)', family: 'mimo-v2.5-pro', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
+  { id: 'mimo-v2.5', name: 'MiMo V2.5 (OpenCode Go)', family: 'mimo-v2.5', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
+  { id: 'hy4-preview', name: 'Hy4 Preview (OpenCode Go)', family: 'hy4-preview', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
+  { id: 'hy3', name: 'Hy3 (OpenCode Go)', family: 'hy3', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
+  { id: 'omen-alpha', name: 'Omen Alpha (OpenCode Go)', family: 'omen-alpha', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
   // Verified OpenCode Free models (always available and visible)
-  { id: 'big-pickle', name: 'Big Pickle (Free)', family: 'big-pickle', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
-  { id: 'mimo-v2.5-free', name: 'MiMo V2.5 (Free)', family: 'mimo-v2.5-free', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
-  { id: 'ling-3.0-flash-fin-free', name: 'Ling 3.0 Flash Fin (Free)', family: 'ling-3.0-flash-fin-free', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
-  { id: 'nemotron-3-ultra-free', name: 'Nemotron 3 Ultra (Free)', family: 'nemotron-3-ultra-free', contextWindow: 1000000, maxOutputTokens: 128000, vision: false, thinking: true },
-  { id: 'nemotron-3.5-lightning-free', name: 'Nemotron 3.5 Lightning (Free)', family: 'nemotron-3.5-lightning-free', contextWindow: 1000000, maxOutputTokens: 128000, vision: false, thinking: true },
-  { id: 'deepseek-v4-flash-free', name: 'DeepSeek V4 Flash (Free)', family: 'deepseek-v4-flash-free', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
-  { id: 'muse-spark-1.3-contributor-free', name: 'Muse Spark 1.3 Contributor (Free)', family: 'muse-spark-1.3-contributor-free', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
-  { id: 'muse-spark-1.2-contributor-free', name: 'Muse Spark 1.2 Contributor (Free)', family: 'muse-spark-1.2-contributor-free', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
+  { id: 'big-pickle', name: 'Big Pickle (OpenCode Free)', family: 'big-pickle', catalog: 'zen', isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
+  { id: 'mimo-v2.5-free', name: 'MiMo V2.5 (OpenCode Free)', family: 'mimo-v2.5-free', catalog: 'zen', isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
+  { id: 'ling-3.0-flash-fin-free', name: 'Ling 3.0 Flash Fin (OpenCode Free)', family: 'ling-3.0-flash-fin-free', catalog: 'zen', isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
+  { id: 'nemotron-3-ultra-free', name: 'Nemotron 3 Ultra (OpenCode Free)', family: 'nemotron-3-ultra-free', catalog: 'zen', isFree: true, contextWindow: 1000000, maxOutputTokens: 128000, vision: false, thinking: true },
+  { id: 'nemotron-3.5-lightning-free', name: 'Nemotron 3.5 Lightning (OpenCode Free)', family: 'nemotron-3.5-lightning-free', catalog: 'zen', isFree: true, contextWindow: 1000000, maxOutputTokens: 128000, vision: false, thinking: true },
+  { id: 'deepseek-v4-flash-free', name: 'DeepSeek V4 Flash (OpenCode Free)', family: 'deepseek-v4-flash-free', catalog: 'zen', isFree: true, contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
+  { id: 'muse-spark-1.3-contributor-free', name: 'Muse Spark 1.3 Contributor (OpenCode Free)', family: 'muse-spark-1.3-contributor-free', catalog: 'zen', isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
+  { id: 'muse-spark-1.2-contributor-free', name: 'Muse Spark 1.2 Contributor (OpenCode Free)', family: 'muse-spark-1.2-contributor-free', catalog: 'zen', isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
 ];
 
 export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
@@ -53,7 +56,19 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
   readonly onDidChangeLanguageModelChatInformation = this._onDidChange.event;
   private _models: OpenCodeModelMeta[] = [...VERIFIED_OPENCODE_MODELS];
 
-  constructor(private readonly context: vscode.ExtensionContext) {}
+  constructor(private readonly context: vscode.ExtensionContext) {
+    try {
+      if (this.context.globalStorageUri?.fsPath) {
+        const cacheFile = path.join(this.context.globalStorageUri.fsPath, 'models_cache.json');
+        if (fs.existsSync(cacheFile)) {
+          const parsed = JSON.parse(fs.readFileSync(cacheFile, 'utf-8'));
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            this._models = parsed;
+          }
+        }
+      }
+    } catch {}
+  }
 
   refresh(): void {
     this._onDidChange.fire();
@@ -63,6 +78,15 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     if (Array.isArray(models) && models.length > 0) {
       this._models = models;
       this.refresh();
+      try {
+        if (this.context.globalStorageUri?.fsPath) {
+          const cacheDir = this.context.globalStorageUri.fsPath;
+          if (!fs.existsSync(cacheDir)) {
+            fs.mkdirSync(cacheDir, { recursive: true });
+          }
+          fs.writeFileSync(path.join(cacheDir, 'models_cache.json'), JSON.stringify(models), 'utf-8');
+        }
+      } catch {}
     }
   }
 
@@ -211,7 +235,10 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     token.onCancellationRequested(() => abortController.abort());
 
     // Free models and Zen-exclusive models route to zen/v1, flat-rate Go models route to zen/go/v1
+    const meta = this._models.find((m) => m.id === model.id);
     const isFreeOrZen =
+      meta?.catalog === 'zen' ||
+      meta?.isFree === true ||
       model.id.includes('free') ||
       model.id.includes('contributor') ||
       model.id.includes('community') ||
