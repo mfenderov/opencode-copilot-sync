@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as cp from 'node:child_process';
-import { buildProviderEntry, mergeChatLanguageModels, type ProviderEntry } from './config.js';
+import { buildProviderEntry, mergeChatLanguageModels, purgeOpenCodeFromChatLanguageModels, type ProviderEntry } from './config.js';
 import { enrichModel } from './enricher.js';
 import { fetchOpenCodeModels, filterFreeModels, filterAvailableGoModels, checkZenBalance, KNOWN_UNAVAILABLE_MODELS } from './fetcher.js';
 
@@ -309,6 +309,28 @@ export function createBackup(filePath: string): string | null {
   return backupPath;
 }
 
+export function cleanupLegacyOpenCodeCustomEndpoints(storagePath?: string): string[] {
+  const filePaths = getAllChatLanguageModelsPaths(storagePath);
+  const cleaned: string[] = [];
+
+  for (const filePath of filePaths) {
+    try {
+      if (!fs.existsSync(filePath)) continue;
+      const existing = readChatLanguageModels(filePath);
+      const purged = purgeOpenCodeFromChatLanguageModels(existing);
+      if (purged.length !== existing.length) {
+        createBackup(filePath);
+        fs.writeFileSync(filePath, JSON.stringify(purged, null, 4), 'utf-8');
+        cleaned.push(filePath);
+      }
+    } catch (err: any) {
+      console.error(`Failed cleaning legacy customendpoints in ${filePath}: ${err.message}`);
+    }
+  }
+
+  return cleaned;
+}
+
 export function writeProvidersToConfig(
   providers: ProviderEntry[],
   targetPath?: string,
@@ -349,7 +371,7 @@ export function writeProvidersToConfig(
 export async function syncOpenCodeModels(
   apiKey: string,
   options: { includeGo?: boolean; includeZen?: boolean; targetPath?: string; storagePath?: string } = {}
-): Promise<{ goCount: number; zenCount: number; totalCount: number; targetPath: string; backupPath: string | null }> {
+): Promise<{ goCount: number; zenCount: number; totalCount: number; models: any[]; targetPath: string; backupPath: string | null }> {
   const includeGo = options.includeGo ?? true;
   const includeZen = options.includeZen ?? true;
 
@@ -404,20 +426,34 @@ export async function syncOpenCodeModels(
     throw new Error('No models were fetched from OpenCode API. Preserving existing configuration to prevent accidental erasure.');
   }
 
-  const unifiedProvider: ProviderEntry = {
-    name: 'OpenCode',
-    vendor: 'customendpoint',
-    apiKey,
-    apiType: 'chat-completions',
-    models,
-  };
+  let targetPath = options.targetPath || getChatLanguageModelsPath(options.storagePath);
+  let backupPath: string | null = null;
 
-  const { targetPath, backupPath } = writeProvidersToConfig([unifiedProvider], options.targetPath, options.storagePath);
+  if (options.targetPath) {
+    // Explicit target path provided (e.g. in unit tests)
+    const unifiedProvider: ProviderEntry = {
+      name: 'OpenCode',
+      vendor: 'customendpoint',
+      apiKey,
+      apiType: 'chat-completions',
+      models,
+    };
+    const res = writeProvidersToConfig([unifiedProvider], options.targetPath, options.storagePath);
+    targetPath = res.targetPath;
+    backupPath = res.backupPath;
+  } else {
+    // Clean up any legacy customendpoint entries across all VS Code paths so Copilot uses native provider
+    const cleaned = cleanupLegacyOpenCodeCustomEndpoints(options.storagePath);
+    if (cleaned.length > 0) {
+      backupPath = createBackup(cleaned[0]);
+    }
+  }
 
   return {
     goCount: goModelIds.length,
     zenCount,
     totalCount: models.length,
+    models,
     targetPath,
     backupPath,
   };

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { resolveApiKey, promptAndSetApiKey } from './auth.js';
-import { syncOpenCodeModels, getChatLanguageModelsPath } from './syncer.js';
+import { syncOpenCodeModels, getChatLanguageModelsPath, cleanupLegacyOpenCodeCustomEndpoints } from './syncer.js';
 import { fetchOpenCodeUsage, formatStatusBarText, formatUsageTooltip } from './usage.js';
 import { OpenCodeChatProvider } from './provider.js';
 
@@ -24,6 +24,14 @@ export async function activate(context: vscode.ExtensionContext) {
         await context.secrets.store('opencode_api_key', discoveredKey);
         outputChannel.appendLine('Seeded OpenCode API key into SecretStorage.');
       }
+    }
+  } catch {}
+
+  // Clean up any legacy customendpoint OpenCode entries from chatLanguageModels.json
+  try {
+    const cleaned = cleanupLegacyOpenCodeCustomEndpoints(context.globalStorageUri?.fsPath);
+    if (cleaned.length > 0) {
+      outputChannel.appendLine(`Purged legacy OpenCode customendpoint entries from: ${cleaned.join(', ')}`);
     }
   } catch {}
 
@@ -94,6 +102,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
       const storagePath = context.globalStorageUri?.fsPath;
 
+      let syncResult: any = null;
       if (interactive) {
         await vscode.window.withProgress(
           {
@@ -102,34 +111,38 @@ export async function activate(context: vscode.ExtensionContext) {
             cancellable: false,
           },
           async () => {
-            const result = await syncOpenCodeModels(apiKey, { includeGo, includeZen, storagePath });
+            syncResult = await syncOpenCodeModels(apiKey, { includeGo, includeZen, storagePath });
             outputChannel.appendLine(
-              `Synced ${result.totalCount} unified OpenCode models (${result.goCount} Go + ${result.zenCount} Zen) to ${result.targetPath}`
+              `Synced ${syncResult.totalCount} unified OpenCode models (${syncResult.goCount} Go + ${syncResult.zenCount} Zen) to native provider.`
             );
-            vscode.window
-              .showInformationMessage(
-                `Synced ${result.totalCount} OpenCode models (${result.goCount} Go flat-rate + ${result.zenCount} Zen exclusive) to Copilot!`,
-                'Open Models File'
-              )
-              .then((choice) => {
-                if (choice === 'Open Models File') {
-                  vscode.workspace.openTextDocument(result.targetPath).then((doc) => {
-                    vscode.window.showTextDocument(doc);
-                  });
-                }
-              });
+            vscode.window.showInformationMessage(
+              `Synced ${syncResult.totalCount} OpenCode models (${syncResult.goCount} Go flat-rate + ${syncResult.zenCount} Zen exclusive) to Copilot!`
+            );
           }
         );
       } else {
         // Background silent sync on startup / reload
-        const result = await syncOpenCodeModels(apiKey, { includeGo, includeZen, storagePath });
+        syncResult = await syncOpenCodeModels(apiKey, { includeGo, includeZen, storagePath });
         outputChannel.appendLine(
-          `[Startup] Synced ${result.totalCount} unified OpenCode models (${result.goCount} Go + ${result.zenCount} Zen) to ${result.targetPath}`
+          `[Startup] Synced ${syncResult.totalCount} unified OpenCode models (${syncResult.goCount} Go + ${syncResult.zenCount} Zen) to native provider.`
         );
       }
 
-      // Refresh usage meter and native model provider after successful sync
-      chatProvider.refresh();
+      // Update native model provider catalog and refresh status bar usage
+      if (syncResult?.models && syncResult.models.length > 0) {
+        chatProvider.updateModels(
+          syncResult.models.map((m: any) => ({
+            id: m.id,
+            name: m.name,
+            family: m.family || m.id,
+            contextWindow: m.contextWindow || 1048576,
+            maxOutputTokens: m.maxOutputTokens || 65536,
+            vision: !!m.vision,
+          }))
+        );
+      } else {
+        chatProvider.refresh();
+      }
       await updateUsageMeter(apiKey);
     } catch (err: any) {
       outputChannel.appendLine(`[Sync Error] ${err.message}`);
@@ -177,6 +190,12 @@ export async function activate(context: vscode.ExtensionContext) {
     updateUsageMeter();
   }, 60000);
   context.subscriptions.push({ dispose: () => clearInterval(usageTimer) });
+
+  return {
+    chatProvider,
+    statusBarItem,
+    performSync,
+  };
 }
 
 export function deactivate() {}

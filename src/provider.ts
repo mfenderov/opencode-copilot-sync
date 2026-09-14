@@ -41,6 +41,7 @@ export const VERIFIED_OPENCODE_MODELS: OpenCodeModelMeta[] = [
 export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChangeLanguageModelChatInformation = this._onDidChange.event;
+  private _models: OpenCodeModelMeta[] = [...VERIFIED_OPENCODE_MODELS];
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -48,11 +49,18 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     this._onDidChange.fire();
   }
 
+  updateModels(models: OpenCodeModelMeta[]): void {
+    if (Array.isArray(models) && models.length > 0) {
+      this._models = models;
+      this.refresh();
+    }
+  }
+
   async provideLanguageModelChatInformation(
     _options: vscode.PrepareLanguageModelChatModelOptions,
     _token: vscode.CancellationToken
   ): Promise<vscode.LanguageModelChatInformation[]> {
-    return VERIFIED_OPENCODE_MODELS.map((m) => ({
+    return this._models.map((m) => ({
       id: m.id,
       name: m.name,
       family: m.family,
@@ -86,6 +94,13 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         'OpenCode API key not found. Please run "OpenCode: Set API Key" command to configure your key.'
       );
     }
+
+    // Persist discovered key into SecretStorage for fast subsequent lookups
+    this.context.secrets.get('opencode_api_key').then((stored) => {
+      if (!stored && apiKey) {
+        this.context.secrets.store('opencode_api_key', apiKey).then(undefined, () => {});
+      }
+    });
 
     // Format messages for OpenAI Chat Completions API
     const formattedMessages: any[] = [];

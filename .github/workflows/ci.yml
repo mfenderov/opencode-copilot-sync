@@ -38,9 +38,23 @@ jobs:
       - name: Run unit & integration tests
         run: npm test
 
-      - name: Run Docker container verification
+      - name: Run in-editor VS Code E2E tests (Linux)
         if: runner.os == 'Linux'
-        run: docker run --rm -v "$PWD:/workspace" -w /workspace node:22 npm test
+        run: xvfb-run -a npm run test:e2e
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+
+      - name: Run in-editor VS Code E2E tests (macOS / Windows)
+        if: runner.os != 'Linux'
+        run: npm run test:e2e
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+
+      - name: Run Remote-WSL backend test
+        if: runner.os == 'Linux'
+        run: npm run test:remote
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
 
       - name: Build & Package VSIX
         run: npm run package

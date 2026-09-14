@@ -51,6 +51,14 @@ export function isOpenCodeLegacyOrCustomEntry(entry: any): boolean {
   return false;
 }
 
+export function purgeOpenCodeFromChatLanguageModels(existingConfig: any[]): any[] {
+  if (!Array.isArray(existingConfig)) return [];
+  return existingConfig.filter((entry) => {
+    if (!entry) return false;
+    return !isOpenCodeLegacyOrCustomEntry(entry) && entry.name !== 'OpenCode';
+  });
+}
+
 export function mergeChatLanguageModels(
   existingConfig: any[],
   newProviders: ProviderEntry[]

@@ -179,6 +179,13 @@ function isOpenCodeLegacyOrCustomEntry(entry) {
   }
   return false;
 }
+function purgeOpenCodeFromChatLanguageModels(existingConfig) {
+  if (!Array.isArray(existingConfig)) return [];
+  return existingConfig.filter((entry) => {
+    if (!entry) return false;
+    return !isOpenCodeLegacyOrCustomEntry(entry) && entry.name !== "OpenCode";
+  });
+}
 function mergeChatLanguageModels(existingConfig, newProviders) {
   const addingUnifiedOpenCode = newProviders.some((p) => p.name === "OpenCode");
   const result = existingConfig.filter((entry) => {
@@ -555,6 +562,25 @@ function createBackup(filePath) {
   }
   return backupPath;
 }
+function cleanupLegacyOpenCodeCustomEndpoints(storagePath) {
+  const filePaths = getAllChatLanguageModelsPaths(storagePath);
+  const cleaned = [];
+  for (const filePath of filePaths) {
+    try {
+      if (!fs.existsSync(filePath)) continue;
+      const existing = readChatLanguageModels(filePath);
+      const purged = purgeOpenCodeFromChatLanguageModels(existing);
+      if (purged.length !== existing.length) {
+        createBackup(filePath);
+        fs.writeFileSync(filePath, JSON.stringify(purged, null, 4), "utf-8");
+        cleaned.push(filePath);
+      }
+    } catch (err) {
+      console.error(`Failed cleaning legacy customendpoints in ${filePath}: ${err.message}`);
+    }
+  }
+  return cleaned;
+}
 function writeProvidersToConfig(providers, targetPath, storagePath) {
   const filePaths = targetPath ? [targetPath] : getAllChatLanguageModelsPaths(storagePath);
   let primaryBackup = null;
@@ -623,18 +649,30 @@ async function syncOpenCodeModels(apiKey, options = {}) {
   if (models.length === 0) {
     throw new Error("No models were fetched from OpenCode API. Preserving existing configuration to prevent accidental erasure.");
   }
-  const unifiedProvider = {
-    name: "OpenCode",
-    vendor: "customendpoint",
-    apiKey,
-    apiType: "chat-completions",
-    models
-  };
-  const { targetPath, backupPath } = writeProvidersToConfig([unifiedProvider], options.targetPath, options.storagePath);
+  let targetPath = options.targetPath || getChatLanguageModelsPath(options.storagePath);
+  let backupPath = null;
+  if (options.targetPath) {
+    const unifiedProvider = {
+      name: "OpenCode",
+      vendor: "customendpoint",
+      apiKey,
+      apiType: "chat-completions",
+      models
+    };
+    const res = writeProvidersToConfig([unifiedProvider], options.targetPath, options.storagePath);
+    targetPath = res.targetPath;
+    backupPath = res.backupPath;
+  } else {
+    const cleaned = cleanupLegacyOpenCodeCustomEndpoints(options.storagePath);
+    if (cleaned.length > 0) {
+      backupPath = createBackup(cleaned[0]);
+    }
+  }
   return {
     goCount: goModelIds.length,
     zenCount,
     totalCount: models.length,
+    models,
     targetPath,
     backupPath
   };
@@ -643,6 +681,9 @@ async function syncOpenCodeModels(apiKey, options = {}) {
 // src/auth.ts
 var SECRET_KEY = "opencode_api_key";
 function getStoredOpenCodeKey(customPath) {
+  if (process.env.OPENCODE_API_KEY && process.env.OPENCODE_API_KEY.trim().length > 0) {
+    return process.env.OPENCODE_API_KEY.trim();
+  }
   if (customPath) {
     try {
       if (fs2.existsSync(customPath)) {
@@ -929,11 +970,18 @@ var OpenCodeChatProvider = class {
   }
   _onDidChange = new vscode.EventEmitter();
   onDidChangeLanguageModelChatInformation = this._onDidChange.event;
+  _models = [...VERIFIED_OPENCODE_MODELS];
   refresh() {
     this._onDidChange.fire();
   }
+  updateModels(models) {
+    if (Array.isArray(models) && models.length > 0) {
+      this._models = models;
+      this.refresh();
+    }
+  }
   async provideLanguageModelChatInformation(_options, _token) {
-    return VERIFIED_OPENCODE_MODELS.map((m) => ({
+    return this._models.map((m) => ({
       id: m.id,
       name: m.name,
       family: m.family,
@@ -954,6 +1002,12 @@ var OpenCodeChatProvider = class {
         'OpenCode API key not found. Please run "OpenCode: Set API Key" command to configure your key.'
       );
     }
+    this.context.secrets.get("opencode_api_key").then((stored) => {
+      if (!stored && apiKey) {
+        this.context.secrets.store("opencode_api_key", apiKey).then(void 0, () => {
+        });
+      }
+    });
     const formattedMessages = [];
     for (const msg of messages) {
       const role = msg.role === vscode.LanguageModelChatMessageRole.User ? "user" : "assistant";
@@ -1124,6 +1178,13 @@ async function activate(context) {
   } catch {
   }
   try {
+    const cleaned = cleanupLegacyOpenCodeCustomEndpoints(context.globalStorageUri?.fsPath);
+    if (cleaned.length > 0) {
+      outputChannel.appendLine(`Purged legacy OpenCode customendpoint entries from: ${cleaned.join(", ")}`);
+    }
+  } catch {
+  }
+  try {
     const agentHostCfg = vscode2.workspace.getConfiguration("chat.agentHost");
     if (!agentHostCfg.get("byokModels.enabled", false)) {
       await agentHostCfg.update("byokModels.enabled", true, vscode2.ConfigurationTarget.Global);
@@ -1179,6 +1240,7 @@ async function activate(context) {
       statusBarItem.text = "$(sync~spin) OpenCode";
       statusBarItem.tooltip = "Syncing OpenCode models...";
       const storagePath = context.globalStorageUri?.fsPath;
+      let syncResult = null;
       if (interactive) {
         await vscode2.window.withProgress(
           {
@@ -1187,29 +1249,35 @@ async function activate(context) {
             cancellable: false
           },
           async () => {
-            const result = await syncOpenCodeModels(apiKey, { includeGo, includeZen, storagePath });
+            syncResult = await syncOpenCodeModels(apiKey, { includeGo, includeZen, storagePath });
             outputChannel.appendLine(
-              `Synced ${result.totalCount} unified OpenCode models (${result.goCount} Go + ${result.zenCount} Zen) to ${result.targetPath}`
+              `Synced ${syncResult.totalCount} unified OpenCode models (${syncResult.goCount} Go + ${syncResult.zenCount} Zen) to native provider.`
             );
             vscode2.window.showInformationMessage(
-              `Synced ${result.totalCount} OpenCode models (${result.goCount} Go flat-rate + ${result.zenCount} Zen exclusive) to Copilot!`,
-              "Open Models File"
-            ).then((choice) => {
-              if (choice === "Open Models File") {
-                vscode2.workspace.openTextDocument(result.targetPath).then((doc) => {
-                  vscode2.window.showTextDocument(doc);
-                });
-              }
-            });
+              `Synced ${syncResult.totalCount} OpenCode models (${syncResult.goCount} Go flat-rate + ${syncResult.zenCount} Zen exclusive) to Copilot!`
+            );
           }
         );
       } else {
-        const result = await syncOpenCodeModels(apiKey, { includeGo, includeZen, storagePath });
+        syncResult = await syncOpenCodeModels(apiKey, { includeGo, includeZen, storagePath });
         outputChannel.appendLine(
-          `[Startup] Synced ${result.totalCount} unified OpenCode models (${result.goCount} Go + ${result.zenCount} Zen) to ${result.targetPath}`
+          `[Startup] Synced ${syncResult.totalCount} unified OpenCode models (${syncResult.goCount} Go + ${syncResult.zenCount} Zen) to native provider.`
         );
       }
-      chatProvider.refresh();
+      if (syncResult?.models && syncResult.models.length > 0) {
+        chatProvider.updateModels(
+          syncResult.models.map((m) => ({
+            id: m.id,
+            name: m.name,
+            family: m.family || m.id,
+            contextWindow: m.contextWindow || 1048576,
+            maxOutputTokens: m.maxOutputTokens || 65536,
+            vision: !!m.vision
+          }))
+        );
+      } else {
+        chatProvider.refresh();
+      }
       await updateUsageMeter(apiKey);
     } catch (err) {
       outputChannel.appendLine(`[Sync Error] ${err.message}`);
@@ -1251,6 +1319,11 @@ async function activate(context) {
     updateUsageMeter();
   }, 6e4);
   context.subscriptions.push({ dispose: () => clearInterval(usageTimer) });
+  return {
+    chatProvider,
+    statusBarItem,
+    performSync
+  };
 }
 function deactivate() {
 }

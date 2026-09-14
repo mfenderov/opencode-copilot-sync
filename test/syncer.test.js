@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readChatLanguageModels, getChatLanguageModelsPath, getAllChatLanguageModelsPaths, syncWslMirror, writeProvidersToConfig } from '../out/syncer.js';
+import { readChatLanguageModels, getChatLanguageModelsPath, getAllChatLanguageModelsPaths, syncWslMirror, writeProvidersToConfig, cleanupLegacyOpenCodeCustomEndpoints } from '../out/syncer.js';
 import { buildProviderEntry } from '../out/config.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -57,3 +57,27 @@ test('writeProvidersToConfig updates temp config without touching real files', (
   // Clean up
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
+
+test('cleanupLegacyOpenCodeCustomEndpoints purges OpenCode from storage config', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-cleanup-'));
+  // Create mock storage path structure: <tmpDir>/User/globalStorage/mfenderov.opencode-copilot-sync
+  const storageDir = path.join(tmpDir, 'User', 'globalStorage', 'mfenderov.opencode-copilot-sync');
+  fs.mkdirSync(storageDir, { recursive: true });
+
+  const configPath = path.join(tmpDir, 'User', 'chatLanguageModels.json');
+  const initial = [
+    { name: 'HF Router', vendor: 'customendpoint', models: [] },
+    { name: 'OpenCode', vendor: 'customendpoint', models: [{ id: 'kimi-k3', url: 'https://opencode.ai/zen/go/v1/chat/completions' }] },
+    { name: 'OpenCode Go', vendor: 'customendpoint', models: [] }
+  ];
+  fs.writeFileSync(configPath, JSON.stringify(initial, null, 2), 'utf-8');
+
+  cleanupLegacyOpenCodeCustomEndpoints(storageDir);
+
+  const updated = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+  assert.equal(updated.length, 1);
+  assert.equal(updated[0].name, 'HF Router');
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+

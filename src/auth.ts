@@ -8,6 +8,10 @@ import { getAllChatLanguageModelsPaths } from './syncer.js';
 export const SECRET_KEY = 'opencode_api_key';
 
 export function getStoredOpenCodeKey(customPath?: string): string | null {
+  if (process.env.OPENCODE_API_KEY && process.env.OPENCODE_API_KEY.trim().length > 0) {
+    return process.env.OPENCODE_API_KEY.trim();
+  }
+
   if (customPath) {
     try {
       if (fs.existsSync(customPath)) {

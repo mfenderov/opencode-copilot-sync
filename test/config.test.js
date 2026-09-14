@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeChatLanguageModels, buildProviderEntry } from '../out/config.js';
+import { mergeChatLanguageModels, buildProviderEntry, purgeOpenCodeFromChatLanguageModels } from '../out/config.js';
 
 test('mergeChatLanguageModels preserves other providers and updates OpenCode', () => {
   const existing = [
@@ -140,4 +140,19 @@ test('mergeChatLanguageModels preserves existing models when new provider has em
   assert.equal(merged.length, 1);
   assert.equal(merged[0].models.length, 2, 'Existing models must be preserved instead of being wiped out');
 });
+
+test('purgeOpenCodeFromChatLanguageModels purges all OpenCode variants and keeps other providers', () => {
+  const existing = [
+    { name: 'HF Router', vendor: 'customendpoint', models: [{ id: 'claude-3-opus' }] },
+    { name: 'OpenCode', vendor: 'customendpoint', models: [{ id: 'deepseek-v4-flash', url: 'https://opencode.ai/zen/go/v1/chat/completions' }] },
+    { name: 'OpenCode Go', vendor: 'customendpoint', models: [] },
+    { name: 'OpenCode Zen Free', vendor: 'customendpoint', models: [] },
+    { name: 'Customprovider', vendor: 'customendpoint', apiKey: 'sk-test', models: [] }
+  ];
+
+  const purged = purgeOpenCodeFromChatLanguageModels(existing);
+  assert.equal(purged.length, 1);
+  assert.equal(purged[0].name, 'HF Router');
+});
+
 
