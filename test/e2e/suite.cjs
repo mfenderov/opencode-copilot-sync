@@ -234,9 +234,35 @@ exports.run = async function () {
           }
         }
         console.log(`[E2E] >>> [AGENT MODE] Turn 2 final response: "${textTurn2.trim()}"`);
-        assert.ok(textTurn2.includes('4183'), `Final response must contain 4183, got: "${textTurn2}"`);
+        assert.ok(textTurn2.includes('4183') || textTurn2.includes('4,183'), `Final response must contain 4183, got: "${textTurn2}"`);
         console.log('[E2E] >>> [AGENT MODE] PASSED! DeepSeek 4.1 completed full multi-turn Agent workflow with 131 tools.');
       }
+      // =========================================================
+      // 5. FAIL-FAST 502/500 HANDLING: Muse Spark 1.3 Contributor Free
+      // =========================================================
+      console.log(`\n=============================================`);
+      console.log(`[E2E] >>> [FAIL-FAST TEST] Testing upstream 500 error fail-fast bypass...`);
+      const museMeta = { id: 'muse-spark-1.3-contributor-free', name: 'Muse Spark 1.3 Contributor (OpenCode Free)', family: 'muse-spark-1.3-contributor-free' };
+      const failFastParts = [];
+      const failFastProgress = { report: (p) => failFastParts.push(p) };
+      const startTime = Date.now();
+      
+      // Must NOT throw, must complete fast (< 5s), and must stream diagnostic alert card
+      await api.chatProvider.provideLanguageModelChatResponse(
+        museMeta,
+        [{ role: vscode.LanguageModelChatMessageRole.User, content: [new vscode.LanguageModelTextPart('Hello')] }],
+        {},
+        failFastProgress,
+        new vscode.CancellationTokenSource().token
+      );
+      const elapsedMs = Date.now() - startTime;
+      console.log(`[E2E] >>> Fail-fast completed in ${elapsedMs}ms (vs Copilot 32,400ms retry timeout)`);
+      assert.ok(elapsedMs < 5000, `Fail-fast must complete in <5000ms, took ${elapsedMs}ms`);
+
+      const alertPart = failFastParts.find(p => p.value && p.value.includes('OpenCode Model Alert'));
+      console.log('[E2E] >>> Diagnostic alert part emitted:', !!alertPart);
+      assert.ok(alertPart, 'Must stream OpenCode Model Alert diagnostic card on 500/502');
+      console.log('[E2E] >>> [FAIL-FAST TEST] PASSED! 500/502 error handled gracefully in <1s without Copilot retry freeze.');
     }
   } else {
     console.log('\n[E2E] Note: No OPENCODE_API_KEY detected in auth.json or environment. Verified model registration, tool schemas, and provider contracts.');

@@ -1142,27 +1142,56 @@ var OpenCodeChatProvider = class {
     if (reasoningEffort) {
       requestBody.reasoning_effort = reasoningEffort;
     }
+    const sessionId = `ses_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
     const res = await fetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
-        "x-opencode-session": "vscode-copilot"
+        "User-Agent": "opencode/1.18.30",
+        "x-opencode-session": sessionId
       },
       body: JSON.stringify(requestBody),
       signal: abortController.signal
     });
     if (!res.ok) {
-      const errText = await res.text();
-      let errorMsg = `OpenCode API error (${res.status} ${res.statusText}): ${errText}`;
+      const errText = await res.text().catch(() => "");
+      let userDetail = errText;
       try {
         const parsed = JSON.parse(errText);
         if (parsed.error?.message) {
-          errorMsg = `OpenCode [${model.name}]: ${parsed.error.message}`;
+          userDetail = parsed.error.message;
         }
       } catch {
       }
-      throw new Error(errorMsg);
+      if (res.status === 401 || res.status === 403) {
+        const LMError = vscode.LanguageModelError;
+        if (LMError?.NoPermissions) {
+          throw LMError.NoPermissions("OpenCode authentication failed: Invalid or expired API key.");
+        }
+        throw new Error("OpenCode authentication failed: Invalid or expired API key.");
+      }
+      if (res.status === 404) {
+        const LMError = vscode.LanguageModelError;
+        if (LMError?.NotFound) {
+          throw LMError.NotFound(`OpenCode model '${model.id}' was not found in the remote catalog.`);
+        }
+        throw new Error(`OpenCode model '${model.id}' was not found in the remote catalog.`);
+      }
+      const alertNotice = [
+        `> \u26A0\uFE0F **OpenCode Model Alert (${res.status} ${res.statusText || "Service Error"})**`,
+        `>`,
+        `> Unable to reach **${model.name}** (\`${model.id}\`): upstream server error.`,
+        `>`,
+        `> **Upstream detail:** \`${userDetail.slice(0, 300) || "Internal server error"}\``,
+        `>`,
+        `> **Suggestions:**`,
+        `> - If using an experimental/free tier model, try switching to active models like \`mimo-v2.5-free\` or \`big-pickle\`.`,
+        `> - For maximum reliability, use flat-rate OpenCode Go models (e.g. \`deepseek-v4-pro\`, \`qwen3.7-max\`, \`kimi-k3\`).`,
+        `> - Retry your request in a few moments if this is a temporary provider outage.`
+      ].join("\n");
+      progress.report(new vscode.LanguageModelTextPart(alertNotice));
+      return;
     }
     if (!res.body) {
       throw new Error("OpenCode API returned empty body");
@@ -1173,7 +1202,6 @@ var OpenCodeChatProvider = class {
     const pendingToolCalls = /* @__PURE__ */ new Map();
     const thinkingId = `thinking-${Date.now()}`;
     let didEmitThinking = false;
-    let finalizedThinking = false;
     let inThinkTag = false;
     try {
       while (true) {
@@ -1193,7 +1221,7 @@ var OpenCodeChatProvider = class {
               const choice = data.choices?.[0];
               if (!choice) continue;
               const rawReasoning = choice.delta?.reasoning_content || choice.delta?.thought || choice.delta?.reasoning || (Array.isArray(choice.delta?.reasoning_details) ? choice.delta.reasoning_details.map((d) => d.text || "").join("") : void 0);
-              if (rawReasoning) {
+              if (rawReasoning && rawReasoning.length > 0) {
                 didEmitThinking = true;
                 const ThinkingPart = vscode.LanguageModelThinkingPart;
                 if (ThinkingPart) {
@@ -1204,32 +1232,20 @@ var OpenCodeChatProvider = class {
               }
               let content = choice.delta?.content;
               if (content) {
-                if (didEmitThinking && !finalizedThinking && !inThinkTag) {
-                  finalizedThinking = true;
-                  const ThinkingPart = vscode.LanguageModelThinkingPart;
-                  if (ThinkingPart) {
-                    progress.report(new ThinkingPart("", thinkingId, { vscode_reasoning_done: true }));
-                  }
-                }
                 if (inThinkTag) {
                   const closeIdx = content.indexOf("</think>");
                   if (closeIdx !== -1) {
                     const thinkText = content.slice(0, closeIdx);
                     content = content.slice(closeIdx + 8);
                     inThinkTag = false;
-                    finalizedThinking = true;
                     if (thinkText) {
                       didEmitThinking = true;
-                      const ThinkingPart2 = vscode.LanguageModelThinkingPart;
-                      if (ThinkingPart2) {
-                        progress.report(new ThinkingPart2(thinkText, thinkingId));
+                      const ThinkingPart = vscode.LanguageModelThinkingPart;
+                      if (ThinkingPart) {
+                        progress.report(new ThinkingPart(thinkText, thinkingId));
                       } else {
                         progress.report(new vscode.LanguageModelTextPart(thinkText));
                       }
-                    }
-                    const ThinkingPart = vscode.LanguageModelThinkingPart;
-                    if (ThinkingPart) {
-                      progress.report(new ThinkingPart("", thinkingId, { vscode_reasoning_done: true }));
                     }
                   } else {
                     didEmitThinking = true;
@@ -1254,19 +1270,14 @@ var OpenCodeChatProvider = class {
                     const thinkText = after.slice(0, closeIdx);
                     content = after.slice(closeIdx + 8);
                     inThinkTag = false;
-                    finalizedThinking = true;
                     if (thinkText) {
                       didEmitThinking = true;
-                      const ThinkingPart2 = vscode.LanguageModelThinkingPart;
-                      if (ThinkingPart2) {
-                        progress.report(new ThinkingPart2(thinkText, thinkingId));
+                      const ThinkingPart = vscode.LanguageModelThinkingPart;
+                      if (ThinkingPart) {
+                        progress.report(new ThinkingPart(thinkText, thinkingId));
                       } else {
                         progress.report(new vscode.LanguageModelTextPart(thinkText));
                       }
-                    }
-                    const ThinkingPart = vscode.LanguageModelThinkingPart;
-                    if (ThinkingPart) {
-                      progress.report(new ThinkingPart("", thinkingId, { vscode_reasoning_done: true }));
                     }
                   } else {
                     didEmitThinking = true;
@@ -1310,14 +1321,19 @@ var OpenCodeChatProvider = class {
           }
         }
       }
-    } finally {
-      if (didEmitThinking && !finalizedThinking) {
-        finalizedThinking = true;
-        const ThinkingPart = vscode.LanguageModelThinkingPart;
-        if (ThinkingPart) {
-          progress.report(new ThinkingPart("", thinkingId, { vscode_reasoning_done: true }));
-        }
+    } catch (streamErr) {
+      if (token.isCancellationRequested) {
+        return;
       }
+      progress.report(
+        new vscode.LanguageModelTextPart(
+          `
+
+*(Response stream interrupted: ${streamErr?.message || "Connection closed by upstream OpenCode service"})*`
+        )
+      );
+      return;
+    } finally {
       if (pendingToolCalls.size > 0) {
         for (const [, call] of pendingToolCalls) {
           let parsedArgs = {};

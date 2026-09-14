@@ -262,27 +262,66 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
       requestBody.reasoning_effort = reasoningEffort;
     }
 
+    const sessionId = `ses_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+
     const res = await fetch(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
-        'x-opencode-session': 'vscode-copilot',
+        'User-Agent': 'opencode/1.18.30',
+        'x-opencode-session': sessionId,
       },
       body: JSON.stringify(requestBody),
       signal: abortController.signal,
     });
 
     if (!res.ok) {
-      const errText = await res.text();
-      let errorMsg = `OpenCode API error (${res.status} ${res.statusText}): ${errText}`;
+      const errText = await res.text().catch(() => '');
+      let userDetail = errText;
       try {
         const parsed = JSON.parse(errText);
         if (parsed.error?.message) {
-          errorMsg = `OpenCode [${model.name}]: ${parsed.error.message}`;
+          userDetail = parsed.error.message;
         }
       } catch {}
-      throw new Error(errorMsg);
+
+      // 1. Auth errors: throw NoPermissions to let VS Code trigger re-auth prompts if configured
+      if (res.status === 401 || res.status === 403) {
+        const LMError = (vscode as any).LanguageModelError;
+        if (LMError?.NoPermissions) {
+          throw LMError.NoPermissions('OpenCode authentication failed: Invalid or expired API key.');
+        }
+        throw new Error('OpenCode authentication failed: Invalid or expired API key.');
+      }
+
+      // 2. Model not found: throw NotFound
+      if (res.status === 404) {
+        const LMError = (vscode as any).LanguageModelError;
+        if (LMError?.NotFound) {
+          throw LMError.NotFound(`OpenCode model '${model.id}' was not found in the remote catalog.`);
+        }
+        throw new Error(`OpenCode model '${model.id}' was not found in the remote catalog.`);
+      }
+
+      // 3. Upstream Server Errors (500, 502 Bad Gateway, 503, 504) or rate limits
+      // Instead of throwing an Error (which causes Copilot's runtime to retry 5 times for 32.4 seconds),
+      // stream an informative Markdown alert card to the user and resolve cleanly (return void).
+      const alertNotice = [
+        `> ⚠️ **OpenCode Model Alert (${res.status} ${res.statusText || 'Service Error'})**`,
+        `>`,
+        `> Unable to reach **${model.name}** (\`${model.id}\`): upstream server error.`,
+        `>`,
+        `> **Upstream detail:** \`${userDetail.slice(0, 300) || 'Internal server error'}\``,
+        `>`,
+        `> **Suggestions:**`,
+        `> - If using an experimental/free tier model, try switching to active models like \`mimo-v2.5-free\` or \`big-pickle\`.`,
+        `> - For maximum reliability, use flat-rate OpenCode Go models (e.g. \`deepseek-v4-pro\`, \`qwen3.7-max\`, \`kimi-k3\`).`,
+        `> - Retry your request in a few moments if this is a temporary provider outage.`,
+      ].join('\n');
+
+      progress.report(new vscode.LanguageModelTextPart(alertNotice));
+      return; // Clean resolution bypasses Copilot's 5-retry 32-second loop!
     }
 
     if (!res.body) {
@@ -298,7 +337,6 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     const pendingToolCalls = new Map<number, { id: string; name: string; args: string }>();
     const thinkingId = `thinking-${Date.now()}`;
     let didEmitThinking = false;
-    let finalizedThinking = false;
     let inThinkTag = false;
 
     try {
@@ -331,7 +369,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
                   ? choice.delta.reasoning_details.map((d: any) => d.text || '').join('')
                   : undefined);
 
-              if (rawReasoning) {
+              if (rawReasoning && rawReasoning.length > 0) {
                 didEmitThinking = true;
                 const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
                 if (ThinkingPart) {
@@ -344,23 +382,12 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
               // 2. Stream delta text content and handle inline <think> tags
               let content = choice.delta?.content;
               if (content) {
-                // If reasoning was previously emitted via reasoning_content and regular content starts,
-                // finalize thinking so VS Code calculates the duration timer and closes the thinking block
-                if (didEmitThinking && !finalizedThinking && !inThinkTag) {
-                  finalizedThinking = true;
-                  const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
-                  if (ThinkingPart) {
-                    progress.report(new ThinkingPart('', thinkingId, { vscode_reasoning_done: true }));
-                  }
-                }
-
                 if (inThinkTag) {
                   const closeIdx = content.indexOf('</think>');
                   if (closeIdx !== -1) {
                     const thinkText = content.slice(0, closeIdx);
                     content = content.slice(closeIdx + 8);
                     inThinkTag = false;
-                    finalizedThinking = true;
                     if (thinkText) {
                       didEmitThinking = true;
                       const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
@@ -369,10 +396,6 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
                       } else {
                         progress.report(new vscode.LanguageModelTextPart(thinkText));
                       }
-                    }
-                    const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
-                    if (ThinkingPart) {
-                      progress.report(new ThinkingPart('', thinkingId, { vscode_reasoning_done: true }));
                     }
                   } else {
                     didEmitThinking = true;
@@ -397,7 +420,6 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
                     const thinkText = after.slice(0, closeIdx);
                     content = after.slice(closeIdx + 8);
                     inThinkTag = false;
-                    finalizedThinking = true;
                     if (thinkText) {
                       didEmitThinking = true;
                       const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
@@ -406,10 +428,6 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
                       } else {
                         progress.report(new vscode.LanguageModelTextPart(thinkText));
                       }
-                    }
-                    const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
-                    if (ThinkingPart) {
-                      progress.report(new ThinkingPart('', thinkingId, { vscode_reasoning_done: true }));
                     }
                   } else {
                     didEmitThinking = true;
@@ -457,16 +475,17 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
           }
         }
       }
-    } finally {
-      // Finalize thinking state if not already finalized
-      if (didEmitThinking && !finalizedThinking) {
-        finalizedThinking = true;
-        const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
-        if (ThinkingPart) {
-          progress.report(new ThinkingPart('', thinkingId, { vscode_reasoning_done: true }));
-        }
+    } catch (streamErr: any) {
+      if (token.isCancellationRequested) {
+        return;
       }
-
+      progress.report(
+        new vscode.LanguageModelTextPart(
+          `\n\n*(Response stream interrupted: ${streamErr?.message || 'Connection closed by upstream OpenCode service'})*`
+        )
+      );
+      return;
+    } finally {
       // Flush any remaining accumulated tool calls
       if (pendingToolCalls.size > 0) {
         for (const [, call] of pendingToolCalls) {
