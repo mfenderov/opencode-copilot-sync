@@ -238,18 +238,14 @@ async function fetchOpenCodeModels(apiKey, catalog = "go") {
   return json.data.map((m) => m.id).filter(Boolean);
 }
 function filterFreeModels(modelIds) {
-  return modelIds.filter((id) => id.includes("free") || id === "big-pickle");
+  return modelIds.filter(
+    (id) => id.includes("free") || id.includes("contributor") || id.includes("community") || id === "big-pickle"
+  );
 }
 var KNOWN_UNAVAILABLE_MODELS = /* @__PURE__ */ new Set([
   "gpt-5.6-luna",
   "grok-4.5",
   "grok-4.6",
-  "muse-spark-1.3",
-  "muse-spark-1.2",
-  "muse-spark-1.3-contributor",
-  "muse-spark-1.2-contributor",
-  "muse-spark-1.3-contributor-free",
-  "muse-spark-1.2-contributor-free",
   "kimi-k2.5",
   "glm-5",
   "qwen3.7-plus",
@@ -257,13 +253,10 @@ var KNOWN_UNAVAILABLE_MODELS = /* @__PURE__ */ new Set([
   "mimo-v2-pro",
   "mimo-v2-omni",
   "hy3-preview",
-  "minimax-m2.7",
-  "nemotron-3-ultra-free",
-  "nemotron-3.5-lightning-free",
-  "deepseek-v4-flash-free"
+  "minimax-m2.7"
 ]);
 function filterAvailableGoModels(modelIds) {
-  return modelIds.filter((id) => !KNOWN_UNAVAILABLE_MODELS.has(id) && !id.startsWith("muse-"));
+  return modelIds.filter((id) => !KNOWN_UNAVAILABLE_MODELS.has(id));
 }
 async function checkZenBalance(apiKey) {
   try {
@@ -659,7 +652,7 @@ async function syncOpenCodeModels(apiKey, options = {}) {
         zenModelIds = filterAvailableGoModels(rawZenIds);
       } else {
         console.log("No active Zen credit balance detected. Including verified free Zen models.");
-        zenModelIds = filterAvailableGoModels(freeZenIds);
+        zenModelIds = freeZenIds;
       }
     } catch (err) {
       console.error(`Failed to check/fetch Zen models: ${err.message}`);
@@ -672,10 +665,12 @@ async function syncOpenCodeModels(apiKey, options = {}) {
   }
   let zenCount = 0;
   for (const id of zenModelIds) {
-    if (!goSet.has(id) && !KNOWN_UNAVAILABLE_MODELS.has(id) && !id.startsWith("muse-")) {
+    if (!goSet.has(id)) {
       const isFree = filterFreeModels([id]).length > 0;
-      models.push(enrichModel(id, { isGo: false, isFree }));
-      zenCount++;
+      if (isFree || !KNOWN_UNAVAILABLE_MODELS.has(id) && hasZenCredits) {
+        models.push(enrichModel(id, { isGo: false, isFree }));
+        zenCount++;
+      }
     }
   }
   if (models.length === 0) {
@@ -971,33 +966,39 @@ function formatUsageTooltip(usage) {
 // src/provider.ts
 var vscode = __toESM(require("vscode"), 1);
 var VERIFIED_OPENCODE_MODELS = [
-  { id: "minimax-m3", name: "MiniMax M3 (OpenCode)", family: "minimax-m3", contextWindow: 1048576, maxOutputTokens: 131072, vision: false },
-  { id: "minimax-m2.5", name: "MiniMax M2.5 (OpenCode)", family: "minimax-m2.5", contextWindow: 1048576, maxOutputTokens: 131072, vision: false },
-  { id: "kimi-k3", name: "Kimi K3 (OpenCode)", family: "kimi-k3", contextWindow: 1048576, maxOutputTokens: 65536, vision: true },
-  { id: "kimi-k2.7-code", name: "Kimi K2.7 Code (OpenCode)", family: "kimi-k2.7-code", contextWindow: 1048576, maxOutputTokens: 65536, vision: true },
-  { id: "kimi-k2.6", name: "Kimi K2.6 (OpenCode)", family: "kimi-k2.6", contextWindow: 1048576, maxOutputTokens: 65536, vision: true },
-  { id: "longcat-2.0", name: "Longcat 2.0 (OpenCode)", family: "longcat-2.0", contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
-  { id: "glm-5.2", name: "GLM 5.2 (OpenCode)", family: "glm-5.2", contextWindow: 1048576, maxOutputTokens: 131072, vision: true },
-  { id: "glm-5.3-flash", name: "GLM 5.3 Flash (OpenCode)", family: "glm-5.3-flash", contextWindow: 1048576, maxOutputTokens: 131072, vision: true },
-  { id: "glm-5.3", name: "GLM 5.3 (OpenCode)", family: "glm-5.3", contextWindow: 1048576, maxOutputTokens: 131072, vision: true },
-  { id: "glm-5.1", name: "GLM 5.1 (OpenCode)", family: "glm-5.1", contextWindow: 1048576, maxOutputTokens: 131072, vision: true },
-  { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro (OpenCode)", family: "deepseek-v4-pro", contextWindow: 1048576, maxOutputTokens: 131072, vision: false },
-  { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash (OpenCode)", family: "deepseek-v4-flash", contextWindow: 1048576, maxOutputTokens: 131072, vision: false },
-  { id: "deepseek-flash", name: "DeepSeek Flash (OpenCode)", family: "deepseek-flash", contextWindow: 1048576, maxOutputTokens: 131072, vision: false },
-  { id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash (OpenCode)", family: "deepseek-v4.1-flash", contextWindow: 1048576, maxOutputTokens: 131072, vision: false },
-  { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek V4 Flash Vision Exp (OpenCode)", family: "deepseek-v4-flash-vision-exp", contextWindow: 1048576, maxOutputTokens: 131072, vision: true },
-  { id: "qwen3.7-max", name: "Qwen3.7 Max (OpenCode)", family: "qwen3.7-max", contextWindow: 1e6, maxOutputTokens: 131072, vision: true },
-  { id: "qwen3.8-max", name: "Qwen3.8 Max (OpenCode)", family: "qwen3.8-max", contextWindow: 1e6, maxOutputTokens: 131072, vision: true },
-  { id: "qwen3.8-flash", name: "Qwen3.8 Flash (OpenCode)", family: "qwen3.8-flash", contextWindow: 1e6, maxOutputTokens: 131072, vision: true },
-  { id: "qwen3.6-plus", name: "Qwen3.6 Plus (OpenCode)", family: "qwen3.6-plus", contextWindow: 1e6, maxOutputTokens: 131072, vision: true },
-  { id: "mimo-v2.5-pro", name: "MiMo V2.5 Pro (OpenCode)", family: "mimo-v2.5-pro", contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
-  { id: "mimo-v2.5", name: "MiMo V2.5 (OpenCode)", family: "mimo-v2.5", contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
-  { id: "hy4-preview", name: "Hy4 Preview (OpenCode)", family: "hy4-preview", contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
-  { id: "hy3", name: "Hy3 (OpenCode)", family: "hy3", contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
-  { id: "omen-alpha", name: "Omen Alpha (OpenCode)", family: "omen-alpha", contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
-  { id: "mimo-v2.5-free", name: "MiMo V2.5 (Free)", family: "mimo-v2.5-free", contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
-  { id: "ling-3.0-flash-fin-free", name: "Ling 3.0 Flash Fin (Free)", family: "ling-3.0-flash-fin-free", contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
-  { id: "big-pickle", name: "Big Pickle (Free)", family: "big-pickle", contextWindow: 1048576, maxOutputTokens: 65536, vision: false }
+  { id: "minimax-m3", name: "MiniMax M3 (OpenCode)", family: "minimax-m3", contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: false },
+  { id: "minimax-m2.5", name: "MiniMax M2.5 (OpenCode)", family: "minimax-m2.5", contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: false },
+  { id: "kimi-k3", name: "Kimi K3 (OpenCode)", family: "kimi-k3", contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true },
+  { id: "kimi-k2.7-code", name: "Kimi K2.7 Code (OpenCode)", family: "kimi-k2.7-code", contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true },
+  { id: "kimi-k2.6", name: "Kimi K2.6 (OpenCode)", family: "kimi-k2.6", contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true },
+  { id: "longcat-2.0", name: "Longcat 2.0 (OpenCode)", family: "longcat-2.0", contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
+  { id: "glm-5.2", name: "GLM 5.2 (OpenCode)", family: "glm-5.2", contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
+  { id: "glm-5.3-flash", name: "GLM 5.3 Flash (OpenCode)", family: "glm-5.3-flash", contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
+  { id: "glm-5.3", name: "GLM 5.3 (OpenCode)", family: "glm-5.3", contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
+  { id: "glm-5.1", name: "GLM 5.1 (OpenCode)", family: "glm-5.1", contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
+  { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro (OpenCode)", family: "deepseek-v4-pro", contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
+  { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash (OpenCode)", family: "deepseek-v4-flash", contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
+  { id: "deepseek-flash", name: "DeepSeek Flash (OpenCode)", family: "deepseek-flash", contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
+  { id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash (OpenCode)", family: "deepseek-v4.1-flash", contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
+  { id: "deepseek-v4-flash-vision-exp", name: "DeepSeek V4 Flash Vision Exp (OpenCode)", family: "deepseek-v4-flash-vision-exp", contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
+  { id: "qwen3.7-max", name: "Qwen3.7 Max (OpenCode)", family: "qwen3.7-max", contextWindow: 1e6, maxOutputTokens: 131072, vision: true, thinking: false },
+  { id: "qwen3.8-max", name: "Qwen3.8 Max (OpenCode)", family: "qwen3.8-max", contextWindow: 1e6, maxOutputTokens: 131072, vision: true, thinking: false },
+  { id: "qwen3.8-flash", name: "Qwen3.8 Flash (OpenCode)", family: "qwen3.8-flash", contextWindow: 1e6, maxOutputTokens: 131072, vision: true, thinking: false },
+  { id: "qwen3.6-plus", name: "Qwen3.6 Plus (OpenCode)", family: "qwen3.6-plus", contextWindow: 1e6, maxOutputTokens: 131072, vision: true, thinking: false },
+  { id: "mimo-v2.5-pro", name: "MiMo V2.5 Pro (OpenCode)", family: "mimo-v2.5-pro", contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
+  { id: "mimo-v2.5", name: "MiMo V2.5 (OpenCode)", family: "mimo-v2.5", contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
+  { id: "hy4-preview", name: "Hy4 Preview (OpenCode)", family: "hy4-preview", contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
+  { id: "hy3", name: "Hy3 (OpenCode)", family: "hy3", contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
+  { id: "omen-alpha", name: "Omen Alpha (OpenCode)", family: "omen-alpha", contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
+  // Verified OpenCode Free models (always available and visible)
+  { id: "big-pickle", name: "Big Pickle (Free)", family: "big-pickle", contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
+  { id: "mimo-v2.5-free", name: "MiMo V2.5 (Free)", family: "mimo-v2.5-free", contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
+  { id: "ling-3.0-flash-fin-free", name: "Ling 3.0 Flash Fin (Free)", family: "ling-3.0-flash-fin-free", contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
+  { id: "nemotron-3-ultra-free", name: "Nemotron 3 Ultra (Free)", family: "nemotron-3-ultra-free", contextWindow: 1e6, maxOutputTokens: 128e3, vision: false, thinking: true },
+  { id: "nemotron-3.5-lightning-free", name: "Nemotron 3.5 Lightning (Free)", family: "nemotron-3.5-lightning-free", contextWindow: 1e6, maxOutputTokens: 128e3, vision: false, thinking: true },
+  { id: "deepseek-v4-flash-free", name: "DeepSeek V4 Flash (Free)", family: "deepseek-v4-flash-free", contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
+  { id: "muse-spark-1.3-contributor-free", name: "Muse Spark 1.3 Contributor (Free)", family: "muse-spark-1.3-contributor-free", contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
+  { id: "muse-spark-1.2-contributor-free", name: "Muse Spark 1.2 Contributor (Free)", family: "muse-spark-1.2-contributor-free", contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false }
 ];
 var OpenCodeChatProvider = class {
   constructor(context) {
@@ -1016,19 +1017,44 @@ var OpenCodeChatProvider = class {
     }
   }
   async provideLanguageModelChatInformation(_options, _token) {
-    return this._models.map((m) => ({
-      id: m.id,
-      name: m.name,
-      family: m.family,
-      version: "1.0.0",
-      maxInputTokens: m.contextWindow - m.maxOutputTokens,
-      maxOutputTokens: m.maxOutputTokens,
-      capabilities: {
-        imageInput: m.vision,
-        toolCalling: true
-      },
-      isBYOK: true
-    }));
+    return this._models.map((m) => {
+      const supportsReasoning = m.thinking !== false;
+      const reasoningSchema = supportsReasoning ? {
+        properties: {
+          reasoningEffort: {
+            type: "string",
+            title: "Thinking Effort",
+            enum: ["low", "medium", "high"],
+            enumItemLabels: ["Low", "Medium", "High"],
+            enumDescriptions: [
+              "Faster responses with less reasoning",
+              "Balanced reasoning and speed",
+              "Maximum reasoning depth"
+            ],
+            default: "medium"
+          }
+        }
+      } : void 0;
+      return {
+        id: m.id,
+        name: m.name,
+        family: m.family,
+        version: "1.0.0",
+        maxInputTokens: m.contextWindow - m.maxOutputTokens,
+        maxOutputTokens: m.maxOutputTokens,
+        capabilities: {
+          imageInput: m.vision,
+          vision: m.vision,
+          toolCalling: true,
+          thinking: supportsReasoning
+        },
+        supportsReasoningEffort: supportsReasoning ? ["low", "medium", "high"] : void 0,
+        supportedReasoningEfforts: supportsReasoning ? ["low", "medium", "high"] : void 0,
+        defaultReasoningEffort: supportsReasoning ? "medium" : void 0,
+        configurationSchema: reasoningSchema,
+        isBYOK: true
+      };
+    });
   }
   async provideLanguageModelChatResponse(model, messages, options, progress, token) {
     const apiKey = await this.context.secrets.get("opencode_api_key") || getStoredOpenCodeKey(this.context.globalStorageUri?.fsPath) || getStoredOpenCodeKey() || getKeyFromExistingConfig(this.context.globalStorageUri?.fsPath) || getKeyFromExistingConfig();
@@ -1097,8 +1123,18 @@ var OpenCodeChatProvider = class {
     }
     const abortController = new AbortController();
     token.onCancellationRequested(() => abortController.abort());
-    const isFreeOrZen = model.id.includes("free") || model.id === "big-pickle" || model.isFree === true;
+    const isFreeOrZen = model.id.includes("free") || model.id.includes("contributor") || model.id.includes("community") || model.id === "big-pickle" || model.isFree === true;
     const url = isFreeOrZen ? "https://opencode.ai/zen/v1/chat/completions" : "https://opencode.ai/zen/go/v1/chat/completions";
+    const reasoningEffort = options?.modelConfiguration?.reasoningEffort || options?.configuration?.reasoningEffort;
+    const requestBody = {
+      model: model.id,
+      messages: formattedMessages,
+      tools: toolsPayload,
+      stream: true
+    };
+    if (reasoningEffort) {
+      requestBody.reasoning_effort = reasoningEffort;
+    }
     const res = await fetch(url, {
       method: "POST",
       headers: {
@@ -1106,17 +1142,20 @@ var OpenCodeChatProvider = class {
         "Content-Type": "application/json",
         "x-opencode-session": "vscode-copilot"
       },
-      body: JSON.stringify({
-        model: model.id,
-        messages: formattedMessages,
-        tools: toolsPayload,
-        stream: true
-      }),
+      body: JSON.stringify(requestBody),
       signal: abortController.signal
     });
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`OpenCode API error (${res.status} ${res.statusText}): ${errText}`);
+      let errorMsg = `OpenCode API error (${res.status} ${res.statusText}): ${errText}`;
+      try {
+        const parsed = JSON.parse(errText);
+        if (parsed.error?.message) {
+          errorMsg = `OpenCode [${model.name}]: ${parsed.error.message}`;
+        }
+      } catch {
+      }
+      throw new Error(errorMsg);
     }
     if (!res.body) {
       throw new Error("OpenCode API returned empty body");
@@ -1125,6 +1164,10 @@ var OpenCodeChatProvider = class {
     const decoder = new TextDecoder();
     let buffer = "";
     const pendingToolCalls = /* @__PURE__ */ new Map();
+    const thinkingId = `thinking-${Date.now()}`;
+    let didEmitThinking = false;
+    let finalizedThinking = false;
+    let inThinkTag = false;
     try {
       while (true) {
         if (token.isCancellationRequested) break;
@@ -1142,17 +1185,96 @@ var OpenCodeChatProvider = class {
               const data = JSON.parse(trimmed.slice(6));
               const choice = data.choices?.[0];
               if (!choice) continue;
-              const reasoning = choice.delta?.reasoning_content || choice.delta?.thought || choice.delta?.reasoning;
-              if (reasoning) {
+              const rawReasoning = choice.delta?.reasoning_content || choice.delta?.thought || choice.delta?.reasoning || (Array.isArray(choice.delta?.reasoning_details) ? choice.delta.reasoning_details.map((d) => d.text || "").join("") : void 0);
+              if (rawReasoning) {
+                didEmitThinking = true;
                 const ThinkingPart = vscode.LanguageModelThinkingPart;
                 if (ThinkingPart) {
-                  progress.report(new ThinkingPart(reasoning));
+                  progress.report(new ThinkingPart(rawReasoning, thinkingId));
                 } else {
-                  progress.report(new vscode.LanguageModelTextPart(reasoning));
+                  progress.report(new vscode.LanguageModelTextPart(rawReasoning));
                 }
               }
-              if (choice.delta?.content) {
-                progress.report(new vscode.LanguageModelTextPart(choice.delta.content));
+              let content = choice.delta?.content;
+              if (content) {
+                if (didEmitThinking && !finalizedThinking && !inThinkTag) {
+                  finalizedThinking = true;
+                  const ThinkingPart = vscode.LanguageModelThinkingPart;
+                  if (ThinkingPart) {
+                    progress.report(new ThinkingPart("", thinkingId, { vscode_reasoning_done: true }));
+                  }
+                }
+                if (inThinkTag) {
+                  const closeIdx = content.indexOf("</think>");
+                  if (closeIdx !== -1) {
+                    const thinkText = content.slice(0, closeIdx);
+                    content = content.slice(closeIdx + 8);
+                    inThinkTag = false;
+                    finalizedThinking = true;
+                    if (thinkText) {
+                      didEmitThinking = true;
+                      const ThinkingPart2 = vscode.LanguageModelThinkingPart;
+                      if (ThinkingPart2) {
+                        progress.report(new ThinkingPart2(thinkText, thinkingId));
+                      } else {
+                        progress.report(new vscode.LanguageModelTextPart(thinkText));
+                      }
+                    }
+                    const ThinkingPart = vscode.LanguageModelThinkingPart;
+                    if (ThinkingPart) {
+                      progress.report(new ThinkingPart("", thinkingId, { vscode_reasoning_done: true }));
+                    }
+                  } else {
+                    didEmitThinking = true;
+                    const ThinkingPart = vscode.LanguageModelThinkingPart;
+                    if (ThinkingPart) {
+                      progress.report(new ThinkingPart(content, thinkingId));
+                    } else {
+                      progress.report(new vscode.LanguageModelTextPart(content));
+                    }
+                    content = "";
+                  }
+                } else if (content.includes("<think>")) {
+                  const openIdx = content.indexOf("<think>");
+                  const before = content.slice(0, openIdx);
+                  if (before) {
+                    progress.report(new vscode.LanguageModelTextPart(before));
+                  }
+                  const after = content.slice(openIdx + 7);
+                  inThinkTag = true;
+                  const closeIdx = after.indexOf("</think>");
+                  if (closeIdx !== -1) {
+                    const thinkText = after.slice(0, closeIdx);
+                    content = after.slice(closeIdx + 8);
+                    inThinkTag = false;
+                    finalizedThinking = true;
+                    if (thinkText) {
+                      didEmitThinking = true;
+                      const ThinkingPart2 = vscode.LanguageModelThinkingPart;
+                      if (ThinkingPart2) {
+                        progress.report(new ThinkingPart2(thinkText, thinkingId));
+                      } else {
+                        progress.report(new vscode.LanguageModelTextPart(thinkText));
+                      }
+                    }
+                    const ThinkingPart = vscode.LanguageModelThinkingPart;
+                    if (ThinkingPart) {
+                      progress.report(new ThinkingPart("", thinkingId, { vscode_reasoning_done: true }));
+                    }
+                  } else {
+                    didEmitThinking = true;
+                    const ThinkingPart = vscode.LanguageModelThinkingPart;
+                    if (ThinkingPart) {
+                      progress.report(new ThinkingPart(after, thinkingId));
+                    } else {
+                      progress.report(new vscode.LanguageModelTextPart(after));
+                    }
+                    content = "";
+                  }
+                }
+                if (content) {
+                  progress.report(new vscode.LanguageModelTextPart(content));
+                }
               }
               if (choice.delta?.tool_calls) {
                 for (const tc of choice.delta.tool_calls) {
@@ -1182,6 +1304,13 @@ var OpenCodeChatProvider = class {
         }
       }
     } finally {
+      if (didEmitThinking && !finalizedThinking) {
+        finalizedThinking = true;
+        const ThinkingPart = vscode.LanguageModelThinkingPart;
+        if (ThinkingPart) {
+          progress.report(new ThinkingPart("", thinkingId, { vscode_reasoning_done: true }));
+        }
+      }
       if (pendingToolCalls.size > 0) {
         for (const [, call] of pendingToolCalls) {
           let parsedArgs = {};
@@ -1321,7 +1450,8 @@ async function activate(context) {
             family: m.family || m.id,
             contextWindow: m.contextWindow || 1048576,
             maxOutputTokens: m.maxOutputTokens || 65536,
-            vision: !!m.vision
+            vision: !!m.vision,
+            thinking: m.thinking !== false
           }))
         );
       } else {

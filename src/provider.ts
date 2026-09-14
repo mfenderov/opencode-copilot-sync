@@ -9,36 +9,43 @@ export interface OpenCodeModelMeta {
   contextWindow: number;
   maxOutputTokens: number;
   vision: boolean;
+  thinking?: boolean;
 }
 
 export const VERIFIED_OPENCODE_MODELS: OpenCodeModelMeta[] = [
-  { id: 'minimax-m3', name: 'MiniMax M3 (OpenCode)', family: 'minimax-m3', contextWindow: 1048576, maxOutputTokens: 131072, vision: false },
-  { id: 'minimax-m2.5', name: 'MiniMax M2.5 (OpenCode)', family: 'minimax-m2.5', contextWindow: 1048576, maxOutputTokens: 131072, vision: false },
-  { id: 'kimi-k3', name: 'Kimi K3 (OpenCode)', family: 'kimi-k3', contextWindow: 1048576, maxOutputTokens: 65536, vision: true },
-  { id: 'kimi-k2.7-code', name: 'Kimi K2.7 Code (OpenCode)', family: 'kimi-k2.7-code', contextWindow: 1048576, maxOutputTokens: 65536, vision: true },
-  { id: 'kimi-k2.6', name: 'Kimi K2.6 (OpenCode)', family: 'kimi-k2.6', contextWindow: 1048576, maxOutputTokens: 65536, vision: true },
-  { id: 'longcat-2.0', name: 'Longcat 2.0 (OpenCode)', family: 'longcat-2.0', contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
-  { id: 'glm-5.2', name: 'GLM 5.2 (OpenCode)', family: 'glm-5.2', contextWindow: 1048576, maxOutputTokens: 131072, vision: true },
-  { id: 'glm-5.3-flash', name: 'GLM 5.3 Flash (OpenCode)', family: 'glm-5.3-flash', contextWindow: 1048576, maxOutputTokens: 131072, vision: true },
-  { id: 'glm-5.3', name: 'GLM 5.3 (OpenCode)', family: 'glm-5.3', contextWindow: 1048576, maxOutputTokens: 131072, vision: true },
-  { id: 'glm-5.1', name: 'GLM 5.1 (OpenCode)', family: 'glm-5.1', contextWindow: 1048576, maxOutputTokens: 131072, vision: true },
-  { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro (OpenCode)', family: 'deepseek-v4-pro', contextWindow: 1048576, maxOutputTokens: 131072, vision: false },
-  { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash (OpenCode)', family: 'deepseek-v4-flash', contextWindow: 1048576, maxOutputTokens: 131072, vision: false },
-  { id: 'deepseek-flash', name: 'DeepSeek Flash (OpenCode)', family: 'deepseek-flash', contextWindow: 1048576, maxOutputTokens: 131072, vision: false },
-  { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash (OpenCode)', family: 'deepseek-v4.1-flash', contextWindow: 1048576, maxOutputTokens: 131072, vision: false },
-  { id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek V4 Flash Vision Exp (OpenCode)', family: 'deepseek-v4-flash-vision-exp', contextWindow: 1048576, maxOutputTokens: 131072, vision: true },
-  { id: 'qwen3.7-max', name: 'Qwen3.7 Max (OpenCode)', family: 'qwen3.7-max', contextWindow: 1000000, maxOutputTokens: 131072, vision: true },
-  { id: 'qwen3.8-max', name: 'Qwen3.8 Max (OpenCode)', family: 'qwen3.8-max', contextWindow: 1000000, maxOutputTokens: 131072, vision: true },
-  { id: 'qwen3.8-flash', name: 'Qwen3.8 Flash (OpenCode)', family: 'qwen3.8-flash', contextWindow: 1000000, maxOutputTokens: 131072, vision: true },
-  { id: 'qwen3.6-plus', name: 'Qwen3.6 Plus (OpenCode)', family: 'qwen3.6-plus', contextWindow: 1000000, maxOutputTokens: 131072, vision: true },
-  { id: 'mimo-v2.5-pro', name: 'MiMo V2.5 Pro (OpenCode)', family: 'mimo-v2.5-pro', contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
-  { id: 'mimo-v2.5', name: 'MiMo V2.5 (OpenCode)', family: 'mimo-v2.5', contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
-  { id: 'hy4-preview', name: 'Hy4 Preview (OpenCode)', family: 'hy4-preview', contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
-  { id: 'hy3', name: 'Hy3 (OpenCode)', family: 'hy3', contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
-  { id: 'omen-alpha', name: 'Omen Alpha (OpenCode)', family: 'omen-alpha', contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
-  { id: 'mimo-v2.5-free', name: 'MiMo V2.5 (Free)', family: 'mimo-v2.5-free', contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
-  { id: 'ling-3.0-flash-fin-free', name: 'Ling 3.0 Flash Fin (Free)', family: 'ling-3.0-flash-fin-free', contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
-  { id: 'big-pickle', name: 'Big Pickle (Free)', family: 'big-pickle', contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
+  { id: 'minimax-m3', name: 'MiniMax M3 (OpenCode)', family: 'minimax-m3', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: false },
+  { id: 'minimax-m2.5', name: 'MiniMax M2.5 (OpenCode)', family: 'minimax-m2.5', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: false },
+  { id: 'kimi-k3', name: 'Kimi K3 (OpenCode)', family: 'kimi-k3', contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true },
+  { id: 'kimi-k2.7-code', name: 'Kimi K2.7 Code (OpenCode)', family: 'kimi-k2.7-code', contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true },
+  { id: 'kimi-k2.6', name: 'Kimi K2.6 (OpenCode)', family: 'kimi-k2.6', contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true },
+  { id: 'longcat-2.0', name: 'Longcat 2.0 (OpenCode)', family: 'longcat-2.0', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
+  { id: 'glm-5.2', name: 'GLM 5.2 (OpenCode)', family: 'glm-5.2', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
+  { id: 'glm-5.3-flash', name: 'GLM 5.3 Flash (OpenCode)', family: 'glm-5.3-flash', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
+  { id: 'glm-5.3', name: 'GLM 5.3 (OpenCode)', family: 'glm-5.3', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
+  { id: 'glm-5.1', name: 'GLM 5.1 (OpenCode)', family: 'glm-5.1', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
+  { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro (OpenCode)', family: 'deepseek-v4-pro', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
+  { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash (OpenCode)', family: 'deepseek-v4-flash', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
+  { id: 'deepseek-flash', name: 'DeepSeek Flash (OpenCode)', family: 'deepseek-flash', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
+  { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash (OpenCode)', family: 'deepseek-v4.1-flash', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
+  { id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek V4 Flash Vision Exp (OpenCode)', family: 'deepseek-v4-flash-vision-exp', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
+  { id: 'qwen3.7-max', name: 'Qwen3.7 Max (OpenCode)', family: 'qwen3.7-max', contextWindow: 1000000, maxOutputTokens: 131072, vision: true, thinking: false },
+  { id: 'qwen3.8-max', name: 'Qwen3.8 Max (OpenCode)', family: 'qwen3.8-max', contextWindow: 1000000, maxOutputTokens: 131072, vision: true, thinking: false },
+  { id: 'qwen3.8-flash', name: 'Qwen3.8 Flash (OpenCode)', family: 'qwen3.8-flash', contextWindow: 1000000, maxOutputTokens: 131072, vision: true, thinking: false },
+  { id: 'qwen3.6-plus', name: 'Qwen3.6 Plus (OpenCode)', family: 'qwen3.6-plus', contextWindow: 1000000, maxOutputTokens: 131072, vision: true, thinking: false },
+  { id: 'mimo-v2.5-pro', name: 'MiMo V2.5 Pro (OpenCode)', family: 'mimo-v2.5-pro', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
+  { id: 'mimo-v2.5', name: 'MiMo V2.5 (OpenCode)', family: 'mimo-v2.5', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
+  { id: 'hy4-preview', name: 'Hy4 Preview (OpenCode)', family: 'hy4-preview', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
+  { id: 'hy3', name: 'Hy3 (OpenCode)', family: 'hy3', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
+  { id: 'omen-alpha', name: 'Omen Alpha (OpenCode)', family: 'omen-alpha', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
+  // Verified OpenCode Free models (always available and visible)
+  { id: 'big-pickle', name: 'Big Pickle (Free)', family: 'big-pickle', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
+  { id: 'mimo-v2.5-free', name: 'MiMo V2.5 (Free)', family: 'mimo-v2.5-free', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
+  { id: 'ling-3.0-flash-fin-free', name: 'Ling 3.0 Flash Fin (Free)', family: 'ling-3.0-flash-fin-free', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
+  { id: 'nemotron-3-ultra-free', name: 'Nemotron 3 Ultra (Free)', family: 'nemotron-3-ultra-free', contextWindow: 1000000, maxOutputTokens: 128000, vision: false, thinking: true },
+  { id: 'nemotron-3.5-lightning-free', name: 'Nemotron 3.5 Lightning (Free)', family: 'nemotron-3.5-lightning-free', contextWindow: 1000000, maxOutputTokens: 128000, vision: false, thinking: true },
+  { id: 'deepseek-v4-flash-free', name: 'DeepSeek V4 Flash (Free)', family: 'deepseek-v4-flash-free', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
+  { id: 'muse-spark-1.3-contributor-free', name: 'Muse Spark 1.3 Contributor (Free)', family: 'muse-spark-1.3-contributor-free', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
+  { id: 'muse-spark-1.2-contributor-free', name: 'Muse Spark 1.2 Contributor (Free)', family: 'muse-spark-1.2-contributor-free', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
 ];
 
 export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
@@ -63,19 +70,47 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     _options: vscode.PrepareLanguageModelChatModelOptions,
     _token: vscode.CancellationToken
   ): Promise<vscode.LanguageModelChatInformation[]> {
-    return this._models.map((m) => ({
-      id: m.id,
-      name: m.name,
-      family: m.family,
-      version: '1.0.0',
-      maxInputTokens: m.contextWindow - m.maxOutputTokens,
-      maxOutputTokens: m.maxOutputTokens,
-      capabilities: {
-        imageInput: m.vision,
-        toolCalling: true,
-      },
-      isBYOK: true,
-    } as any));
+    return this._models.map((m) => {
+      const supportsReasoning = m.thinking !== false;
+      const reasoningSchema = supportsReasoning
+        ? {
+            properties: {
+              reasoningEffort: {
+                type: 'string',
+                title: 'Thinking Effort',
+                enum: ['low', 'medium', 'high'],
+                enumItemLabels: ['Low', 'Medium', 'High'],
+                enumDescriptions: [
+                  'Faster responses with less reasoning',
+                  'Balanced reasoning and speed',
+                  'Maximum reasoning depth',
+                ],
+                default: 'medium',
+              },
+            },
+          }
+        : undefined;
+
+      return {
+        id: m.id,
+        name: m.name,
+        family: m.family,
+        version: '1.0.0',
+        maxInputTokens: m.contextWindow - m.maxOutputTokens,
+        maxOutputTokens: m.maxOutputTokens,
+        capabilities: {
+          imageInput: m.vision,
+          vision: m.vision,
+          toolCalling: true,
+          thinking: supportsReasoning,
+        },
+        supportsReasoningEffort: supportsReasoning ? ['low', 'medium', 'high'] : undefined,
+        supportedReasoningEfforts: supportsReasoning ? ['low', 'medium', 'high'] : undefined,
+        defaultReasoningEffort: supportsReasoning ? 'medium' : undefined,
+        configurationSchema: reasoningSchema,
+        isBYOK: true,
+      } as any;
+    });
   }
 
   async provideLanguageModelChatResponse(
@@ -178,11 +213,28 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     // Free models and Zen-exclusive models route to zen/v1, flat-rate Go models route to zen/go/v1
     const isFreeOrZen =
       model.id.includes('free') ||
+      model.id.includes('contributor') ||
+      model.id.includes('community') ||
       model.id === 'big-pickle' ||
       (model as any).isFree === true;
     const url = isFreeOrZen
       ? 'https://opencode.ai/zen/v1/chat/completions'
       : 'https://opencode.ai/zen/go/v1/chat/completions';
+
+    const reasoningEffort =
+      (options as any)?.modelConfiguration?.reasoningEffort ||
+      (options as any)?.configuration?.reasoningEffort;
+
+    const requestBody: any = {
+      model: model.id,
+      messages: formattedMessages,
+      tools: toolsPayload,
+      stream: true,
+    };
+    if (reasoningEffort) {
+      requestBody.reasoning_effort = reasoningEffort;
+    }
+
     const res = await fetch(url, {
       method: 'POST',
       headers: {
@@ -190,18 +242,20 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         'Content-Type': 'application/json',
         'x-opencode-session': 'vscode-copilot',
       },
-      body: JSON.stringify({
-        model: model.id,
-        messages: formattedMessages,
-        tools: toolsPayload,
-        stream: true,
-      }),
+      body: JSON.stringify(requestBody),
       signal: abortController.signal,
     });
 
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`OpenCode API error (${res.status} ${res.statusText}): ${errText}`);
+      let errorMsg = `OpenCode API error (${res.status} ${res.statusText}): ${errText}`;
+      try {
+        const parsed = JSON.parse(errText);
+        if (parsed.error?.message) {
+          errorMsg = `OpenCode [${model.name}]: ${parsed.error.message}`;
+        }
+      } catch {}
+      throw new Error(errorMsg);
     }
 
     if (!res.body) {
@@ -213,8 +267,12 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     const decoder = new TextDecoder();
     let buffer = '';
 
-    // Track in-progress tool calls
+    // Track in-progress tool calls and reasoning stream
     const pendingToolCalls = new Map<number, { id: string; name: string; args: string }>();
+    const thinkingId = `thinking-${Date.now()}`;
+    let didEmitThinking = false;
+    let finalizedThinking = false;
+    let inThinkTag = false;
 
     try {
       while (true) {
@@ -237,24 +295,110 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
               const choice = data.choices?.[0];
               if (!choice) continue;
 
-              // Stream reasoning / thinking content (e.g. DeepSeek R1, DeepSeek V4.1, GLM)
-              const reasoning =
+              // 1. Stream reasoning / thinking content from explicit reasoning fields
+              const rawReasoning =
                 choice.delta?.reasoning_content ||
                 choice.delta?.thought ||
-                choice.delta?.reasoning;
+                choice.delta?.reasoning ||
+                (Array.isArray(choice.delta?.reasoning_details)
+                  ? choice.delta.reasoning_details.map((d: any) => d.text || '').join('')
+                  : undefined);
 
-              if (reasoning) {
+              if (rawReasoning) {
+                didEmitThinking = true;
                 const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
                 if (ThinkingPart) {
-                  progress.report(new ThinkingPart(reasoning));
+                  progress.report(new ThinkingPart(rawReasoning, thinkingId));
                 } else {
-                  progress.report(new vscode.LanguageModelTextPart(reasoning));
+                  progress.report(new vscode.LanguageModelTextPart(rawReasoning));
                 }
               }
 
-              // Stream delta text content
-              if (choice.delta?.content) {
-                progress.report(new vscode.LanguageModelTextPart(choice.delta.content));
+              // 2. Stream delta text content and handle inline <think> tags
+              let content = choice.delta?.content;
+              if (content) {
+                // If reasoning was previously emitted via reasoning_content and regular content starts,
+                // finalize thinking so VS Code calculates the duration timer and closes the thinking block
+                if (didEmitThinking && !finalizedThinking && !inThinkTag) {
+                  finalizedThinking = true;
+                  const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
+                  if (ThinkingPart) {
+                    progress.report(new ThinkingPart('', thinkingId, { vscode_reasoning_done: true }));
+                  }
+                }
+
+                if (inThinkTag) {
+                  const closeIdx = content.indexOf('</think>');
+                  if (closeIdx !== -1) {
+                    const thinkText = content.slice(0, closeIdx);
+                    content = content.slice(closeIdx + 8);
+                    inThinkTag = false;
+                    finalizedThinking = true;
+                    if (thinkText) {
+                      didEmitThinking = true;
+                      const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
+                      if (ThinkingPart) {
+                        progress.report(new ThinkingPart(thinkText, thinkingId));
+                      } else {
+                        progress.report(new vscode.LanguageModelTextPart(thinkText));
+                      }
+                    }
+                    const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
+                    if (ThinkingPart) {
+                      progress.report(new ThinkingPart('', thinkingId, { vscode_reasoning_done: true }));
+                    }
+                  } else {
+                    didEmitThinking = true;
+                    const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
+                    if (ThinkingPart) {
+                      progress.report(new ThinkingPart(content, thinkingId));
+                    } else {
+                      progress.report(new vscode.LanguageModelTextPart(content));
+                    }
+                    content = '';
+                  }
+                } else if (content.includes('<think>')) {
+                  const openIdx = content.indexOf('<think>');
+                  const before = content.slice(0, openIdx);
+                  if (before) {
+                    progress.report(new vscode.LanguageModelTextPart(before));
+                  }
+                  const after = content.slice(openIdx + 7);
+                  inThinkTag = true;
+                  const closeIdx = after.indexOf('</think>');
+                  if (closeIdx !== -1) {
+                    const thinkText = after.slice(0, closeIdx);
+                    content = after.slice(closeIdx + 8);
+                    inThinkTag = false;
+                    finalizedThinking = true;
+                    if (thinkText) {
+                      didEmitThinking = true;
+                      const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
+                      if (ThinkingPart) {
+                        progress.report(new ThinkingPart(thinkText, thinkingId));
+                      } else {
+                        progress.report(new vscode.LanguageModelTextPart(thinkText));
+                      }
+                    }
+                    const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
+                    if (ThinkingPart) {
+                      progress.report(new ThinkingPart('', thinkingId, { vscode_reasoning_done: true }));
+                    }
+                  } else {
+                    didEmitThinking = true;
+                    const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
+                    if (ThinkingPart) {
+                      progress.report(new ThinkingPart(after, thinkingId));
+                    } else {
+                      progress.report(new vscode.LanguageModelTextPart(after));
+                    }
+                    content = '';
+                  }
+                }
+
+                if (content) {
+                  progress.report(new vscode.LanguageModelTextPart(content));
+                }
               }
 
               // Accumulate streaming tool calls
@@ -287,6 +431,15 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         }
       }
     } finally {
+      // Finalize thinking state if not already finalized
+      if (didEmitThinking && !finalizedThinking) {
+        finalizedThinking = true;
+        const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
+        if (ThinkingPart) {
+          progress.report(new ThinkingPart('', thinkingId, { vscode_reasoning_done: true }));
+        }
+      }
+
       // Flush any remaining accumulated tool calls
       if (pendingToolCalls.size > 0) {
         for (const [, call] of pendingToolCalls) {

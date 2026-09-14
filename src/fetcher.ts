@@ -29,19 +29,19 @@ export async function fetchOpenCodeModels(
 }
 
 export function filterFreeModels(modelIds: string[]): string[] {
-  return modelIds.filter((id) => id.includes('free') || id === 'big-pickle');
+  return modelIds.filter(
+    (id) =>
+      id.includes('free') ||
+      id.includes('contributor') ||
+      id.includes('community') ||
+      id === 'big-pickle'
+  );
 }
 
 export const KNOWN_UNAVAILABLE_MODELS = new Set([
   'gpt-5.6-luna',
   'grok-4.5',
   'grok-4.6',
-  'muse-spark-1.3',
-  'muse-spark-1.2',
-  'muse-spark-1.3-contributor',
-  'muse-spark-1.2-contributor',
-  'muse-spark-1.3-contributor-free',
-  'muse-spark-1.2-contributor-free',
   'kimi-k2.5',
   'glm-5',
   'qwen3.7-plus',
@@ -50,13 +50,10 @@ export const KNOWN_UNAVAILABLE_MODELS = new Set([
   'mimo-v2-omni',
   'hy3-preview',
   'minimax-m2.7',
-  'nemotron-3-ultra-free',
-  'nemotron-3.5-lightning-free',
-  'deepseek-v4-flash-free',
 ]);
 
 export function filterAvailableGoModels(modelIds: string[]): string[] {
-  return modelIds.filter((id) => !KNOWN_UNAVAILABLE_MODELS.has(id) && !id.startsWith('muse-'));
+  return modelIds.filter((id) => !KNOWN_UNAVAILABLE_MODELS.has(id));
 }
 
 export const filterAvailableModels = filterAvailableGoModels;

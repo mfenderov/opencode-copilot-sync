@@ -432,7 +432,7 @@ export async function syncOpenCodeModels(
         zenModelIds = filterAvailableGoModels(rawZenIds);
       } else {
         console.log('No active Zen credit balance detected. Including verified free Zen models.');
-        zenModelIds = filterAvailableGoModels(freeZenIds);
+        zenModelIds = freeZenIds;
       }
     } catch (err: any) {
       console.error(`Failed to check/fetch Zen models: ${err.message}`);
@@ -447,13 +447,15 @@ export async function syncOpenCodeModels(
     models.push(enrichModel(id, { isGo: true }));
   }
 
-  // Zen models that are NOT in Go (only added if user has Zen balance)
+  // Zen models that are NOT in Go (free models always included, paid only if credits exist)
   let zenCount = 0;
   for (const id of zenModelIds) {
-    if (!goSet.has(id) && !KNOWN_UNAVAILABLE_MODELS.has(id) && !id.startsWith('muse-')) {
+    if (!goSet.has(id)) {
       const isFree = filterFreeModels([id]).length > 0;
-      models.push(enrichModel(id, { isGo: false, isFree }));
-      zenCount++;
+      if (isFree || (!KNOWN_UNAVAILABLE_MODELS.has(id) && hasZenCredits)) {
+        models.push(enrichModel(id, { isGo: false, isFree }));
+        zenCount++;
+      }
     }
   }
 
