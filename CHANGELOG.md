@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.10.1 - 2026-09-14
+#### Bug Fixes
+- restore thinking stream, retain free models, and enable cross-platform WSL extensionKind - (8a0ec12) - Mark Fenderov
+
+- - -
+
 ## v0.10.0 - 2026-09-14
 #### Features
 - migrate to native LanguageModelChatProvider and add WSL remote E2E pipeline - (ee38724) - Mark Fenderov
