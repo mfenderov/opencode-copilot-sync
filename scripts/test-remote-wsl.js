@@ -13,7 +13,8 @@ const forceOffline = process.argv.includes("--offline") || process.env.OPENCODE_
 
 if (isLinux) {
   // Running directly inside Linux / WSL / CI
-  console.log("[Remote-WSL E2E] Running directly on Linux/WSL environment.");
+  process.env.WSL_DISTRO_NAME = process.env.WSL_DISTRO_NAME || 'Ubuntu';
+  console.log("[Remote-WSL E2E] Running directly on Linux/WSL environment (simulated distro: " + process.env.WSL_DISTRO_NAME + ").");
   runRemoteAssertions({ forceOffline }).catch((err) => {
     console.error("[Remote-WSL E2E] Assertion failed:", err.message);
     if (err.stack) console.error(err.stack);
