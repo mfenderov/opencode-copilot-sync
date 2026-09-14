@@ -22,6 +22,10 @@ export function getChatLanguageModelsPath(activeExtensionStoragePath?: string): 
 
   const platform = process.platform;
   if (platform === 'darwin') {
+    const insiders = path.join(os.homedir(), 'Library', 'Application Support', 'Code - Insiders', 'User', 'chatLanguageModels.json');
+    if (fs.existsSync(path.dirname(insiders)) && !fs.existsSync(path.join(os.homedir(), 'Library', 'Application Support', 'Code', 'User'))) {
+      return insiders;
+    }
     return path.join(os.homedir(), 'Library', 'Application Support', 'Code', 'User', 'chatLanguageModels.json');
   }
   if (platform === 'win32') {
@@ -155,6 +159,19 @@ export function getAllChatLanguageModelsPaths(activeExtensionStoragePath?: strin
   const paths: string[] = [];
   const primary = getChatLanguageModelsPath(activeExtensionStoragePath);
   paths.push(primary);
+
+  // macOS: include both Code and Code - Insiders
+  if (process.platform === 'darwin') {
+    const macCandidates = [
+      path.join(os.homedir(), 'Library', 'Application Support', 'Code', 'User', 'chatLanguageModels.json'),
+      path.join(os.homedir(), 'Library', 'Application Support', 'Code - Insiders', 'User', 'chatLanguageModels.json'),
+    ];
+    for (const mc of macCandidates) {
+      if (!paths.includes(mc)) {
+        paths.push(mc);
+      }
+    }
+  }
 
   // Linux / WSL: unconditionally include all possible server (User + Machine) and client locations
   if (process.platform === 'linux') {
@@ -309,6 +326,26 @@ export function createBackup(filePath: string): string | null {
   return backupPath;
 }
 
+export function safeWriteFileSync(filePath: string, data: string): void {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  const tmpPath = `${filePath}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, data, 'utf-8');
+    fs.renameSync(tmpPath, filePath);
+  } catch {
+    try {
+      fs.writeFileSync(filePath, data, 'utf-8');
+    } finally {
+      try {
+        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+      } catch {}
+    }
+  }
+}
+
 export function cleanupLegacyOpenCodeCustomEndpoints(storagePath?: string): string[] {
   const filePaths = getAllChatLanguageModelsPaths(storagePath);
   const cleaned: string[] = [];
@@ -320,7 +357,7 @@ export function cleanupLegacyOpenCodeCustomEndpoints(storagePath?: string): stri
       const purged = purgeOpenCodeFromChatLanguageModels(existing);
       if (purged.length !== existing.length) {
         createBackup(filePath);
-        fs.writeFileSync(filePath, JSON.stringify(purged, null, 4), 'utf-8');
+        safeWriteFileSync(filePath, JSON.stringify(purged, null, 4));
         cleaned.push(filePath);
       }
     } catch (err: any) {
@@ -349,12 +386,7 @@ export function writeProvidersToConfig(
         primaryBackup = backupPath;
       }
 
-      const dir = path.dirname(filePath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-
-      fs.writeFileSync(filePath, JSON.stringify(mergedConfig, null, 4), 'utf-8');
+      safeWriteFileSync(filePath, JSON.stringify(mergedConfig, null, 4));
     } catch (err: any) {
       console.error(`Failed writing to ${filePath}: ${err.message}`);
     }

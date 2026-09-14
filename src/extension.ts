@@ -8,6 +8,10 @@ export async function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel('OpenCode Copilot Sync');
   context.subscriptions.push(outputChannel);
 
+  outputChannel.appendLine(
+    `[Platform] OS: ${process.platform} (${process.arch}), Remote: ${vscode.env.remoteName || 'local'}, App: ${vscode.env.appName}`
+  );
+
   // Register first-class native Language Model Chat Provider in VS Code
   const chatProvider = new OpenCodeChatProvider(context);
   context.subscriptions.push(

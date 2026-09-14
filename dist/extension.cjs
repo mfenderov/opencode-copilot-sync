@@ -305,6 +305,10 @@ function getChatLanguageModelsPath(activeExtensionStoragePath) {
   }
   const platform = process.platform;
   if (platform === "darwin") {
+    const insiders = path.join(os.homedir(), "Library", "Application Support", "Code - Insiders", "User", "chatLanguageModels.json");
+    if (fs.existsSync(path.dirname(insiders)) && !fs.existsSync(path.join(os.homedir(), "Library", "Application Support", "Code", "User"))) {
+      return insiders;
+    }
     return path.join(os.homedir(), "Library", "Application Support", "Code", "User", "chatLanguageModels.json");
   }
   if (platform === "win32") {
@@ -419,6 +423,17 @@ function getAllChatLanguageModelsPaths(activeExtensionStoragePath) {
   const paths = [];
   const primary = getChatLanguageModelsPath(activeExtensionStoragePath);
   paths.push(primary);
+  if (process.platform === "darwin") {
+    const macCandidates = [
+      path.join(os.homedir(), "Library", "Application Support", "Code", "User", "chatLanguageModels.json"),
+      path.join(os.homedir(), "Library", "Application Support", "Code - Insiders", "User", "chatLanguageModels.json")
+    ];
+    for (const mc of macCandidates) {
+      if (!paths.includes(mc)) {
+        paths.push(mc);
+      }
+    }
+  }
   if (process.platform === "linux") {
     const serverCandidates = [
       path.join(os.homedir(), ".vscode-server", "data", "User", "chatLanguageModels.json"),
@@ -561,6 +576,26 @@ function createBackup(filePath) {
   }
   return backupPath;
 }
+function safeWriteFileSync(filePath, data) {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  const tmpPath = `${filePath}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, data, "utf-8");
+    fs.renameSync(tmpPath, filePath);
+  } catch {
+    try {
+      fs.writeFileSync(filePath, data, "utf-8");
+    } finally {
+      try {
+        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+      } catch {
+      }
+    }
+  }
+}
 function cleanupLegacyOpenCodeCustomEndpoints(storagePath) {
   const filePaths = getAllChatLanguageModelsPaths(storagePath);
   const cleaned = [];
@@ -571,7 +606,7 @@ function cleanupLegacyOpenCodeCustomEndpoints(storagePath) {
       const purged = purgeOpenCodeFromChatLanguageModels(existing);
       if (purged.length !== existing.length) {
         createBackup(filePath);
-        fs.writeFileSync(filePath, JSON.stringify(purged, null, 4), "utf-8");
+        safeWriteFileSync(filePath, JSON.stringify(purged, null, 4));
         cleaned.push(filePath);
       }
     } catch (err) {
@@ -591,11 +626,7 @@ function writeProvidersToConfig(providers, targetPath, storagePath) {
       if (!primaryBackup) {
         primaryBackup = backupPath;
       }
-      const dir = path.dirname(filePath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(filePath, JSON.stringify(mergedConfig, null, 4), "utf-8");
+      safeWriteFileSync(filePath, JSON.stringify(mergedConfig, null, 4));
     } catch (err) {
       console.error(`Failed writing to ${filePath}: ${err.message}`);
     }
@@ -1175,6 +1206,9 @@ var OpenCodeChatProvider = class {
 async function activate(context) {
   const outputChannel = vscode2.window.createOutputChannel("OpenCode Copilot Sync");
   context.subscriptions.push(outputChannel);
+  outputChannel.appendLine(
+    `[Platform] OS: ${process.platform} (${process.arch}), Remote: ${vscode2.env.remoteName || "local"}, App: ${vscode2.env.appName}`
+  );
   const chatProvider = new OpenCodeChatProvider(context);
   context.subscriptions.push(
     vscode2.lm.registerLanguageModelChatProvider("opencode", chatProvider)
