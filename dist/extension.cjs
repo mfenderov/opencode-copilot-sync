@@ -825,7 +825,7 @@ async function resolveApiKey(secrets, promptIfMissing = true, vscodeWindow) {
     await secrets.store(SECRET_KEY, fromExisting);
     return fromExisting;
   }
-  if (promptIfMissing && vscodeWindow) {
+  if (promptIfMissing && vscodeWindow && !process.env.CI) {
     const entered = await vscodeWindow.showInputBox({
       title: "OpenCode API Key",
       prompt: "Enter your OpenCode API Key (starts with sk-)",
@@ -1221,7 +1221,8 @@ async function activate(context) {
       const config2 = vscode2.workspace.getConfiguration("opencode");
       const includeGo = config2.get("includeGoModels", true);
       const includeZen = config2.get("includeZenModels", true);
-      const apiKey = await resolveApiKey(context.secrets, interactive, vscode2.window);
+      const shouldPrompt = interactive && !process.env.CI;
+      const apiKey = await resolveApiKey(context.secrets, shouldPrompt, shouldPrompt ? vscode2.window : void 0);
       if (!apiKey) {
         if (interactive) {
           vscode2.window.showWarningMessage("OpenCode sync cancelled: No API key provided.");

@@ -179,7 +179,7 @@ export async function resolveApiKey(
     return fromExisting;
   }
 
-  if (promptIfMissing && vscodeWindow) {
+  if (promptIfMissing && vscodeWindow && !process.env.CI) {
     const entered = await vscodeWindow.showInputBox({
       title: 'OpenCode API Key',
       prompt: 'Enter your OpenCode API Key (starts with sk-)',

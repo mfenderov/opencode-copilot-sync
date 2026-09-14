@@ -78,7 +78,8 @@ export async function activate(context: vscode.ExtensionContext) {
       const includeGo = config.get<boolean>('includeGoModels', true);
       const includeZen = config.get<boolean>('includeZenModels', true);
 
-      const apiKey = await resolveApiKey(context.secrets, interactive, vscode.window);
+      const shouldPrompt = interactive && !process.env.CI;
+      const apiKey = await resolveApiKey(context.secrets, shouldPrompt, shouldPrompt ? vscode.window : undefined);
       if (!apiKey) {
         if (interactive) {
           vscode.window.showWarningMessage('OpenCode sync cancelled: No API key provided.');
