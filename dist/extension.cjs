@@ -1278,17 +1278,25 @@ var OpenCodeChatProvider = class {
       ...reasoningEffort ? { reasoning_effort: reasoningEffort } : {}
     };
     const sessionId = `ses_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "User-Agent": "opencode/1.18.30",
-        "x-opencode-session": sessionId
-      },
-      body: JSON.stringify(requestBody),
-      signal: abortController.signal
-    });
+    let res;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "User-Agent": "opencode/1.18.30",
+          "x-opencode-session": sessionId
+        },
+        body: JSON.stringify(requestBody),
+        signal: abortController.signal
+      });
+    } catch (err) {
+      if (token.isCancellationRequested || abortController.signal.aborted) {
+        return;
+      }
+      throw err;
+    }
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
       let userDetail = errText;
