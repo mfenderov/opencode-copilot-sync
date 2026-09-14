@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.10.0 - 2026-09-14
+#### Features
+- migrate to native LanguageModelChatProvider and add WSL remote E2E pipeline - (ee38724) - Mark Fenderov
+#### Bug Fixes
+- prevent interactive input prompts from blocking automated CI test runner - (f5225b6) - Mark Fenderov
+
+- - -
+
 ## v0.9.2 - 2026-09-14
 #### Bug Fixes
 - agent mode tool limits, missing api key on windows, and isBYOK enablement - (8497792) - Mark Fenderov
