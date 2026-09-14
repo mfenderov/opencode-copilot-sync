@@ -2,6 +2,19 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.14.0 - 2026-09-14
+#### Features
+- multi-transport routing, dynamic models.dev metadata, and enterprise testing pyramid - (003423b) - Mark Fenderov
+#### Bug Fixes
+- (**ci**) simulate WSL_DISTRO_NAME when running remote test on Linux CI runner - (e9d7ea4) - Mark Fenderov
+- (**provider**) cleanly handle fetch AbortError during token cancellation - (5df26ad) - Mark Fenderov
+- (**test**) safely handle non-root /mnt permissions in CI environments - (271f5f2) - Mark Fenderov
+- (**test**) guard live chatLanguageModels assertion in keyless CI environment - (4e6df98) - Mark Fenderov
+#### Miscellaneous Chores
+- sync package-lock.json with vscode devDependency - (f1bd134) - Mark Fenderov
+
+- - -
+
 ## v0.13.0 - 2026-09-14
 #### Features
 - fix remote-wsl extensionKind, upstream 500 fail-fast, and thinking streaming - (af554b2) - Mark Fenderov
