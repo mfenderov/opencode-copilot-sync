@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.13.0 - 2026-09-14
+#### Features
+- fix remote-wsl extensionKind, upstream 500 fail-fast, and thinking streaming - (af554b2) - Mark Fenderov
+
+- - -
+
 ## v0.12.1 - 2026-09-14
 #### Tests
 - add WSL reproduction test script demonstrating failure modes - (d9eb86c) - Mark Fenderov
