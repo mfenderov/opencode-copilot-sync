@@ -388,16 +388,19 @@ export async function syncOpenCodeModels(
     }
   }
 
-  // 2. Fetch OpenCode Zen catalog if user has active Zen credits
+  // 2. Fetch OpenCode Zen catalog (free models are always included, paid models only if credits exist)
   let hasZenCredits = false;
   if (includeZen) {
     try {
+      const rawZenIds = await fetchOpenCodeModels(apiKey, 'zen');
+      const freeZenIds = filterFreeModels(rawZenIds);
+
       hasZenCredits = await checkZenBalance(apiKey);
       if (hasZenCredits) {
-        const rawZenIds = await fetchOpenCodeModels(apiKey, 'zen');
         zenModelIds = filterAvailableGoModels(rawZenIds);
       } else {
-        console.log('No active Zen credit balance detected. Skipping paid Zen catalog to avoid 401 retry timeouts.');
+        console.log('No active Zen credit balance detected. Including verified free Zen models.');
+        zenModelIds = filterAvailableGoModels(freeZenIds);
       }
     } catch (err: any) {
       console.error(`Failed to check/fetch Zen models: ${err.message}`);

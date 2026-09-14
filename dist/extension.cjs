@@ -260,8 +260,7 @@ var KNOWN_UNAVAILABLE_MODELS = /* @__PURE__ */ new Set([
   "minimax-m2.7",
   "nemotron-3-ultra-free",
   "nemotron-3.5-lightning-free",
-  "deepseek-v4-flash-free",
-  "ling-3.0-flash-fin-free"
+  "deepseek-v4-flash-free"
 ]);
 function filterAvailableGoModels(modelIds) {
   return modelIds.filter((id) => !KNOWN_UNAVAILABLE_MODELS.has(id) && !id.startsWith("muse-"));
@@ -622,12 +621,14 @@ async function syncOpenCodeModels(apiKey, options = {}) {
   let hasZenCredits = false;
   if (includeZen) {
     try {
+      const rawZenIds = await fetchOpenCodeModels(apiKey, "zen");
+      const freeZenIds = filterFreeModels(rawZenIds);
       hasZenCredits = await checkZenBalance(apiKey);
       if (hasZenCredits) {
-        const rawZenIds = await fetchOpenCodeModels(apiKey, "zen");
         zenModelIds = filterAvailableGoModels(rawZenIds);
       } else {
-        console.log("No active Zen credit balance detected. Skipping paid Zen catalog to avoid 401 retry timeouts.");
+        console.log("No active Zen credit balance detected. Including verified free Zen models.");
+        zenModelIds = filterAvailableGoModels(freeZenIds);
       }
     } catch (err) {
       console.error(`Failed to check/fetch Zen models: ${err.message}`);
@@ -962,7 +963,10 @@ var VERIFIED_OPENCODE_MODELS = [
   { id: "mimo-v2.5", name: "MiMo V2.5 (OpenCode)", family: "mimo-v2.5", contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
   { id: "hy4-preview", name: "Hy4 Preview (OpenCode)", family: "hy4-preview", contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
   { id: "hy3", name: "Hy3 (OpenCode)", family: "hy3", contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
-  { id: "omen-alpha", name: "Omen Alpha (OpenCode)", family: "omen-alpha", contextWindow: 1048576, maxOutputTokens: 65536, vision: false }
+  { id: "omen-alpha", name: "Omen Alpha (OpenCode)", family: "omen-alpha", contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
+  { id: "mimo-v2.5-free", name: "MiMo V2.5 (Free)", family: "mimo-v2.5-free", contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
+  { id: "ling-3.0-flash-fin-free", name: "Ling 3.0 Flash Fin (Free)", family: "ling-3.0-flash-fin-free", contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
+  { id: "big-pickle", name: "Big Pickle (Free)", family: "big-pickle", contextWindow: 1048576, maxOutputTokens: 65536, vision: false }
 ];
 var OpenCodeChatProvider = class {
   constructor(context) {
@@ -1062,7 +1066,8 @@ var OpenCodeChatProvider = class {
     }
     const abortController = new AbortController();
     token.onCancellationRequested(() => abortController.abort());
-    const url = "https://opencode.ai/zen/go/v1/chat/completions";
+    const isFreeOrZen = model.id.includes("free") || model.id === "big-pickle" || model.isFree === true;
+    const url = isFreeOrZen ? "https://opencode.ai/zen/v1/chat/completions" : "https://opencode.ai/zen/go/v1/chat/completions";
     const res = await fetch(url, {
       method: "POST",
       headers: {
@@ -1106,6 +1111,15 @@ var OpenCodeChatProvider = class {
               const data = JSON.parse(trimmed.slice(6));
               const choice = data.choices?.[0];
               if (!choice) continue;
+              const reasoning = choice.delta?.reasoning_content || choice.delta?.thought || choice.delta?.reasoning;
+              if (reasoning) {
+                const ThinkingPart = vscode.LanguageModelThinkingPart;
+                if (ThinkingPart) {
+                  progress.report(new ThinkingPart(reasoning));
+                } else {
+                  progress.report(new vscode.LanguageModelTextPart(reasoning));
+                }
+              }
               if (choice.delta?.content) {
                 progress.report(new vscode.LanguageModelTextPart(choice.delta.content));
               }

@@ -53,7 +53,6 @@ export const KNOWN_UNAVAILABLE_MODELS = new Set([
   'nemotron-3-ultra-free',
   'nemotron-3.5-lightning-free',
   'deepseek-v4-flash-free',
-  'ling-3.0-flash-fin-free',
 ]);
 
 export function filterAvailableGoModels(modelIds: string[]): string[] {

@@ -27,6 +27,13 @@ exports.run = async function () {
   }
   assert.ok(opencodeModels.length >= 20, `Must discover at least 20 native OpenCode models, got ${opencodeModels.length}`);
 
+  const freeModels = opencodeModels.filter(m => m.id.includes('free') || m.id === 'big-pickle');
+  console.log(`\n[E2E] Discovered ${freeModels.length} verified free models:`);
+  for (const fm of freeModels) {
+    console.log(`  - [FREE] ${fm.name} (${fm.id})`);
+  }
+  assert.ok(freeModels.length >= 2, 'Must include verified free models');
+
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
@@ -49,6 +56,23 @@ exports.run = async function () {
       }
       console.log(`[E2E] >>> Live model streamed response: "${streamedText.trim()}"`);
       assert.ok(streamedText.length > 0, 'Model must stream back a non-empty response');
+    }
+
+    // Test live request to a Free model (routes to zen/v1)
+    const freeLive = freeModels[0];
+    if (freeLive) {
+      console.log(`\n[E2E] >>> Sending live prompt to Free model: ${freeLive.name} (${freeLive.id})...`);
+      const freeResp = await freeLive.sendRequest(
+        [vscode.LanguageModelChatMessage.User('Hello! Please reply with "FreeOK" and nothing else.')],
+        {},
+        new vscode.CancellationTokenSource().token
+      );
+      let freeText = '';
+      for await (const chunk of freeResp.text) {
+        freeText += chunk;
+      }
+      console.log(`[E2E] >>> Free model streamed response: "${freeText.trim()}"`);
+      assert.ok(freeText.length > 0, 'Free model must stream response from zen/v1 endpoint');
     }
 
     const api = syncExt.exports;

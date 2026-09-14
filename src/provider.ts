@@ -36,6 +36,9 @@ export const VERIFIED_OPENCODE_MODELS: OpenCodeModelMeta[] = [
   { id: 'hy4-preview', name: 'Hy4 Preview (OpenCode)', family: 'hy4-preview', contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
   { id: 'hy3', name: 'Hy3 (OpenCode)', family: 'hy3', contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
   { id: 'omen-alpha', name: 'Omen Alpha (OpenCode)', family: 'omen-alpha', contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
+  { id: 'mimo-v2.5-free', name: 'MiMo V2.5 (Free)', family: 'mimo-v2.5-free', contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
+  { id: 'ling-3.0-flash-fin-free', name: 'Ling 3.0 Flash Fin (Free)', family: 'ling-3.0-flash-fin-free', contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
+  { id: 'big-pickle', name: 'Big Pickle (Free)', family: 'big-pickle', contextWindow: 1048576, maxOutputTokens: 65536, vision: false },
 ];
 
 export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
@@ -172,7 +175,14 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     const abortController = new AbortController();
     token.onCancellationRequested(() => abortController.abort());
 
-    const url = 'https://opencode.ai/zen/go/v1/chat/completions';
+    // Free models and Zen-exclusive models route to zen/v1, flat-rate Go models route to zen/go/v1
+    const isFreeOrZen =
+      model.id.includes('free') ||
+      model.id === 'big-pickle' ||
+      (model as any).isFree === true;
+    const url = isFreeOrZen
+      ? 'https://opencode.ai/zen/v1/chat/completions'
+      : 'https://opencode.ai/zen/go/v1/chat/completions';
     const res = await fetch(url, {
       method: 'POST',
       headers: {
@@ -226,6 +236,21 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
               const data = JSON.parse(trimmed.slice(6));
               const choice = data.choices?.[0];
               if (!choice) continue;
+
+              // Stream reasoning / thinking content (e.g. DeepSeek R1, DeepSeek V4.1, GLM)
+              const reasoning =
+                choice.delta?.reasoning_content ||
+                choice.delta?.thought ||
+                choice.delta?.reasoning;
+
+              if (reasoning) {
+                const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
+                if (ThinkingPart) {
+                  progress.report(new ThinkingPart(reasoning));
+                } else {
+                  progress.report(new vscode.LanguageModelTextPart(reasoning));
+                }
+              }
 
               // Stream delta text content
               if (choice.delta?.content) {
