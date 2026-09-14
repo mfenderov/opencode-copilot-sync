@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.11.0 - 2026-09-14
+#### Features
+- restore thinking UI via configurationSchema, add all free models including Muse 1.3, and robust streaming - (8ee4094) - Mark Fenderov
+
+- - -
+
 ## v0.10.2 - 2026-09-14
 #### Bug Fixes
 - harden cross-platform file locking, Insiders paths, and remote diagnostics - (5f19672) - Mark Fenderov
