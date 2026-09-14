@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.9.2 - 2026-09-14
+#### Bug Fixes
+- agent mode tool limits, missing api key on windows, and isBYOK enablement - (8497792) - Mark Fenderov
+
+- - -
+
 ## v0.9.1 - 2026-09-14
 #### Bug Fixes
 - add `isBYOK: true` to native LanguageModelChatProvider models so they appear and work in Agent Mode
