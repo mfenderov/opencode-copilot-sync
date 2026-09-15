@@ -240,17 +240,63 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
       }
     }
 
-    // Format tool definitions
+    const lowerId = model.id.toLowerCase();
+    const isResponses = isResponsesModel(model.id);
+
+    // Format tool definitions appropriately for the target endpoint protocol
     let toolsPayload: any[] | undefined = undefined;
     if (options.tools && options.tools.length > 0) {
-      toolsPayload = options.tools.map((t) => ({
-        type: 'function',
-        function: {
-          name: t.name,
+      if (isResponses) {
+        // OpenAI Responses API (Muse, GPT, Grok) requires flat tool schema:
+        // { type: "function", name: "...", description: "...", parameters: { ... } }
+        toolsPayload = options.tools.map((t) => ({
+          type: 'function',
+          name: t.name.length > 64 ? t.name.slice(0, 64) : t.name,
           description: t.description,
           parameters: t.inputSchema || { type: 'object', properties: {} },
-        },
-      }));
+        }));
+      } else {
+        // OpenAI Chat Completions API requires nested function schema:
+        // { type: "function", function: { name: "...", description: "...", parameters: { ... } } }
+        toolsPayload = options.tools.map((t) => ({
+          type: 'function',
+          function: {
+            name: t.name,
+            description: t.description,
+            parameters: t.inputSchema || { type: 'object', properties: {} },
+          },
+        }));
+      }
+    }
+
+    let responsesInput: any[] = [];
+    if (isResponses) {
+      for (const msg of formattedMessages) {
+        if (msg.role === 'user') {
+          responsesInput.push({ role: 'user', content: msg.content });
+        } else if (msg.role === 'assistant') {
+          if (msg.content) {
+            responsesInput.push({ role: 'assistant', content: [{ type: 'output_text', text: msg.content }] });
+          }
+          if (msg.tool_calls) {
+            for (const tc of msg.tool_calls) {
+              responsesInput.push({
+                type: 'function_call',
+                id: tc.id?.startsWith('fc_') ? tc.id : `fc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                call_id: tc.id,
+                name: tc.function?.name || '',
+                arguments: tc.function?.arguments || '',
+              });
+            }
+          }
+        } else if (msg.role === 'tool') {
+          responsesInput.push({
+            type: 'function_call_output',
+            call_id: msg.tool_call_id,
+            output: msg.content,
+          });
+        }
+      }
     }
 
     const abortController = new AbortController();
@@ -267,9 +313,6 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
       model.id === 'big-pickle' ||
       (model as any).isFree === true;
 
-    const lowerId = model.id.toLowerCase();
-    const isResponses = isResponsesModel(model.id);
-
     const baseUrl = isFreeOrZen
       ? 'https://opencode.ai/zen/v1'
       : 'https://opencode.ai/zen/go/v1';
@@ -282,7 +325,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     const requestBody: any = isResponses
       ? {
           model: model.id,
-          input: formattedMessages,
+          input: responsesInput.length > 0 ? responsesInput : formattedMessages,
           tools: toolsPayload,
           stream: true,
           ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
