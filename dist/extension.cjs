@@ -461,45 +461,77 @@ function syncWslMirror(sourceFilePath) {
     return;
   }
   try {
-    const driveMatch = sourceFilePath.match(/^([A-Za-z]):\\(.*)$/);
-    if (!driveMatch) return;
-    const driveLetter = driveMatch[1].toLowerCase();
-    const rest = driveMatch[2].replace(/\\/g, "/");
-    const wslSourcePath = `/mnt/${driveLetter}/${rest}`;
-    const subDirs = [
-      ".vscode-server/data/User",
-      ".vscode-server/data/Machine",
-      ".vscode-server-insiders/data/User",
-      ".vscode-server-insiders/data/Machine",
-      ".config/Code/User",
-      ".config/Code - Insiders/User"
-    ];
-    const mkdirCommands = subDirs.map((d) => `mkdir -p ~/"${d}"`).join(" && ");
-    const cpCommands = subDirs.map((d) => `cp "${wslSourcePath}" ~/"${d}/chatLanguageModels.json"`).join(" && ");
-    const fullCmd = `${mkdirCommands} && ${cpCommands}`;
-    try {
-      cp.exec("wsl.exe -l -q", { encoding: "buffer", timeout: 5e3 }, (err, stdout) => {
-        const distros = [];
-        if (!err && stdout) {
-          const text = stdout.toString("utf16le").includes("\0") ? stdout.toString("utf8") : stdout.toString("utf16le");
-          const clean = text.replace(/\0/g, "").split(/\r?\n/).map((s) => s.trim()).filter((s) => s.length > 0 && !s.includes("Windows Subsystem") && !s.startsWith("-"));
-          for (const d of clean) {
-            if (!distros.includes(d)) distros.push(d);
+    if (!fs.existsSync(sourceFilePath)) return;
+    const fileContent = fs.readFileSync(sourceFilePath, "utf-8");
+    cp.exec("wsl.exe -l -q", { encoding: "buffer", timeout: 5e3 }, (err, stdout) => {
+      const distros = [];
+      if (!err && stdout) {
+        const text = stdout.toString("utf16le").includes("\0") ? stdout.toString("utf8") : stdout.toString("utf16le");
+        const clean = text.replace(/\0/g, "").split(/\r?\n/).map((s) => s.trim()).filter((s) => s.length > 0 && !s.includes("Windows Subsystem") && !s.startsWith("-"));
+        for (const d of clean) {
+          if (!distros.includes(d)) distros.push(d);
+        }
+      }
+      const candidateDistros = distros.length > 0 ? distros : ["Ubuntu", "Debian", "docker-desktop"];
+      const subDirs = [
+        ".vscode-server\\data\\User",
+        ".vscode-server\\data\\Machine",
+        ".vscode-server-insiders\\data\\User",
+        ".vscode-server-insiders\\data\\Machine",
+        ".config\\Code\\User",
+        ".config\\Code - Insiders\\User"
+      ];
+      for (const d of candidateDistros) {
+        for (const prefix of [`\\\\wsl.localhost\\${d}`, `\\\\wsl$\\${d}`]) {
+          try {
+            if (!fs.existsSync(prefix)) continue;
+            const userHomes = [];
+            const homeDir = path.join(prefix, "home");
+            if (fs.existsSync(homeDir)) {
+              try {
+                for (const u of fs.readdirSync(homeDir)) {
+                  userHomes.push(path.join(homeDir, u));
+                }
+              } catch {
+              }
+            }
+            const rootDir = path.join(prefix, "root");
+            if (fs.existsSync(rootDir)) {
+              userHomes.push(rootDir);
+            }
+            for (const h of userHomes) {
+              for (const sub of subDirs) {
+                try {
+                  const target = path.join(h, sub, "chatLanguageModels.json");
+                  const targetDir = path.dirname(target);
+                  if (!fs.existsSync(targetDir)) {
+                    fs.mkdirSync(targetDir, { recursive: true });
+                  }
+                  fs.writeFileSync(target, fileContent, "utf-8");
+                } catch {
+                }
+              }
+            }
+          } catch {
           }
         }
-        if (distros.length > 0) {
-          for (const distro of distros) {
-            cp.exec(`wsl.exe -d "${distro}" -e bash -c "${fullCmd}"`, () => {
-            });
-          }
+      }
+      const targetScript = "mkdir -p ~/.vscode-server/data/User ~/.vscode-server/data/Machine ~/.vscode-server-insiders/data/User && cat > ~/.vscode-server/data/User/chatLanguageModels.json";
+      for (const d of distros) {
+        try {
+          const child = cp.execFile("wsl.exe", ["-d", d, "sh", "-c", targetScript], { timeout: 8e3 });
+          child.stdin?.write(fileContent);
+          child.stdin?.end();
+        } catch {
         }
-        cp.exec(`wsl.exe -e bash -c "${fullCmd}"`, () => {
-        });
-      });
-    } catch {
-      cp.exec(`wsl.exe -e bash -c "${fullCmd}"`, () => {
-      });
-    }
+      }
+      try {
+        const defaultChild = cp.execFile("wsl.exe", ["sh", "-c", targetScript], { timeout: 8e3 });
+        defaultChild.stdin?.write(fileContent);
+        defaultChild.stdin?.end();
+      } catch {
+      }
+    });
   } catch {
   }
 }
@@ -618,40 +650,44 @@ function getAllChatLanguageModelsPaths(activeExtensionStoragePath) {
     }
     for (const prefix of ["\\\\wsl.localhost", "\\\\wsl$"]) {
       try {
-        if (fs.existsSync(prefix)) {
-          let distros = [];
+        let distros = [];
+        try {
+          distros = fs.readdirSync(prefix);
+        } catch {
+        }
+        if (distros.length === 0) {
+          distros = ["Ubuntu", "Debian", "docker-desktop"];
+        }
+        for (const distro of distros) {
+          const userHomes = [];
+          const home = path.join(prefix, distro, "home");
           try {
-            distros = fs.readdirSync(prefix);
-          } catch {
-          }
-          for (const distro of distros) {
-            const userHomes = [];
-            const home = path.join(prefix, distro, "home");
             if (fs.existsSync(home)) {
-              try {
-                for (const u of fs.readdirSync(home)) {
-                  userHomes.push(path.join(home, u));
-                }
-              } catch {
+              for (const u of fs.readdirSync(home)) {
+                userHomes.push(path.join(home, u));
               }
             }
-            const rootHome = path.join(prefix, distro, "root");
+          } catch {
+          }
+          const rootHome = path.join(prefix, distro, "root");
+          try {
             if (fs.existsSync(rootHome)) {
               userHomes.push(rootHome);
             }
-            for (const h of userHomes) {
-              const wslPaths = [
-                path.join(h, ".vscode-server", "data", "User", "chatLanguageModels.json"),
-                path.join(h, ".vscode-server", "data", "Machine", "chatLanguageModels.json"),
-                path.join(h, ".vscode-server-insiders", "data", "User", "chatLanguageModels.json"),
-                path.join(h, ".vscode-server-insiders", "data", "Machine", "chatLanguageModels.json"),
-                path.join(h, ".config", "Code", "User", "chatLanguageModels.json"),
-                path.join(h, ".config", "Code - Insiders", "User", "chatLanguageModels.json")
-              ];
-              for (const wp of wslPaths) {
-                if (!paths.includes(wp)) {
-                  paths.push(wp);
-                }
+          } catch {
+          }
+          for (const h of userHomes) {
+            const wslPaths = [
+              path.join(h, ".vscode-server", "data", "User", "chatLanguageModels.json"),
+              path.join(h, ".vscode-server", "data", "Machine", "chatLanguageModels.json"),
+              path.join(h, ".vscode-server-insiders", "data", "User", "chatLanguageModels.json"),
+              path.join(h, ".vscode-server-insiders", "data", "Machine", "chatLanguageModels.json"),
+              path.join(h, ".config", "Code", "User", "chatLanguageModels.json"),
+              path.join(h, ".config", "Code - Insiders", "User", "chatLanguageModels.json")
+            ];
+            for (const wp of wslPaths) {
+              if (!paths.includes(wp)) {
+                paths.push(wp);
               }
             }
           }
@@ -1123,6 +1159,8 @@ var VERIFIED_OPENCODE_MODELS = [
   { id: "nemotron-3-ultra-free", name: "Nemotron 3 Ultra (OpenCode Free)", family: "nemotron-3-ultra-free", catalog: "zen", isFree: true, contextWindow: 1e6, maxOutputTokens: 128e3, vision: false, thinking: true, supportsReasoningEffort: ["low", "medium", "high"] },
   { id: "nemotron-3.5-lightning-free", name: "Nemotron 3.5 Lightning (OpenCode Free)", family: "nemotron-3.5-lightning-free", catalog: "zen", isFree: true, contextWindow: 1e6, maxOutputTokens: 128e3, vision: false, thinking: true, supportsReasoningEffort: ["low", "medium", "high"] },
   { id: "deepseek-v4-flash-free", name: "DeepSeek V4 Flash (OpenCode Free)", family: "deepseek-v4-flash-free", catalog: "zen", isFree: true, contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true, supportsReasoningEffort: ["low", "high", "max"] },
+  { id: "muse-spark-1.3", name: "Muse Spark 1.3 (OpenCode Zen)", family: "muse-spark-1.3", catalog: "zen", contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true, supportsReasoningEffort: ["minimal", "low", "medium", "high", "xhigh"] },
+  { id: "muse-spark-1.3-contributor", name: "Muse Spark 1.3 Contributor (OpenCode Go)", family: "muse-spark-1.3-contributor", catalog: "go", contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true, supportsReasoningEffort: ["minimal", "low", "medium", "high", "xhigh"] },
   { id: "muse-spark-1.3-contributor-free", name: "Muse Spark 1.3 Contributor (OpenCode Free)", family: "muse-spark-1.3-contributor-free", catalog: "zen", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true, supportsReasoningEffort: ["minimal", "low", "medium", "high", "xhigh"] },
   { id: "muse-spark-1.2-contributor-free", name: "Muse Spark 1.2 Contributor (OpenCode Free)", family: "muse-spark-1.2-contributor-free", catalog: "zen", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true, supportsReasoningEffort: ["minimal", "low", "medium", "high", "xhigh"] }
 ];

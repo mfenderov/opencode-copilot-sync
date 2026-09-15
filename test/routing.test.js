@@ -252,5 +252,38 @@ test('isResponsesModel returns true for responses models and false for others', 
   assert.equal(isResponsesModel('glm-5.3'), false);
   assert.equal(isResponsesModel('mimo-v2.5'), false);
   assert.equal(isResponsesModel('qwen3.8-flash'), false);
+});
+
+test('All Muse models MUST have thinking === true and valid supportsReasoningEffort without "max"', () => {
+  const museVariants = [
+    'muse-spark-1.3',
+    'muse-spark-1.3-contributor',
+    'muse-spark-1.3-contributor-free',
+    'muse-spark-1.2-contributor-free',
+  ];
+
+  for (const id of museVariants) {
+    const model = enrichModel(id);
+    assert.equal(model.thinking, true, `${id} must have thinking === true`);
+    assert.ok(Array.isArray(model.supportsReasoningEffort), `${id} must have supportsReasoningEffort array`);
+    assert.ok(!model.supportsReasoningEffort.includes('max'), `${id} must never include 'max' effort`);
+    assert.ok(model.supportsReasoningEffort.includes('high'), `${id} must include 'high' effort`);
+  }
+});
+
+test('VERIFIED_OPENCODE_MODELS static fallback includes all Muse models with thinking: true', async () => {
+  const { VERIFIED_OPENCODE_MODELS } = await import('../out/provider.js');
+  const museIds = [
+    'muse-spark-1.3',
+    'muse-spark-1.3-contributor',
+    'muse-spark-1.3-contributor-free',
+  ];
+  for (const id of museIds) {
+    const found = VERIFIED_OPENCODE_MODELS.find(m => m.id === id);
+    assert.ok(found, `VERIFIED_OPENCODE_MODELS must include ${id}`);
+    assert.equal(found.thinking, true, `${id} must have thinking: true in static fallback`);
+    assert.ok(Array.isArray(found.supportsReasoningEffort), `${id} must have supportsReasoningEffort array`);
+    assert.ok(!found.supportsReasoningEffort.includes('max'), `${id} must not include max in static fallback`);
+  }
   assert.equal(isResponsesModel('big-pickle'), false);
 });

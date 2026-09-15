@@ -145,58 +145,90 @@ export function syncWslMirror(sourceFilePath: string): void {
     return;
   }
 
+  // Windows host: mirror directly to WSL
   try {
-    const driveMatch = sourceFilePath.match(/^([A-Za-z]):\\(.*)$/);
-    if (!driveMatch) return;
-
-    const driveLetter = driveMatch[1].toLowerCase();
-    const rest = driveMatch[2].replace(/\\/g, '/');
-    const wslSourcePath = `/mnt/${driveLetter}/${rest}`;
-
-    const subDirs = [
-      '.vscode-server/data/User',
-      '.vscode-server/data/Machine',
-      '.vscode-server-insiders/data/User',
-      '.vscode-server-insiders/data/Machine',
-      '.config/Code/User',
-      '.config/Code - Insiders/User',
-    ];
-    const mkdirCommands = subDirs.map((d) => `mkdir -p ~/"${d}"`).join(' && ');
-    const cpCommands = subDirs.map((d) => `cp "${wslSourcePath}" ~/"${d}/chatLanguageModels.json"`).join(' && ');
-    const fullCmd = `${mkdirCommands} && ${cpCommands}`;
+    if (!fs.existsSync(sourceFilePath)) return;
+    const fileContent = fs.readFileSync(sourceFilePath, 'utf-8');
 
     // 1. Enumerate all installed WSL distributions via wsl.exe -l -q
-    try {
-      cp.exec('wsl.exe -l -q', { encoding: 'buffer', timeout: 5000 }, (err, stdout) => {
-        const distros: string[] = [];
-        if (!err && stdout) {
-          // wsl.exe -l -q outputs UTF-16LE or UTF-8
-          const text = stdout.toString('utf16le').includes('\0')
-            ? stdout.toString('utf8')
-            : stdout.toString('utf16le');
-          const clean = text
-            .replace(/\0/g, '')
-            .split(/\r?\n/)
-            .map((s) => s.trim())
-            .filter((s) => s.length > 0 && !s.includes('Windows Subsystem') && !s.startsWith('-'));
-          for (const d of clean) {
-            if (!distros.includes(d)) distros.push(d);
-          }
+    cp.exec('wsl.exe -l -q', { encoding: 'buffer', timeout: 5000 }, (err, stdout) => {
+      const distros: string[] = [];
+      if (!err && stdout) {
+        // wsl.exe -l -q outputs UTF-16LE or UTF-8
+        const text = stdout.toString('utf16le').includes('\0')
+          ? stdout.toString('utf8')
+          : stdout.toString('utf16le');
+        const clean = text
+          .replace(/\0/g, '')
+          .split(/\r?\n/)
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0 && !s.includes('Windows Subsystem') && !s.startsWith('-'));
+        for (const d of clean) {
+          if (!distros.includes(d)) distros.push(d);
         }
+      }
 
-        // If distros found, mirror to each specific distro
-        if (distros.length > 0) {
-          for (const distro of distros) {
-            cp.exec(`wsl.exe -d "${distro}" -e bash -c "${fullCmd}"`, () => {});
-          }
+      const candidateDistros = distros.length > 0 ? distros : ['Ubuntu', 'Debian', 'docker-desktop'];
+      const subDirs = [
+        '.vscode-server\\data\\User',
+        '.vscode-server\\data\\Machine',
+        '.vscode-server-insiders\\data\\User',
+        '.vscode-server-insiders\\data\\Machine',
+        '.config\\Code\\User',
+        '.config\\Code - Insiders\\User',
+      ];
+
+      // Strategy A: Direct UNC filesystem write (no shell escaping, space-safe)
+      for (const d of candidateDistros) {
+        for (const prefix of [`\\\\wsl.localhost\\${d}`, `\\\\wsl$\\${d}`]) {
+          try {
+            if (!fs.existsSync(prefix)) continue;
+            const userHomes: string[] = [];
+            const homeDir = path.join(prefix, 'home');
+            if (fs.existsSync(homeDir)) {
+              try {
+                for (const u of fs.readdirSync(homeDir)) {
+                  userHomes.push(path.join(homeDir, u));
+                }
+              } catch {}
+            }
+            const rootDir = path.join(prefix, 'root');
+            if (fs.existsSync(rootDir)) {
+              userHomes.push(rootDir);
+            }
+
+            for (const h of userHomes) {
+              for (const sub of subDirs) {
+                try {
+                  const target = path.join(h, sub, 'chatLanguageModels.json');
+                  const targetDir = path.dirname(target);
+                  if (!fs.existsSync(targetDir)) {
+                    fs.mkdirSync(targetDir, { recursive: true });
+                  }
+                  fs.writeFileSync(target, fileContent, 'utf-8');
+                } catch {}
+              }
+            }
+          } catch {}
         }
-        // Always also run against default distro as fallback
-        cp.exec(`wsl.exe -e bash -c "${fullCmd}"`, () => {});
-      });
-    } catch {
-      // Fallback: run on default distro
-      cp.exec(`wsl.exe -e bash -c "${fullCmd}"`, () => {});
-    }
+      }
+
+      // Strategy B: Safe stdin streaming via wsl.exe execFile (no command line quote escaping)
+      const targetScript =
+        'mkdir -p ~/.vscode-server/data/User ~/.vscode-server/data/Machine ~/.vscode-server-insiders/data/User && cat > ~/.vscode-server/data/User/chatLanguageModels.json';
+      for (const d of distros) {
+        try {
+          const child = cp.execFile('wsl.exe', ['-d', d, 'sh', '-c', targetScript], { timeout: 8000 });
+          child.stdin?.write(fileContent);
+          child.stdin?.end();
+        } catch {}
+      }
+      try {
+        const defaultChild = cp.execFile('wsl.exe', ['sh', '-c', targetScript], { timeout: 8000 });
+        defaultChild.stdin?.write(fileContent);
+        defaultChild.stdin?.end();
+      } catch {}
+    });
   } catch {}
 }
 
@@ -321,39 +353,42 @@ export function getAllChatLanguageModelsPaths(activeExtensionStoragePath?: strin
 
     for (const prefix of ['\\\\wsl.localhost', '\\\\wsl$']) {
       try {
-        if (fs.existsSync(prefix)) {
-          let distros: string[] = [];
+        let distros: string[] = [];
+        try {
+          distros = fs.readdirSync(prefix);
+        } catch {}
+        if (distros.length === 0) {
+          distros = ['Ubuntu', 'Debian', 'docker-desktop'];
+        }
+        for (const distro of distros) {
+          const userHomes: string[] = [];
+          const home = path.join(prefix, distro, 'home');
           try {
-            distros = fs.readdirSync(prefix);
-          } catch {}
-          for (const distro of distros) {
-            const userHomes: string[] = [];
-            const home = path.join(prefix, distro, 'home');
             if (fs.existsSync(home)) {
-              try {
-                for (const u of fs.readdirSync(home)) {
-                  userHomes.push(path.join(home, u));
-                }
-              } catch {}
+              for (const u of fs.readdirSync(home)) {
+                userHomes.push(path.join(home, u));
+              }
             }
-            const rootHome = path.join(prefix, distro, 'root');
+          } catch {}
+          const rootHome = path.join(prefix, distro, 'root');
+          try {
             if (fs.existsSync(rootHome)) {
               userHomes.push(rootHome);
             }
+          } catch {}
 
-            for (const h of userHomes) {
-              const wslPaths = [
-                path.join(h, '.vscode-server', 'data', 'User', 'chatLanguageModels.json'),
-                path.join(h, '.vscode-server', 'data', 'Machine', 'chatLanguageModels.json'),
-                path.join(h, '.vscode-server-insiders', 'data', 'User', 'chatLanguageModels.json'),
-                path.join(h, '.vscode-server-insiders', 'data', 'Machine', 'chatLanguageModels.json'),
-                path.join(h, '.config', 'Code', 'User', 'chatLanguageModels.json'),
-                path.join(h, '.config', 'Code - Insiders', 'User', 'chatLanguageModels.json'),
-              ];
-              for (const wp of wslPaths) {
-                if (!paths.includes(wp)) {
-                  paths.push(wp);
-                }
+          for (const h of userHomes) {
+            const wslPaths = [
+              path.join(h, '.vscode-server', 'data', 'User', 'chatLanguageModels.json'),
+              path.join(h, '.vscode-server', 'data', 'Machine', 'chatLanguageModels.json'),
+              path.join(h, '.vscode-server-insiders', 'data', 'User', 'chatLanguageModels.json'),
+              path.join(h, '.vscode-server-insiders', 'data', 'Machine', 'chatLanguageModels.json'),
+              path.join(h, '.config', 'Code', 'User', 'chatLanguageModels.json'),
+              path.join(h, '.config', 'Code - Insiders', 'User', 'chatLanguageModels.json'),
+            ];
+            for (const wp of wslPaths) {
+              if (!paths.includes(wp)) {
+                paths.push(wp);
               }
             }
           }

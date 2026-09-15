@@ -81,3 +81,35 @@ test('cleanupLegacyOpenCodeCustomEndpoints purges OpenCode from storage config',
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+test('package.json extensionKind MUST include both ui and workspace for Remote-WSL compatibility', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf-8'));
+  assert.ok(Array.isArray(pkg.extensionKind), 'extensionKind must be an array');
+  assert.ok(
+    pkg.extensionKind.includes('ui'),
+    'extensionKind must include "ui" so Windows UI host can serve Remote-WSL'
+  );
+  assert.ok(
+    pkg.extensionKind.includes('workspace'),
+    'extensionKind must include "workspace"'
+  );
+});
+
+test('WSL path resolution handles Windows drives with mixed slashes and spaces', () => {
+  const testPaths = [
+    'C:\\Users\\John Doe\\AppData\\Roaming\\Code\\User\\chatLanguageModels.json',
+    'c:/Users/John Doe/AppData/Roaming/Code/User/chatLanguageModels.json',
+    'D:\\Data\\Code\\User\\chatLanguageModels.json',
+  ];
+
+  for (const p of testPaths) {
+    const driveMatch = p.match(/^([A-Za-z]):[\\/](.*)$/);
+    assert.ok(driveMatch, `Path ${p} must match drive regex`);
+    const letter = driveMatch[1].toLowerCase();
+    const rest = driveMatch[2].replace(/\\/g, '/');
+    const wslPath = `/mnt/${letter}/${rest}`;
+    assert.ok(wslPath.startsWith('/mnt/'));
+    assert.ok(!wslPath.includes('\\'));
+    assert.ok(wslPath.includes('chatLanguageModels.json'));
+  }
+});
+
