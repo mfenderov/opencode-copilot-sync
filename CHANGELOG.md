@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.16.0 - 2026-09-15
+#### Features
+- (**provider**) stream reasoning on Responses API and guard tool call flush - (e0fdb55) - Mark Fenderov
+
+- - -
+
 ## v0.15.1 - 2026-09-15
 #### Bug Fixes
 - (**wsl**) harden UNC file sync and support UI extensionKind for Remote-WSL - (f5ae83d) - Mark Fenderov
