@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.15.1 - 2026-09-15
+#### Bug Fixes
+- (**wsl**) harden UNC file sync and support UI extensionKind for Remote-WSL - (f5ae83d) - Mark Fenderov
+
+- - -
+
 ## v0.15.0 - 2026-09-15
 #### Features
 - (**provider**) dynamically restrict thinking effort to model capabilities - (de14f5b) - Mark Fenderov
