@@ -250,6 +250,7 @@ exports.run = async function () {
         museMeta,
         [{ role: vscode.LanguageModelChatMessageRole.User, content: [new vscode.LanguageModelTextPart('What is 3 + 5? Answer with only the number.')] }],
         {
+          modelConfiguration: { reasoningEffort: 'high' },
           tools: [{
             name: 'calculator',
             description: 'Evaluate mathematical expressions',
@@ -262,16 +263,19 @@ exports.run = async function () {
 
       let museText = '';
       let museToolCall = null;
+      let museThinkingParts = 0;
       for (const p of museParts) {
         if (p instanceof vscode.LanguageModelTextPart) {
           museText += p.value;
         } else if (p instanceof vscode.LanguageModelToolCallPart) {
           museToolCall = p;
+        } else if (p.constructor?.name?.includes('Thinking') || p.$mid === 22 || p.id?.startsWith('thinking')) {
+          museThinkingParts++;
         }
       }
-      console.log(`[E2E] >>> Muse Spark 1.3 streamed response: "${museText.trim()}", toolCall: ${museToolCall?.name || 'none'}`);
+      console.log(`[E2E] >>> Muse Spark 1.3 response: text="${museText.trim()}", toolCall=${museToolCall?.name || 'none'}, thinkingParts=${museThinkingParts}`);
       assert.ok(museText.length > 0 || museToolCall !== null, 'Muse Spark must stream either text or a tool call without invalid_request_error');
-      console.log('[E2E] >>> [RESPONSES API] PASSED! Muse Spark completed live completion via /responses with tools attached.');
+      console.log('[E2E] >>> [RESPONSES API] PASSED! Muse Spark completed live completion via /responses with tools and thinking configured.');
     }
   } else {
     console.log('\n[E2E] Note: No OPENCODE_API_KEY detected in auth.json or environment. Verified model registration, tool schemas, and provider contracts.');
