@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.14.2 - 2026-09-15
+#### Bug Fixes
+- (**provider**) normalize reasoning effort to prevent 400 parameter errors - (e886d22) - Mark Fenderov
+
+- - -
+
 ## v0.14.1 - 2026-09-15
 #### Bug Fixes
 - (**provider**) map flat tool definitions for OpenAI Responses API format - (575783f) - Mark Fenderov
