@@ -453,6 +453,79 @@ test('Provider Chaos [Thinking Streaming]: handles inline <think> tags correctly
   assert.equal(textParts[0].value, 'Theorem is proven.');
 });
 
+test('Provider Chaos [Thinking Effort: "max" on Responses API (Muse)]: normalizes "max" to "high" to prevent 400', async () => {
+  mockServer.clearRequests();
+  mockServer.setScenario({ mode: 'standard', content: 'Muse response with high thinking' });
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+  const token = createMockToken();
+
+  await provider.provideLanguageModelChatResponse(
+    MUSE_RESPONSES_MODEL,
+    [createMockMessage('hello muse')],
+    { modelConfiguration: { reasoningEffort: 'max' } },
+    progress,
+    token
+  );
+
+  const reqs = mockServer.getRequests();
+  assert.equal(reqs.length, 1);
+  assert.deepEqual(reqs[0].body.reasoning, { effort: 'high' });
+  assert.strictEqual(reqs[0].body.reasoning_effort, undefined);
+
+  // Must stream cleanly without error alert
+  const alert = progress.parts.find(p => p.value?.includes('OpenCode Model Alert'));
+  assert.strictEqual(alert, undefined, 'Must not emit OpenCode Model Alert');
+});
+
+test('Provider Chaos [Thinking Effort: "max" on Chat Completions]: normalizes "max" to "high" to prevent 400', async () => {
+  mockServer.clearRequests();
+  mockServer.setScenario({ mode: 'standard', content: 'Chat response with high thinking' });
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+  const token = createMockToken();
+
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage('hello chat')],
+    { modelConfiguration: { reasoningEffort: 'max' } },
+    progress,
+    token
+  );
+
+  const reqs = mockServer.getRequests();
+  assert.equal(reqs.length, 1);
+  assert.strictEqual(reqs[0].body.reasoning_effort, 'high');
+  assert.strictEqual(reqs[0].body.reasoning, undefined);
+});
+
+test('Provider Chaos [Thinking Effort: "none" or "off"]: omits reasoning fields', async () => {
+  mockServer.clearRequests();
+  mockServer.setScenario({ mode: 'standard', content: 'No thinking' });
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+  const token = createMockToken();
+
+  await provider.provideLanguageModelChatResponse(
+    MUSE_RESPONSES_MODEL,
+    [createMockMessage('hello muse')],
+    { modelConfiguration: { reasoningEffort: 'none' } },
+    progress,
+    token
+  );
+
+  const reqs = mockServer.getRequests();
+  assert.equal(reqs.length, 1);
+  assert.strictEqual(reqs[0].body.reasoning, undefined);
+  assert.strictEqual(reqs[0].body.reasoning_effort, undefined);
+});
+
 // ============================================================================
 // 6. Tool Calling Tests
 // ============================================================================

@@ -56,6 +56,24 @@ export function isResponsesModel(modelId: string): boolean {
   return lower.includes('muse') || lower.includes('gpt-') || lower.includes('grok-');
 }
 
+export function normalizeReasoningEffort(
+  effort: string | undefined,
+  isResponses: boolean
+): Record<string, any> {
+  if (!effort) return {};
+  const lower = String(effort).toLowerCase().trim();
+  if (lower === 'none' || lower === 'off') {
+    return {};
+  }
+  // Standard OpenAI API across both Responses and Chat Completions protocols
+  // strictly defines: 'low' | 'medium' | 'high' (and 'minimal'/'xhigh' on select providers).
+  // Non-standard 'max' causes HTTP 400 Bad Request on upstream providers (e.g. Muse, MiMo).
+  // Map 'max' to 'high' for guaranteed compatibility while maximizing reasoning depth.
+  const mappedEffort = lower === 'max' ? 'high' : lower;
+
+  return isResponses ? { reasoning: { effort: mappedEffort } } : { reasoning_effort: mappedEffort };
+}
+
 export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChangeLanguageModelChatInformation = this._onDidChange.event;
@@ -320,7 +338,10 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
 
     const reasoningEffort =
       (options as any)?.modelConfiguration?.reasoningEffort ||
-      (options as any)?.configuration?.reasoningEffort;
+      (options as any)?.configuration?.reasoningEffort ||
+      (options as any)?.reasoningEffort;
+
+    const reasoningPayload = normalizeReasoningEffort(reasoningEffort, isResponses);
 
     const requestBody: any = isResponses
       ? {
@@ -328,14 +349,14 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
           input: responsesInput.length > 0 ? responsesInput : formattedMessages,
           tools: toolsPayload,
           stream: true,
-          ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
+          ...reasoningPayload,
         }
       : {
           model: model.id,
           messages: formattedMessages,
           tools: toolsPayload,
           stream: true,
-          ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+          ...reasoningPayload,
         };
 
     const sessionId = `ses_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;

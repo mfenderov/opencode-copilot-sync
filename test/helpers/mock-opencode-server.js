@@ -482,6 +482,19 @@ export async function startMockServer(port = 0) {
       return;
     }
 
+    // Validate OpenAI Responses API reasoning parameters (upstream rejects 'max' and 'none')
+    if (isResponses && body.reasoning && (body.reasoning.effort === 'max' || body.reasoning.effort === 'none')) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: {
+          message: 'Error from provider (Console): Upstream request failed: [invalid_request_error] The request contains invalid parameters. Check the request body for any errors or inconsistencies.',
+          type: 'invalid_request_error',
+          code: 400,
+        },
+      }));
+      return;
+    }
+
     // Resolve scenario: queue takes precedence over default
     let activeScenario = scenarioQueue.shift() || currentScenario;
     if (typeof activeScenario === 'string') {

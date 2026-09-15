@@ -1096,6 +1096,15 @@ function isResponsesModel(modelId) {
   const lower = modelId.toLowerCase();
   return lower.includes("muse") || lower.includes("gpt-") || lower.includes("grok-");
 }
+function normalizeReasoningEffort(effort, isResponses) {
+  if (!effort) return {};
+  const lower = String(effort).toLowerCase().trim();
+  if (lower === "none" || lower === "off") {
+    return {};
+  }
+  const mappedEffort = lower === "max" ? "high" : lower;
+  return isResponses ? { reasoning: { effort: mappedEffort } } : { reasoning_effort: mappedEffort };
+}
 var OpenCodeChatProvider = class {
   constructor(context) {
     this.context = context;
@@ -1301,19 +1310,20 @@ var OpenCodeChatProvider = class {
     const isFreeOrZen = meta?.catalog === "zen" || meta?.isFree === true || model.id.includes("free") || model.id.includes("contributor") || model.id.includes("community") || model.id === "big-pickle" || model.isFree === true;
     const baseUrl = isFreeOrZen ? "https://opencode.ai/zen/v1" : "https://opencode.ai/zen/go/v1";
     const url = isResponses ? `${baseUrl}/responses` : `${baseUrl}/chat/completions`;
-    const reasoningEffort = options?.modelConfiguration?.reasoningEffort || options?.configuration?.reasoningEffort;
+    const reasoningEffort = options?.modelConfiguration?.reasoningEffort || options?.configuration?.reasoningEffort || options?.reasoningEffort;
+    const reasoningPayload = normalizeReasoningEffort(reasoningEffort, isResponses);
     const requestBody = isResponses ? {
       model: model.id,
       input: responsesInput.length > 0 ? responsesInput : formattedMessages,
       tools: toolsPayload,
       stream: true,
-      ...reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}
+      ...reasoningPayload
     } : {
       model: model.id,
       messages: formattedMessages,
       tools: toolsPayload,
       stream: true,
-      ...reasoningEffort ? { reasoning_effort: reasoningEffort } : {}
+      ...reasoningPayload
     };
     const sessionId = `ses_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
     let res;
