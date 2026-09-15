@@ -76,6 +76,10 @@ Customize behavior via VS Code Settings (`Cmd+,` / `Ctrl+,` search for `opencode
 - **VS Code Remote - WSL**: Because GitHub Copilot runs on the Windows UI side, the extension is registered to run on the UI host and updates Windows `%APPDATA%\Code\User\chatLanguageModels.json`.
 - If your OpenCode key is stored inside WSL, you can simply run **`OpenCode: Set API Key`** once in VS Code to save it to your Windows credential vault.
 
+### Remote-SSH, Dev Containers & GitHub Codespaces
+
+The extension's `extensionKind: ["ui", "workspace"]` setting asks VS Code to activate it on the same host as Copilot Chat in every remote topology, so Remote-SSH, Dev Containers, and Codespaces are expected to work the same way as WSL. These topologies aren't part of the automated test matrix yet (only WSL is), so treat them as **best-effort**: if sync doesn't pick up your models, run **`OpenCode: Sync Models to Copilot`** manually and check the **OpenCode** output channel (`View → Output → OpenCode`) for the logged `Remote: <name>` line, which confirms which host the extension actually activated on.
+
 ---
 
 ## 🛠️ How It Works Under the Hood

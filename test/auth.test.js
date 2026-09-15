@@ -68,3 +68,64 @@ test('getKeyFromExistingConfig returns null if file has no matching provider or 
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+test('getStoredOpenCodeKey respects XDG_DATA_HOME when scanning default candidate paths', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-xdg-data-test-'));
+  const authDir = path.join(tmpDir, 'opencode');
+  fs.mkdirSync(authDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(authDir, 'auth.json'),
+    JSON.stringify({ 'opencode-go': { key: 'sk-xdg-data-home-key' } }),
+    'utf-8'
+  );
+
+  const savedApiKeyEnv = process.env.OPENCODE_API_KEY;
+  const savedXdgData = process.env.XDG_DATA_HOME;
+  delete process.env.OPENCODE_API_KEY;
+  process.env.XDG_DATA_HOME = tmpDir;
+
+  try {
+    const key = getStoredOpenCodeKey();
+    assert.equal(key, 'sk-xdg-data-home-key');
+  } finally {
+    if (savedApiKeyEnv === undefined) delete process.env.OPENCODE_API_KEY;
+    else process.env.OPENCODE_API_KEY = savedApiKeyEnv;
+    if (savedXdgData === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = savedXdgData;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('getStoredOpenCodeKey respects XDG_CONFIG_HOME when scanning default candidate paths', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-xdg-config-test-'));
+  const authDir = path.join(tmpDir, 'opencode');
+  fs.mkdirSync(authDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(authDir, 'auth.json'),
+    JSON.stringify({ opencode: { key: 'sk-xdg-config-home-key' } }),
+    'utf-8'
+  );
+
+  const savedApiKeyEnv = process.env.OPENCODE_API_KEY;
+  const savedXdgData = process.env.XDG_DATA_HOME;
+  const savedXdgConfig = process.env.XDG_CONFIG_HOME;
+  delete process.env.OPENCODE_API_KEY;
+  // Point XDG_DATA_HOME somewhere empty so only the XDG_CONFIG_HOME candidate can match.
+  const emptyDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-xdg-empty-data-'));
+  process.env.XDG_DATA_HOME = emptyDataDir;
+  process.env.XDG_CONFIG_HOME = tmpDir;
+
+  try {
+    const key = getStoredOpenCodeKey();
+    assert.equal(key, 'sk-xdg-config-home-key');
+  } finally {
+    if (savedApiKeyEnv === undefined) delete process.env.OPENCODE_API_KEY;
+    else process.env.OPENCODE_API_KEY = savedApiKeyEnv;
+    if (savedXdgData === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = savedXdgData;
+    if (savedXdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = savedXdgConfig;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(emptyDataDir, { recursive: true, force: true });
+  }
+});
+

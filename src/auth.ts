@@ -28,10 +28,21 @@ export function getStoredOpenCodeKey(customPath?: string): string | null {
 
   const candidatePaths: string[] = [];
 
-  // 1. Primary local platform paths
+  // 1. Primary local platform paths (respecting XDG Base Directory env vars,
+  // which the OpenCode CLI itself honors when set on Linux/macOS)
   const home = os.homedir();
-  candidatePaths.push(path.join(home, '.local', 'share', 'opencode', 'auth.json'));
-  candidatePaths.push(path.join(home, '.config', 'opencode', 'auth.json'));
+  const xdgDataHome = process.env.XDG_DATA_HOME;
+  const xdgConfigHome = process.env.XDG_CONFIG_HOME;
+  candidatePaths.push(path.join(xdgDataHome || path.join(home, '.local', 'share'), 'opencode', 'auth.json'));
+  candidatePaths.push(path.join(xdgConfigHome || path.join(home, '.config'), 'opencode', 'auth.json'));
+  // Also check the conventional defaults in case XDG vars point elsewhere but
+  // OpenCode was installed/authenticated before those vars were set.
+  if (xdgDataHome) {
+    candidatePaths.push(path.join(home, '.local', 'share', 'opencode', 'auth.json'));
+  }
+  if (xdgConfigHome) {
+    candidatePaths.push(path.join(home, '.config', 'opencode', 'auth.json'));
+  }
 
   // 2. Windows-specific local AppData / UserProfile
   if (process.env.LOCALAPPDATA) {

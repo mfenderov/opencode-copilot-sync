@@ -3,6 +3,7 @@ import { resolveApiKey, promptAndSetApiKey } from './auth.js';
 import { syncOpenCodeModels, getChatLanguageModelsPath, cleanupLegacyOpenCodeCustomEndpoints } from './syncer.js';
 import { fetchOpenCodeUsage, formatStatusBarText, formatUsageTooltip } from './usage.js';
 import { OpenCodeChatProvider } from './provider.js';
+import { setVSCodeProxyUrl } from './network.js';
 
 export async function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel('OpenCode Copilot Sync');
@@ -12,24 +13,45 @@ export async function activate(context: vscode.ExtensionContext) {
     `[Platform] OS: ${process.platform} (${process.arch}), Remote: ${vscode.env.remoteName || 'local'}, App: ${vscode.env.appName}`
   );
 
+  // Honor VS Code's own `http.proxy` setting for all outbound requests, in addition to
+  // the standard HTTPS_PROXY/HTTP_PROXY/NO_PROXY env vars (network.ts falls back to those).
+  const applyProxySetting = () => {
+    const proxyUrl = vscode.workspace.getConfiguration('http').get<string>('proxy');
+    setVSCodeProxyUrl(proxyUrl || undefined);
+  };
+  applyProxySetting();
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('http.proxy')) {
+        applyProxySetting();
+      }
+    })
+  );
+
   // Register first-class native Language Model Chat Provider in VS Code
-  const chatProvider = new OpenCodeChatProvider(context);
+  const chatProvider = new OpenCodeChatProvider(context, outputChannel);
   context.subscriptions.push(
     vscode.lm.registerLanguageModelChatProvider('opencode', chatProvider)
   );
   outputChannel.appendLine('Registered native OpenCode LanguageModelChatProvider with VS Code.');
 
-  // Automatically discover and seed API key into SecretStorage if not already set
-  try {
-    const storedSecret = await context.secrets.get('opencode_api_key');
-    if (!storedSecret) {
-      const discoveredKey = await resolveApiKey(context.secrets, false);
-      if (discoveredKey) {
-        await context.secrets.store('opencode_api_key', discoveredKey);
-        outputChannel.appendLine('Seeded OpenCode API key into SecretStorage.');
+  // Automatically discover and seed API key into SecretStorage if not already set.
+  // Fire-and-forget: this walks multiple candidate paths (and WSL share enumeration on
+  // Windows) which can be slow on network/remote filesystems, so it must never block
+  // extension activation. provideLanguageModelChatResponse() re-resolves the key itself
+  // on first use, so a request arriving before this completes still works correctly.
+  void (async () => {
+    try {
+      const storedSecret = await context.secrets.get('opencode_api_key');
+      if (!storedSecret) {
+        const discoveredKey = await resolveApiKey(context.secrets, false);
+        if (discoveredKey) {
+          await context.secrets.store('opencode_api_key', discoveredKey);
+          outputChannel.appendLine('Seeded OpenCode API key into SecretStorage.');
+        }
       }
-    }
-  } catch {}
+    } catch {}
+  })();
 
   // Auto-enable VS Code's experimental Agent Host BYOK bridge so custom models appear in Agent Mode
   try {
@@ -139,6 +161,7 @@ export async function activate(context: vscode.ExtensionContext) {
             vision: !!m.vision,
             thinking: m.thinking !== false,
             supportsReasoningEffort: m.supportsReasoningEffort,
+            apiType: m.apiType,
           }))
         );
       } else {

@@ -563,6 +563,39 @@ export async function startMockServer(port = 0) {
       return;
     }
 
+    // 2b. Stall mode (writes initial content then hangs forever without
+    // closing — used to test client-side idle-stream watchdog timeouts).
+    if (mode === 'stall') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      });
+
+      if (isResponses) {
+        writeSse(res, {
+          type: 'response.output_text.delta',
+          delta: 'Initial partial response before stalling...',
+        });
+      } else {
+        writeSse(res, {
+          id: 'chatcmpl-stall',
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model: body.model || 'mock-model',
+          choices: [{
+            index: 0,
+            delta: { role: 'assistant', content: 'Initial partial response before stalling...' },
+            finish_reason: null,
+          }],
+        });
+      }
+      // Deliberately never write again and never end the response — the
+      // socket stays open indefinitely, tracked in activeSockets so
+      // stopMockServer() can still force-close it during test teardown.
+      return;
+    }
+
     // 3. Keep-alive mode (sends comment lines before streaming response)
     if (mode === 'keep-alive') {
       res.writeHead(200, {

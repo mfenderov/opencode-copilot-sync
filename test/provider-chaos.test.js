@@ -604,6 +604,87 @@ test('Provider Chaos [Tool Calling on Chat Completions]: emits LanguageModelTool
   assert.deepEqual(toolCall.input, { expression: 'sqrt(144)' });
 });
 
+test('Provider Chaos [Tool Calling]: two parallel tool calls missing an explicit "index" field do not collide', async () => {
+  // Some non-conformant OpenAI-compatible servers omit `tool_calls[].index`.
+  // The accumulator must fall back to each delta's array position rather
+  // than always defaulting to 0, or parallel tool calls would collapse
+  // into a single, corrupted entry.
+  mockServer.setScenario({
+    mode: 'standard',
+    chunks: [
+      {
+        id: 'chatcmpl-parallel-tools',
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: 'deepseek-v4-pro',
+        choices: [{
+          index: 0,
+          delta: {
+            role: 'assistant',
+            tool_calls: [
+              { id: 'call_a', type: 'function', function: { name: 'toolA', arguments: '' } },
+              { id: 'call_b', type: 'function', function: { name: 'toolB', arguments: '' } },
+            ],
+          },
+          finish_reason: null,
+        }],
+      },
+      {
+        id: 'chatcmpl-parallel-tools',
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: 'deepseek-v4-pro',
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [
+              { function: { arguments: '{"x":1}' } },
+              { function: { arguments: '{"y":2}' } },
+            ],
+          },
+          finish_reason: null,
+        }],
+      },
+      {
+        id: 'chatcmpl-parallel-tools',
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: 'deepseek-v4-pro',
+        choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+      },
+    ],
+  });
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+  const token = createMockToken();
+
+  const options = {
+    tools: [
+      { name: 'toolA', description: 'Tool A', inputSchema: { type: 'object' } },
+      { name: 'toolB', description: 'Tool B', inputSchema: { type: 'object' } },
+    ],
+  };
+
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage('call both tools')],
+    options,
+    progress,
+    token
+  );
+
+  const toolParts = progress.parts.filter((p) => p instanceof vscode.LanguageModelToolCallPart);
+  assert.equal(toolParts.length, 2, 'Expected exactly 2 distinct LanguageModelToolCallPart entries');
+
+  const byName = Object.fromEntries(toolParts.map((p) => [p.name, p]));
+  assert.equal(byName.toolA.callId, 'call_a');
+  assert.deepEqual(byName.toolA.input, { x: 1 });
+  assert.equal(byName.toolB.callId, 'call_b');
+  assert.deepEqual(byName.toolB.input, { y: 2 });
+});
+
 test('Provider Chaos [Tool Calling on Responses API]: emits LanguageModelToolCallPart with parsed arguments', async () => {
   mockServer.setScenario({
     mode: 'tool-call',

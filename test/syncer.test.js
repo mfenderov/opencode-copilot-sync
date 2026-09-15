@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readChatLanguageModels, getChatLanguageModelsPath, getAllChatLanguageModelsPaths, syncWslMirror, writeProvidersToConfig, cleanupLegacyOpenCodeCustomEndpoints } from '../out/syncer.js';
+import { readChatLanguageModels, getChatLanguageModelsPath, getAllChatLanguageModelsPaths, syncWslMirror, writeProvidersToConfig, cleanupLegacyOpenCodeCustomEndpoints, safeWriteFileSync } from '../out/syncer.js';
 import { buildProviderEntry } from '../out/config.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,6 +17,24 @@ test('getChatLanguageModelsPath derives server path from activeExtensionStorageP
   assert.equal(derived, path.join(os.homedir(), '.vscode-server', 'data', 'User', 'chatLanguageModels.json'));
 });
 
+test('getChatLanguageModelsPath trusts activeExtensionStoragePath unconditionally for portable/VSCodium/custom user-data-dir installs', () => {
+  // Simulate a portable install / custom --user-data-dir / VSCodium storage folder that
+  // (a) doesn't exist on disk yet (fresh install) and (b) doesn't contain "Code" or
+  // ".vscode-server" in its path — the old heuristic would abandon this authoritative
+  // path and fall back to a hardcoded (wrong) platform guess in that case.
+  const portableStorage = path.join(
+    os.tmpdir(),
+    `opencode-portable-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    'user-data',
+    'User',
+    'globalStorage',
+    'mfenderov.opencode-copilot-sync'
+  );
+  assert.ok(!fs.existsSync(path.dirname(portableStorage)), 'precondition: dir must not exist yet');
+  const derived = getChatLanguageModelsPath(portableStorage);
+  assert.equal(derived, path.resolve(portableStorage, '..', '..', 'chatLanguageModels.json'));
+});
+
 test('getAllChatLanguageModelsPaths includes candidates', () => {
   const paths = getAllChatLanguageModelsPaths();
   assert.ok(paths.length >= 1);
@@ -27,6 +45,66 @@ test('syncWslMirror executes safely without error on non-windows platform', () =
   assert.doesNotThrow(() => {
     syncWslMirror('/Users/test/chatLanguageModels.json');
   });
+});
+
+test('writeProvidersToConfig detects a concurrent write and re-merges against the latest content', (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-race-'));
+  const testFile = path.join(tmpDir, 'chatLanguageModels.json');
+  const v1 = [{ name: 'ExistingV1', vendor: 'customendpoint', models: [] }];
+  const v2 = [{ name: 'ExistingV2', vendor: 'customendpoint', models: [] }];
+  fs.writeFileSync(testFile, JSON.stringify(v1, null, 2), 'utf-8');
+
+  const originalReadFileSync = fs.readFileSync;
+  let callsForTestFile = 0;
+  t.mock.method(fs, 'readFileSync', (p, ...rest) => {
+    if (p === testFile) {
+      callsForTestFile++;
+      // The first two reads are our own initial snapshot + readChatLanguageModels()
+      // parse of it. From the 3rd read onward (the pre-write re-check), simulate
+      // another VS Code window having landed v2 in the meantime.
+      return JSON.stringify(callsForTestFile <= 2 ? v1 : v2, null, 2);
+    }
+    return originalReadFileSync.call(fs, p, ...rest);
+  });
+
+  const provider = buildProviderEntry('OpenCode Go', 'sk-test-key', ['kimi-k3'], { isGo: true });
+  writeProvidersToConfig([provider], testFile);
+  t.mock.restoreAll();
+
+  const updated = JSON.parse(fs.readFileSync(testFile, 'utf-8'));
+  const names = updated.map((e) => e.name);
+  assert.ok(names.includes('ExistingV2'), 'must preserve the concurrently-written entry, not clobber it');
+  assert.ok(!names.includes('ExistingV1'), 'must not write based on the stale initial snapshot');
+  assert.ok(names.includes('OpenCode Go'));
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test('safeWriteFileSync preserves the existing file mode on rewrite instead of resetting it', { skip: process.platform === 'win32' }, () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-mode-'));
+  const testFile = path.join(tmpDir, 'chatLanguageModels.json');
+  fs.writeFileSync(testFile, '[]', { mode: 0o640 });
+  fs.chmodSync(testFile, 0o640); // writeFileSync's mode is subject to umask; force it explicitly
+
+  safeWriteFileSync(testFile, JSON.stringify([{ name: 'x' }]));
+
+  const mode = fs.statSync(testFile).mode & 0o777;
+  assert.equal(mode, 0o640, 'rewrite must preserve the pre-existing permission bits');
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test('safeWriteFileSync writes correct content and cleans up its temp file', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-fsync-'));
+  const testFile = path.join(tmpDir, 'chatLanguageModels.json');
+
+  safeWriteFileSync(testFile, JSON.stringify([{ name: 'y' }]));
+
+  assert.deepEqual(JSON.parse(fs.readFileSync(testFile, 'utf-8')), [{ name: 'y' }]);
+  const leftoverTmp = fs.readdirSync(tmpDir).filter((f) => f.endsWith('.tmp'));
+  assert.equal(leftoverTmp.length, 0, 'no leftover .tmp file should remain after a successful write');
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
 test('writeProvidersToConfig updates temp config without touching real files', () => {

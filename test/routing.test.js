@@ -254,6 +254,19 @@ test('isResponsesModel returns true for responses models and false for others', 
   assert.equal(isResponsesModel('qwen3.8-flash'), false);
 });
 
+test('isResponsesModel prioritizes an explicit apiType hint over the substring heuristic', () => {
+  // A future/unknown model ID that doesn't match the muse/gpt-/grok- substrings must
+  // still route correctly when the catalog already computed its real apiType.
+  assert.equal(isResponsesModel('some-new-model-9000', 'responses'), true);
+  // Conversely, a model ID that WOULD false-positive the heuristic (e.g. contains
+  // "gpt-" as a coincidental substring) must be overridden by an authoritative
+  // chat-completions/messages apiType rather than misrouted to Responses.
+  assert.equal(isResponsesModel('legacy-gpt-4-compat-wrapper', 'chat-completions'), false);
+  assert.equal(isResponsesModel('claude-opus-5', 'messages'), false);
+  // No hint provided (undefined) still falls back to the substring heuristic.
+  assert.equal(isResponsesModel('muse-spark-1.3'), true);
+});
+
 test('All Muse models MUST have thinking === true and valid supportsReasoningEffort without "max"', () => {
   const museVariants = [
     'muse-spark-1.3',

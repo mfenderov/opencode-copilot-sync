@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { getStoredOpenCodeKey, getKeyFromExistingConfig } from './auth.js';
+import { fetchWithRetry } from './network.js';
 
 export interface OpenCodeModelMeta {
   id: string;
@@ -15,6 +16,8 @@ export interface OpenCodeModelMeta {
   thinking?: boolean;
   supportsReasoningEffort?: string[];
   defaultReasoningEffort?: string;
+  /** Upstream wire protocol, when known authoritatively (e.g. from models.dev). */
+  apiType?: 'chat-completions' | 'messages' | 'responses';
 }
 
 export const VERIFIED_OPENCODE_MODELS: OpenCodeModelMeta[] = [
@@ -55,10 +58,20 @@ export const VERIFIED_OPENCODE_MODELS: OpenCodeModelMeta[] = [
   { id: 'muse-spark-1.2-contributor-free', name: 'Muse Spark 1.2 Contributor (OpenCode Free)', family: 'muse-spark-1.2-contributor-free', catalog: 'zen', isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true, supportsReasoningEffort: ['minimal', 'low', 'medium', 'high', 'xhigh'] },
 ];
 
-export function isResponsesModel(modelId: string): boolean {
+/**
+ * Determines whether a model speaks the OpenAI Responses API protocol.
+ * Prefers authoritative `apiType` metadata (sourced from models.dev / the
+ * live OpenCode catalog) when available, falling back to a name-based
+ * heuristic only for models we have no metadata for yet.
+ */
+export function isResponsesModel(modelId: string, apiType?: string): boolean {
+  if (apiType === 'responses') return true;
+  if (apiType === 'chat-completions' || apiType === 'messages') return false;
   const lower = modelId.toLowerCase();
   return lower.includes('muse') || lower.includes('gpt-') || lower.includes('grok-');
 }
+
+const VALID_REASONING_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh']);
 
 export function normalizeReasoningEffort(
   effort: string | undefined,
@@ -75,7 +88,90 @@ export function normalizeReasoningEffort(
   // Map 'max' to 'high' for guaranteed compatibility while maximizing reasoning depth.
   const mappedEffort = lower === 'max' ? 'high' : lower;
 
+  // Defense in depth: never forward a value the upstream API doesn't recognize.
+  // An unrecognized effort (garbage config, future VS Code UI values, etc.)
+  // reliably causes a 400 Bad Request upstream — omitting the param is safer
+  // than guessing, and lets the model fall back to its own default.
+  if (!VALID_REASONING_EFFORTS.has(mappedEffort)) {
+    return {};
+  }
+
   return isResponses ? { reasoning: { effort: mappedEffort } } : { reasoning_effort: mappedEffort };
+}
+
+/**
+ * Chunk-boundary-safe parser for inline `<think>...</think>` tags that some
+ * Chat Completions models emit within regular content deltas. SSE deltas can
+ * split the tag literal itself across chunk boundaries (e.g. `<thi` + `nk>`),
+ * so this buffers any trailing partial tag match instead of naively scanning
+ * each chunk in isolation.
+ */
+export class ThinkTagStreamParser {
+  private buffer = '';
+  private inThink = false;
+
+  private static readonly OPEN = '<think>';
+  private static readonly CLOSE = '</think>';
+
+  /** Returns the longest suffix of `s` that is a strict, non-empty prefix of `tag`. */
+  private static trailingPartialMatch(s: string, tag: string): string {
+    const maxLen = Math.min(s.length, tag.length - 1);
+    for (let len = maxLen; len > 0; len--) {
+      if (s.slice(s.length - len) === tag.slice(0, len)) {
+        return s.slice(s.length - len);
+      }
+    }
+    return '';
+  }
+
+  feed(chunk: string): { text: string; thinking: string } {
+    this.buffer += chunk;
+    let text = '';
+    let thinking = '';
+
+    for (;;) {
+      if (this.inThink) {
+        const closeIdx = this.buffer.indexOf(ThinkTagStreamParser.CLOSE);
+        if (closeIdx === -1) {
+          const pending = ThinkTagStreamParser.trailingPartialMatch(this.buffer, ThinkTagStreamParser.CLOSE);
+          thinking += this.buffer.slice(0, this.buffer.length - pending.length);
+          this.buffer = pending;
+          break;
+        }
+        thinking += this.buffer.slice(0, closeIdx);
+        this.buffer = this.buffer.slice(closeIdx + ThinkTagStreamParser.CLOSE.length);
+        this.inThink = false;
+      } else {
+        const openIdx = this.buffer.indexOf(ThinkTagStreamParser.OPEN);
+        if (openIdx === -1) {
+          const pending = ThinkTagStreamParser.trailingPartialMatch(this.buffer, ThinkTagStreamParser.OPEN);
+          text += this.buffer.slice(0, this.buffer.length - pending.length);
+          this.buffer = pending;
+          break;
+        }
+        text += this.buffer.slice(0, openIdx);
+        this.buffer = this.buffer.slice(openIdx + ThinkTagStreamParser.OPEN.length);
+        this.inThink = true;
+      }
+    }
+
+    return { text, thinking };
+  }
+
+  /** Flush any buffered content at stream end. A dangling partial tag prefix
+   * that never completed was never a real tag, so it's emitted as plain text
+   * (or thinking text, if we were mid-think-block when the stream ended). */
+  flush(): { text: string; thinking: string } {
+    const remaining = this.buffer;
+    this.buffer = '';
+    return this.inThink ? { text: '', thinking: remaining } : { text: remaining, thinking: '' };
+  }
+}
+
+const STREAM_IDLE_TIMEOUT_MS = Number(process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS) || 90_000;
+
+function clampToolName(name: string): string {
+  return name.length > 64 ? name.slice(0, 64) : name;
 }
 
 export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
@@ -83,7 +179,10 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
   readonly onDidChangeLanguageModelChatInformation = this._onDidChange.event;
   private _models: OpenCodeModelMeta[] = [...VERIFIED_OPENCODE_MODELS];
 
-  constructor(private readonly context: vscode.ExtensionContext) {
+  constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly outputChannel?: vscode.OutputChannel
+  ) {
     try {
       if (this.context.globalStorageUri?.fsPath) {
         const cacheFile = path.join(this.context.globalStorageUri.fsPath, 'models_cache.json');
@@ -95,6 +194,10 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         }
       }
     } catch {}
+  }
+
+  private log(message: string): void {
+    this.outputChannel?.appendLine(`[Provider] ${message}`);
   }
 
   refresh(): void {
@@ -284,7 +387,8 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     }
 
     const lowerId = model.id.toLowerCase();
-    const isResponses = isResponsesModel(model.id);
+    const meta = this._models.find((m) => m.id === model.id);
+    const isResponses = isResponsesModel(model.id, meta?.apiType);
 
     // Format tool definitions appropriately for the target endpoint protocol
     let toolsPayload: any[] | undefined = undefined;
@@ -294,7 +398,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         // { type: "function", name: "...", description: "...", parameters: { ... } }
         toolsPayload = options.tools.map((t) => ({
           type: 'function',
-          name: t.name.length > 64 ? t.name.slice(0, 64) : t.name,
+          name: clampToolName(t.name),
           description: t.description,
           parameters: t.inputSchema || { type: 'object', properties: {} },
         }));
@@ -304,7 +408,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         toolsPayload = options.tools.map((t) => ({
           type: 'function',
           function: {
-            name: t.name,
+            name: clampToolName(t.name),
             description: t.description,
             parameters: t.inputSchema || { type: 'object', properties: {} },
           },
@@ -343,10 +447,43 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     }
 
     const abortController = new AbortController();
-    token.onCancellationRequested(() => abortController.abort());
+    const cancelListener = token.onCancellationRequested(() => abortController.abort());
 
+    try {
+      return await this.streamResponse(
+        model,
+        options,
+        progress,
+        token,
+        abortController,
+        meta,
+        isResponses,
+        lowerId,
+        formattedMessages,
+        toolsPayload,
+        responsesInput,
+        apiKey
+      );
+    } finally {
+      cancelListener.dispose();
+    }
+  }
+
+  private async streamResponse(
+    model: vscode.LanguageModelChatInformation,
+    options: vscode.ProvideLanguageModelChatResponseOptions,
+    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+    token: vscode.CancellationToken,
+    abortController: AbortController,
+    meta: OpenCodeModelMeta | undefined,
+    isResponses: boolean,
+    lowerId: string,
+    formattedMessages: any[],
+    toolsPayload: any[] | undefined,
+    responsesInput: any[],
+    apiKey: string
+  ): Promise<void> {
     // Free models and Zen-exclusive models route to zen/v1, flat-rate Go models route to zen/go/v1
-    const meta = this._models.find((m) => m.id === model.id);
     const isFreeOrZen =
       meta?.catalog === 'zen' ||
       meta?.isFree === true ||
@@ -386,23 +523,32 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
 
     const sessionId = `ses_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 
+    this.log(
+      `Request: model=${model.id} protocol=${isResponses ? 'responses' : 'chat-completions'} url=${url} reasoningEffort=${reasoningEffort || 'none'} tools=${toolsPayload?.length ?? 0}`
+    );
+
     let res: Response;
     try {
-      res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-          'User-Agent': 'opencode/1.18.30',
-          'x-opencode-session': sessionId,
+      res = await fetchWithRetry(
+        url,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'User-Agent': 'opencode/1.18.30',
+            'x-opencode-session': sessionId,
+          },
+          body: JSON.stringify(requestBody),
+          signal: abortController.signal,
         },
-        body: JSON.stringify(requestBody),
-        signal: abortController.signal,
-      });
+        { retries: 2 }
+      );
     } catch (err: any) {
       if (token.isCancellationRequested || abortController.signal.aborted) {
         return;
       }
+      this.log(`Request failed before receiving a response: ${err?.message || err}`);
       throw err;
     }
 
@@ -415,6 +561,8 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
           userDetail = parsed.error.message;
         }
       } catch {}
+
+      this.log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`);
 
       // 1. Auth errors: throw NoPermissions to let VS Code trigger re-auth prompts if configured
       if (res.status === 401 || res.status === 403) {
@@ -467,13 +615,41 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     const pendingToolCalls = new Map<number, { id: string; name: string; args: string }>();
     const thinkingId = `thinking-${Date.now()}`;
     let didEmitThinking = false;
-    let inThinkTag = false;
+    const thinkParser = new ThinkTagStreamParser();
     let hasStreamError = false;
+    let lastReadAt = Date.now();
+
+    const emitThinking = (thinking: string) => {
+      if (!thinking) return;
+      didEmitThinking = true;
+      const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
+      if (ThinkingPart) {
+        progress.report(new ThinkingPart(thinking, thinkingId));
+      } else {
+        progress.report(new vscode.LanguageModelTextPart(thinking));
+      }
+    };
 
     try {
       while (true) {
         if (token.isCancellationRequested) break;
-        const { done, value } = await reader.read();
+
+        const idleMs = STREAM_IDLE_TIMEOUT_MS - (Date.now() - lastReadAt);
+        let idleTimer: ReturnType<typeof setTimeout> | undefined;
+        const idleTimeout = new Promise<never>((_, reject) => {
+          idleTimer = setTimeout(
+            () => reject(new Error(`Stream idle for over ${Math.round(STREAM_IDLE_TIMEOUT_MS / 1000)}s; no data received from OpenCode upstream.`)),
+            Math.max(0, idleMs)
+          );
+        });
+
+        let done: boolean, value: Uint8Array | undefined;
+        try {
+          ({ done, value } = await Promise.race([reader.read(), idleTimeout]));
+        } finally {
+          clearTimeout(idleTimer);
+        }
+        lastReadAt = Date.now();
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
@@ -568,92 +744,30 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
                   : undefined);
 
               if (rawReasoning && rawReasoning.length > 0) {
-                didEmitThinking = true;
-                const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
-                if (ThinkingPart) {
-                  progress.report(new ThinkingPart(rawReasoning, thinkingId));
-                } else {
-                  progress.report(new vscode.LanguageModelTextPart(rawReasoning));
-                }
+                emitThinking(rawReasoning);
               }
 
-              // 2. Stream delta text content and handle inline <think> tags
-              let content = choice.delta?.content;
+              // 2. Stream delta text content, splitting out inline <think> tags
+              // via a chunk-boundary-safe parser (tags can be split across SSE chunks).
+              const content = choice.delta?.content;
               if (content) {
-                if (inThinkTag) {
-                  const closeIdx = content.indexOf('</think>');
-                  if (closeIdx !== -1) {
-                    const thinkText = content.slice(0, closeIdx);
-                    content = content.slice(closeIdx + 8);
-                    inThinkTag = false;
-                    if (thinkText) {
-                      didEmitThinking = true;
-                      const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
-                      if (ThinkingPart) {
-                        progress.report(new ThinkingPart(thinkText, thinkingId));
-                      } else {
-                        progress.report(new vscode.LanguageModelTextPart(thinkText));
-                      }
-                    }
-                  } else {
-                    didEmitThinking = true;
-                    const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
-                    if (ThinkingPart) {
-                      progress.report(new ThinkingPart(content, thinkingId));
-                    } else {
-                      progress.report(new vscode.LanguageModelTextPart(content));
-                    }
-                    content = '';
-                  }
-                } else if (content.includes('<think>')) {
-                  const openIdx = content.indexOf('<think>');
-                  const before = content.slice(0, openIdx);
-                  if (before) {
-                    progress.report(new vscode.LanguageModelTextPart(before));
-                  }
-                  const after = content.slice(openIdx + 7);
-                  inThinkTag = true;
-                  const closeIdx = after.indexOf('</think>');
-                  if (closeIdx !== -1) {
-                    const thinkText = after.slice(0, closeIdx);
-                    content = after.slice(closeIdx + 8);
-                    inThinkTag = false;
-                    if (thinkText) {
-                      didEmitThinking = true;
-                      const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
-                      if (ThinkingPart) {
-                        progress.report(new ThinkingPart(thinkText, thinkingId));
-                      } else {
-                        progress.report(new vscode.LanguageModelTextPart(thinkText));
-                      }
-                    }
-                  } else {
-                    didEmitThinking = true;
-                    const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
-                    if (ThinkingPart) {
-                      progress.report(new ThinkingPart(after, thinkingId));
-                    } else {
-                      progress.report(new vscode.LanguageModelTextPart(after));
-                    }
-                    content = '';
-                  }
-                }
-
-                if (content) {
-                  progress.report(new vscode.LanguageModelTextPart(content));
+                const { text, thinking } = thinkParser.feed(content);
+                emitThinking(thinking);
+                if (text) {
+                  progress.report(new vscode.LanguageModelTextPart(text));
                 }
               }
 
               // Accumulate streaming tool calls
               if (choice.delta?.tool_calls) {
-                for (const tc of choice.delta.tool_calls) {
-                  const idx = tc.index ?? 0;
+                choice.delta.tool_calls.forEach((tc: any, i: number) => {
+                  const idx = tc.index ?? i;
                   const current = pendingToolCalls.get(idx) || { id: '', name: '', args: '' };
                   if (tc.id) current.id = tc.id;
                   if (tc.function?.name) current.name += tc.function.name;
                   if (tc.function?.arguments) current.args += tc.function.arguments;
                   pendingToolCalls.set(idx, current);
-                }
+                });
               }
 
               // If finish_reason indicates tool_calls, emit completed tool call parts
@@ -679,11 +793,18 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         }
         if (isDone) break;
       }
+      const flushed = thinkParser.flush();
+      if (flushed.thinking) emitThinking(flushed.thinking);
+      if (flushed.text) {
+        progress.report(new vscode.LanguageModelTextPart(flushed.text));
+      }
     } catch (streamErr: any) {
       hasStreamError = true;
       if (token.isCancellationRequested) {
+        this.log(`Stream canceled by user for model=${model.id}`);
         return;
       }
+      this.log(`Stream interrupted for model=${model.id}: ${streamErr?.message || streamErr}`);
       progress.report(
         new vscode.LanguageModelTextPart(
           `\n\n*(Response stream interrupted: ${streamErr?.message || 'Connection closed by upstream OpenCode service'})*`
@@ -703,6 +824,9 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
           progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
         }
         pendingToolCalls.clear();
+      }
+      if (!hasStreamError && !token.isCancellationRequested && !abortController.signal.aborted) {
+        this.log(`Stream completed for model=${model.id}`);
       }
     }
   }

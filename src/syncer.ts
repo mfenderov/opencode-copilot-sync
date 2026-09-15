@@ -1,4 +1,4 @@
-import * as fs from 'node:fs';
+import fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as cp from 'node:child_process';
@@ -8,15 +8,14 @@ import { fetchOpenCodeModels, fetchModelsDevMetadata, filterFreeModels, filterAv
 
 export function getChatLanguageModelsPath(activeExtensionStoragePath?: string): string {
   if (activeExtensionStoragePath) {
+    // context.globalStorageUri is authoritative: VS Code hands us the real path for
+    // the *actual running instance* (portable installs, VSCodium, custom
+    // --user-data-dir, Insiders, Remote-SSH/WSL server folders all resolve correctly
+    // here), so prefer it unconditionally rather than gating on brittle substring/
+    // existsSync heuristics that can silently fall through to the wrong hardcoded
+    // guess on a fresh install where the directory doesn't exist yet.
     try {
-      const derived = path.resolve(activeExtensionStoragePath, '..', '..', 'chatLanguageModels.json');
-      if (
-        fs.existsSync(path.dirname(derived)) ||
-        activeExtensionStoragePath.includes('.vscode-server') ||
-        activeExtensionStoragePath.includes('Code')
-      ) {
-        return derived;
-      }
+      return path.resolve(activeExtensionStoragePath, '..', '..', 'chatLanguageModels.json');
     } catch {}
   }
 
@@ -448,30 +447,72 @@ export function createBackup(filePath: string): string | null {
   return backupPath;
 }
 
+/** Opens `path` for writing, writes `data`, fsyncs the fd, then closes it — giving
+ * durability against a crash/power-loss between the write and the OS actually
+ * persisting it, which a plain writeFileSync does not guarantee. */
+function writeFileWithFsync(filePath: string, data: string, mode: number): void {
+  const fd = fs.openSync(filePath, 'w', mode);
+  try {
+    fs.writeSync(fd, Buffer.from(data, 'utf-8'));
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** Best-effort fsync of a directory so a preceding renameSync into it is durable.
+ * Directory fsync is a POSIX-only concept; Windows can't open a directory handle
+ * for this, so it's skipped there. */
+function fsyncDir(dir: string): void {
+  if (process.platform === 'win32') return;
+  try {
+    const dirFd = fs.openSync(dir, 'r');
+    try {
+      fs.fsyncSync(dirFd);
+    } finally {
+      fs.closeSync(dirFd);
+    }
+  } catch {}
+}
+
 export function safeWriteFileSync(filePath: string, data: string, options?: { mode?: number } | number): void {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  const mode = typeof options === 'number' ? options : options?.mode;
+
+  // Preserve the existing file's permission bits by default instead of always
+  // resetting to 0o644, so a rewrite doesn't silently loosen/tighten perms an
+  // administrator or the user deliberately set. Callers can still override via
+  // an explicit mode.
+  let mode = typeof options === 'number' ? options : options?.mode;
+  if (mode === undefined) {
+    try {
+      mode = fs.statSync(filePath).mode & 0o777;
+    } catch {
+      mode = 0o644;
+    }
+  }
+
   const tmpPath = `${filePath}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
   try {
-    fs.writeFileSync(tmpPath, data, { encoding: 'utf-8', mode: mode ?? 0o644 });
-    if (mode !== undefined && process.platform !== 'win32') {
+    writeFileWithFsync(tmpPath, data, mode);
+    if (process.platform !== 'win32') {
       try {
         fs.chmodSync(tmpPath, mode);
       } catch {}
     }
     fs.renameSync(tmpPath, filePath);
-    if (mode !== undefined && process.platform !== 'win32') {
+    if (process.platform !== 'win32') {
       try {
         fs.chmodSync(filePath, mode);
       } catch {}
     }
+    fsyncDir(dir);
   } catch {
     try {
-      fs.writeFileSync(filePath, data, { encoding: 'utf-8', mode: mode ?? 0o644 });
-      if (mode !== undefined && process.platform !== 'win32') {
+      writeFileWithFsync(filePath, data, mode);
+      if (process.platform !== 'win32') {
         try {
           fs.chmodSync(filePath, mode);
         } catch {}
@@ -516,8 +557,27 @@ export function writeProvidersToConfig(
 
   for (const filePath of filePaths) {
     try {
-      const existingConfig = readChatLanguageModels(filePath);
-      const mergedConfig = mergeChatLanguageModels(existingConfig, providers);
+      const readRaw = (): string => {
+        try {
+          return fs.readFileSync(filePath, 'utf-8');
+        } catch {
+          return '';
+        }
+      };
+
+      // Optimistic concurrency: another VS Code window/instance (or `code --sync`)
+      // could write this same file between our read and our write. Re-read
+      // immediately before writing and, if the on-disk content changed underneath
+      // us, redo the merge against the newer content once instead of silently
+      // clobbering the other writer's changes.
+      const beforeRaw = readRaw();
+      let existingConfig = readChatLanguageModels(filePath);
+      let mergedConfig = mergeChatLanguageModels(existingConfig, providers);
+
+      if (readRaw() !== beforeRaw) {
+        existingConfig = readChatLanguageModels(filePath);
+        mergedConfig = mergeChatLanguageModels(existingConfig, providers);
+      }
 
       const backupPath = createBackup(filePath);
       if (!primaryBackup) {

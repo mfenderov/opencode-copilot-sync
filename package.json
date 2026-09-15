@@ -108,5 +108,8 @@
     "esbuild": "^0.25.0",
     "typescript": "^5.7.0",
     "vscode": "file:./test/mocks/vscode"
+  },
+  "dependencies": {
+    "undici": "^8.10.2"
   }
 }

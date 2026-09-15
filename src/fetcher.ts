@@ -1,3 +1,5 @@
+import { fetchWithRetry, withProxy } from './network.js';
+
 export async function fetchOpenCodeModels(
   apiKey: string,
   catalog: 'go' | 'zen' = 'go'
@@ -7,7 +9,7 @@ export async function fetchOpenCodeModels(
       ? 'https://opencode.ai/zen/go/v1/models'
       : 'https://opencode.ai/zen/v1/models';
 
-  const res = await fetch(url, {
+  const res = await fetchWithRetry(url, {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -32,9 +34,11 @@ export async function fetchModelsDevMetadata(): Promise<Record<string, any>> {
   const urls = ['https://models.opencode.ai/api.json', 'https://models.dev/api.json'];
   for (const url of urls) {
     try {
-      const res = await fetch(url, {
-        signal: AbortSignal.timeout(5000),
-      });
+      const res = await fetchWithRetry(
+        url,
+        { signal: AbortSignal.timeout(5000) },
+        { retries: 1, baseDelayMs: 200 }
+      );
       if (!res.ok) continue;
       const data = (await res.json()) as any;
       const result: Record<string, any> = {};
@@ -94,20 +98,24 @@ export function filterAvailableGoModels(modelIds: string[]): string[] {
 export const filterAvailableModels = filterAvailableGoModels;
 
 export async function checkZenBalance(apiKey: string): Promise<boolean> {
+  const url = 'https://opencode.ai/zen/v1/chat/completions';
   try {
-    const res = await fetch('https://opencode.ai/zen/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: 1,
-      }),
-      signal: AbortSignal.timeout(3000),
-    });
+    const res = await fetch(
+      url,
+      await withProxy(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 1,
+        }),
+        signal: AbortSignal.timeout(3000),
+      })
+    );
     if (res.status === 401) {
       const text = await res.text();
       if (text.includes('Insufficient balance') || text.includes('CreditsError')) {
