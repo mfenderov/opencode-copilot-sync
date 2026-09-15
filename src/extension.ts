@@ -138,6 +138,7 @@ export async function activate(context: vscode.ExtensionContext) {
             maxOutputTokens: m.maxOutputTokens || 65536,
             vision: !!m.vision,
             thinking: m.thinking !== false,
+            supportsReasoningEffort: m.supportsReasoningEffort,
           }))
         );
       } else {

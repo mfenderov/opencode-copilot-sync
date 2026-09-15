@@ -39,3 +39,39 @@ test('enrichModel computes maxInputTokens and sets modelOptions', () => {
   assert.deepEqual(model.modelOptions, { temperature: null, top_p: null });
   assert.equal(model.editTools, undefined, 'editTools must not be set to avoid proposed API rejection');
 });
+
+test('enrichModel extracts exact reasoning effort values from modelsDevData and filters out "none"', () => {
+  const museDevData = {
+    reasoning: true,
+    reasoning_options: [
+      {
+        type: 'effort',
+        values: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
+      },
+    ],
+  };
+  const model = enrichModel('muse-spark-1.3-contributor-free', { isGo: false, isFree: true, modelsDevData: museDevData });
+  assert.equal(model.thinking, true);
+  assert.deepEqual(model.supportsReasoningEffort, ['minimal', 'low', 'medium', 'high', 'xhigh']);
+  assert.ok(!model.supportsReasoningEffort.includes('max'), 'Muse must not include max');
+  assert.ok(!model.supportsReasoningEffort.includes('none'), 'Effort enum must not include none');
+});
+
+test('enrichModel sets supportsReasoningEffort to undefined for boolean-only reasoning models', () => {
+  const booleanReasoningData = {
+    reasoning: true,
+  };
+  const model = enrichModel('minimax-m2.5', { isGo: true, modelsDevData: booleanReasoningData });
+  assert.equal(model.thinking, true);
+  assert.strictEqual(model.supportsReasoningEffort, undefined, 'Boolean-only reasoning model must not have effort array');
+});
+
+test('enrichModel sets thinking = false and supportsReasoningEffort = undefined for non-reasoning models', () => {
+  const noReasoningData = {
+    reasoning: false,
+  };
+  const model = enrichModel('qwen3.7-max', { isGo: true, modelsDevData: noReasoningData });
+  assert.equal(model.thinking, false);
+  assert.strictEqual(model.supportsReasoningEffort, undefined);
+});
+

@@ -544,7 +544,8 @@ export async function syncOpenCodeModels(
 
   // Go models first (flat subscription rate) -> (OpenCode Go)
   for (const id of goModelIds) {
-    models.push(enrichModel(id, { isGo: true, suffix: '(OpenCode Go)', modelsDevData: modelsDevMap[id] }));
+    const devData = modelsDevMap[id] || modelsDevMap[id.replace(/-contributor$/, '')] || modelsDevMap[id.replace(/-free$/, '')];
+    models.push(enrichModel(id, { isGo: true, suffix: '(OpenCode Go)', modelsDevData: devData }));
   }
 
   // Zen models that are NOT in Go -> (OpenCode Free) or (OpenCode Zen)
@@ -553,7 +554,8 @@ export async function syncOpenCodeModels(
     if (!goSet.has(id)) {
       const isFree = filterFreeModels([id]).length > 0;
       const suffix = isFree ? '(OpenCode Free)' : '(OpenCode Zen)';
-      models.push(enrichModel(id, { isGo: false, isFree, suffix, modelsDevData: modelsDevMap[id] }));
+      const devData = modelsDevMap[id] || modelsDevMap[id.replace(/-contributor-free$/, '')] || modelsDevMap[id.replace(/-free$/, '')];
+      models.push(enrichModel(id, { isGo: false, isFree, suffix, modelsDevData: devData }));
       zenCount++;
     }
   }

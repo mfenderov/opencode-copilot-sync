@@ -729,3 +729,64 @@ test('Provider [provideTokenCount]: estimates token count from text or message',
   );
   assert.ok(count2 > 0);
 });
+
+test('Provider [provideLanguageModelChatInformation]: dynamically sets reasoningEffort enum strictly to supported levels', async () => {
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+
+  provider.updateModels([
+    {
+      id: 'muse-spark-1.3',
+      name: 'Muse Spark 1.3',
+      family: 'gpt-5-5',
+      contextWindow: 1048576,
+      maxOutputTokens: 65536,
+      vision: true,
+      thinking: true,
+      supportsReasoningEffort: ['minimal', 'low', 'medium', 'high', 'xhigh'],
+    },
+    {
+      id: 'minimax-m2.5',
+      name: 'MiniMax M2.5',
+      family: 'minimax-m2.5',
+      contextWindow: 1048576,
+      maxOutputTokens: 65536,
+      vision: false,
+      thinking: true,
+    },
+    {
+      id: 'qwen3.7-max',
+      name: 'Qwen 3.7 Max',
+      family: 'qwen3.7-max',
+      contextWindow: 1000000,
+      maxOutputTokens: 131072,
+      vision: true,
+      thinking: false,
+    },
+  ]);
+
+  const token = createMockToken();
+  const info = await provider.provideLanguageModelChatInformation({}, token);
+
+  const museInfo = info.find((m) => m.id === 'muse-spark-1.3');
+  assert.ok(museInfo);
+  assert.equal(museInfo.capabilities.thinking, true);
+  assert.deepEqual(museInfo.supportsReasoningEffort, ['minimal', 'low', 'medium', 'high', 'xhigh']);
+  assert.ok(!museInfo.supportsReasoningEffort.includes('max'), 'Muse must not advertise max');
+  const museSchema = museInfo.configurationSchema?.properties?.reasoningEffort;
+  assert.ok(museSchema);
+  assert.deepEqual(museSchema.enum, ['minimal', 'low', 'medium', 'high', 'xhigh']);
+  assert.deepEqual(museSchema.enumItemLabels, ['Minimal', 'Low', 'Medium', 'High', 'Extra High']);
+
+  const minimaxInfo = info.find((m) => m.id === 'minimax-m2.5');
+  assert.ok(minimaxInfo);
+  assert.equal(minimaxInfo.capabilities.thinking, true);
+  assert.strictEqual(minimaxInfo.supportsReasoningEffort, undefined);
+  assert.strictEqual(minimaxInfo.configurationSchema?.properties?.reasoningEffort, undefined, 'Boolean reasoning must have no effort property');
+
+  const qwenInfo = info.find((m) => m.id === 'qwen3.7-max');
+  assert.ok(qwenInfo);
+  assert.equal(qwenInfo.capabilities.thinking, false);
+  assert.strictEqual(qwenInfo.supportsReasoningEffort, undefined);
+  assert.strictEqual(qwenInfo.configurationSchema?.properties?.reasoningEffort, undefined);
+});

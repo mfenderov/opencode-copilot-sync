@@ -181,10 +181,24 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
   }
 
   const maxInputTokens = contextWindow - maxOutputTokens;
-  const devEfforts = devMeta?.reasoning_options?.find((o: any) => o.type === 'effort')?.values;
-  const supportsReasoningEffort = devEfforts && Array.isArray(devEfforts) && devEfforts.length > 0
-    ? devEfforts
-    : thinking ? ['low', 'medium', 'high', 'xhigh', 'max'] : undefined;
+  let supportsReasoningEffort: string[] | undefined = undefined;
+
+  if (thinking) {
+    const devEffortOpt = devMeta?.reasoning_options?.find((o: any) => o.type === 'effort');
+    if (devEffortOpt && Array.isArray(devEffortOpt.values)) {
+      const filtered = devEffortOpt.values.filter((v: string) => v !== 'none');
+      if (filtered.length > 0) {
+        supportsReasoningEffort = filtered;
+      }
+    } else if (!devMeta) {
+      // Fallback heuristics only when models.dev metadata is unavailable
+      if (isResponses) {
+        supportsReasoningEffort = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+      } else if (lower.includes('deepseek') || lower.includes('kimi-k3') || lower.includes('glm')) {
+        supportsReasoningEffort = ['low', 'medium', 'high', 'max'];
+      }
+    }
+  }
 
   const model: CustomEndpointModel = {
     id: modelId,

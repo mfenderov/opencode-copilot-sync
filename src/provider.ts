@@ -13,42 +13,44 @@ export interface OpenCodeModelMeta {
   maxOutputTokens: number;
   vision: boolean;
   thinking?: boolean;
+  supportsReasoningEffort?: string[];
+  defaultReasoningEffort?: string;
 }
 
 export const VERIFIED_OPENCODE_MODELS: OpenCodeModelMeta[] = [
   { id: 'minimax-m3', name: 'MiniMax M3 (OpenCode Go)', family: 'minimax-m3', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: false },
-  { id: 'minimax-m2.5', name: 'MiniMax M2.5 (OpenCode Go)', family: 'minimax-m2.5', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: false },
-  { id: 'kimi-k3', name: 'Kimi K3 (OpenCode Go)', family: 'kimi-k3', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true },
-  { id: 'kimi-k2.7-code', name: 'Kimi K2.7 Code (OpenCode Go)', family: 'kimi-k2.7-code', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true },
+  { id: 'minimax-m2.5', name: 'MiniMax M2.5 (OpenCode Go)', family: 'minimax-m2.5', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
+  { id: 'kimi-k3', name: 'Kimi K3 (OpenCode Go)', family: 'kimi-k3', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true, supportsReasoningEffort: ['low', 'medium', 'high', 'max'] },
+  { id: 'kimi-k2.7-code', name: 'Kimi K2.7 Code (OpenCode Go)', family: 'kimi-k2.7-code', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true, supportsReasoningEffort: ['low', 'medium', 'high', 'max'] },
   { id: 'kimi-k2.6', name: 'Kimi K2.6 (OpenCode Go)', family: 'kimi-k2.6', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true },
   { id: 'longcat-2.0', name: 'Longcat 2.0 (OpenCode Go)', family: 'longcat-2.0', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
-  { id: 'glm-5.2', name: 'GLM 5.2 (OpenCode Go)', family: 'glm-5.2', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
-  { id: 'glm-5.3-flash', name: 'GLM 5.3 Flash (OpenCode Go)', family: 'glm-5.3-flash', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
-  { id: 'glm-5.3', name: 'GLM 5.3 (OpenCode Go)', family: 'glm-5.3', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
+  { id: 'glm-5.2', name: 'GLM 5.2 (OpenCode Go)', family: 'glm-5.2', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true, supportsReasoningEffort: ['high', 'max'] },
+  { id: 'glm-5.3-flash', name: 'GLM 5.3 Flash (OpenCode Go)', family: 'glm-5.3-flash', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true, supportsReasoningEffort: ['low', 'high', 'max'] },
+  { id: 'glm-5.3', name: 'GLM 5.3 (OpenCode Go)', family: 'glm-5.3', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true, supportsReasoningEffort: ['low', 'high', 'max'] },
   { id: 'glm-5.1', name: 'GLM 5.1 (OpenCode Go)', family: 'glm-5.1', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
-  { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro (OpenCode Go)', family: 'deepseek-v4-pro', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
-  { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash (OpenCode Go)', family: 'deepseek-v4-flash', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
-  { id: 'deepseek-flash', name: 'DeepSeek Flash (OpenCode Go)', family: 'deepseek-flash', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
-  { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash (OpenCode Go)', family: 'deepseek-v4.1-flash', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
-  { id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek V4 Flash Vision Exp (OpenCode Go)', family: 'deepseek-v4-flash-vision-exp', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true },
+  { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro (OpenCode Go)', family: 'deepseek-v4-pro', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true, supportsReasoningEffort: ['low', 'high', 'max'] },
+  { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash (OpenCode Go)', family: 'deepseek-v4-flash', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true, supportsReasoningEffort: ['low', 'high', 'max'] },
+  { id: 'deepseek-flash', name: 'DeepSeek Flash (OpenCode Go)', family: 'deepseek-flash', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true, supportsReasoningEffort: ['low', 'high', 'max'] },
+  { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash (OpenCode Go)', family: 'deepseek-v4.1-flash', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true, supportsReasoningEffort: ['low', 'medium', 'high', 'max'] },
+  { id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek V4 Flash Vision Exp (OpenCode Go)', family: 'deepseek-v4-flash-vision-exp', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true, supportsReasoningEffort: ['low', 'high', 'max'] },
   { id: 'qwen3.7-max', name: 'Qwen3.7 Max (OpenCode Go)', family: 'qwen3.7-max', catalog: 'go', contextWindow: 1000000, maxOutputTokens: 131072, vision: true, thinking: false },
   { id: 'qwen3.8-max', name: 'Qwen3.8 Max (OpenCode Go)', family: 'qwen3.8-max', catalog: 'go', contextWindow: 1000000, maxOutputTokens: 131072, vision: true, thinking: false },
   { id: 'qwen3.8-flash', name: 'Qwen3.8 Flash (OpenCode Go)', family: 'qwen3.8-flash', catalog: 'go', contextWindow: 1000000, maxOutputTokens: 131072, vision: true, thinking: false },
   { id: 'qwen3.6-plus', name: 'Qwen3.6 Plus (OpenCode Go)', family: 'qwen3.6-plus', catalog: 'go', contextWindow: 1000000, maxOutputTokens: 131072, vision: true, thinking: false },
-  { id: 'mimo-v2.5-pro', name: 'MiMo V2.5 Pro (OpenCode Go)', family: 'mimo-v2.5-pro', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
-  { id: 'mimo-v2.5', name: 'MiMo V2.5 (OpenCode Go)', family: 'mimo-v2.5', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
+  { id: 'mimo-v2.5-pro', name: 'MiMo V2.5 Pro (OpenCode Go)', family: 'mimo-v2.5-pro', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true, supportsReasoningEffort: ['low', 'medium', 'high'] },
+  { id: 'mimo-v2.5', name: 'MiMo V2.5 (OpenCode Go)', family: 'mimo-v2.5', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true, supportsReasoningEffort: ['low', 'medium', 'high'] },
   { id: 'hy4-preview', name: 'Hy4 Preview (OpenCode Go)', family: 'hy4-preview', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
   { id: 'hy3', name: 'Hy3 (OpenCode Go)', family: 'hy3', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
   { id: 'omen-alpha', name: 'Omen Alpha (OpenCode Go)', family: 'omen-alpha', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
   // Verified OpenCode Free models (always available and visible)
   { id: 'big-pickle', name: 'Big Pickle (OpenCode Free)', family: 'big-pickle', catalog: 'zen', isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
-  { id: 'mimo-v2.5-free', name: 'MiMo V2.5 (OpenCode Free)', family: 'mimo-v2.5-free', catalog: 'zen', isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
+  { id: 'mimo-v2.5-free', name: 'MiMo V2.5 (OpenCode Free)', family: 'mimo-v2.5-free', catalog: 'zen', isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true, supportsReasoningEffort: ['low', 'medium', 'high'] },
   { id: 'ling-3.0-flash-fin-free', name: 'Ling 3.0 Flash Fin (OpenCode Free)', family: 'ling-3.0-flash-fin-free', catalog: 'zen', isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
-  { id: 'nemotron-3-ultra-free', name: 'Nemotron 3 Ultra (OpenCode Free)', family: 'nemotron-3-ultra-free', catalog: 'zen', isFree: true, contextWindow: 1000000, maxOutputTokens: 128000, vision: false, thinking: true },
-  { id: 'nemotron-3.5-lightning-free', name: 'Nemotron 3.5 Lightning (OpenCode Free)', family: 'nemotron-3.5-lightning-free', catalog: 'zen', isFree: true, contextWindow: 1000000, maxOutputTokens: 128000, vision: false, thinking: true },
-  { id: 'deepseek-v4-flash-free', name: 'DeepSeek V4 Flash (OpenCode Free)', family: 'deepseek-v4-flash-free', catalog: 'zen', isFree: true, contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
-  { id: 'muse-spark-1.3-contributor-free', name: 'Muse Spark 1.3 Contributor (OpenCode Free)', family: 'muse-spark-1.3-contributor-free', catalog: 'zen', isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
-  { id: 'muse-spark-1.2-contributor-free', name: 'Muse Spark 1.2 Contributor (OpenCode Free)', family: 'muse-spark-1.2-contributor-free', catalog: 'zen', isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
+  { id: 'nemotron-3-ultra-free', name: 'Nemotron 3 Ultra (OpenCode Free)', family: 'nemotron-3-ultra-free', catalog: 'zen', isFree: true, contextWindow: 1000000, maxOutputTokens: 128000, vision: false, thinking: true, supportsReasoningEffort: ['low', 'medium', 'high'] },
+  { id: 'nemotron-3.5-lightning-free', name: 'Nemotron 3.5 Lightning (OpenCode Free)', family: 'nemotron-3.5-lightning-free', catalog: 'zen', isFree: true, contextWindow: 1000000, maxOutputTokens: 128000, vision: false, thinking: true, supportsReasoningEffort: ['low', 'medium', 'high'] },
+  { id: 'deepseek-v4-flash-free', name: 'DeepSeek V4 Flash (OpenCode Free)', family: 'deepseek-v4-flash-free', catalog: 'zen', isFree: true, contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true, supportsReasoningEffort: ['low', 'high', 'max'] },
+  { id: 'muse-spark-1.3-contributor-free', name: 'Muse Spark 1.3 Contributor (OpenCode Free)', family: 'muse-spark-1.3-contributor-free', catalog: 'zen', isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true, supportsReasoningEffort: ['minimal', 'low', 'medium', 'high', 'xhigh'] },
+  { id: 'muse-spark-1.2-contributor-free', name: 'Muse Spark 1.2 Contributor (OpenCode Free)', family: 'muse-spark-1.2-contributor-free', catalog: 'zen', isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true, supportsReasoningEffort: ['minimal', 'low', 'medium', 'high', 'xhigh'] },
 ];
 
 export function isResponsesModel(modelId: string): boolean {
@@ -121,19 +123,40 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
       const supportsReasoning = m.thinking !== false;
       const properties: Record<string, any> = {};
 
-      if (supportsReasoning) {
+      // Dynamic reasoning effort options based on actual model metadata
+      const rawEfforts = m.supportsReasoningEffort;
+      const validEfforts = supportsReasoning && Array.isArray(rawEfforts) && rawEfforts.length > 0
+        ? rawEfforts.filter((e) => e !== 'none')
+        : undefined;
+
+      if (supportsReasoning && validEfforts && validEfforts.length > 0) {
+        const enumItemLabels = validEfforts.map((e) => {
+          if (e === 'minimal') return 'Minimal';
+          if (e === 'low') return 'Low';
+          if (e === 'medium') return 'Medium';
+          if (e === 'high') return 'High';
+          if (e === 'xhigh') return 'Extra High';
+          if (e === 'max') return 'Max';
+          return e.charAt(0).toUpperCase() + e.slice(1);
+        });
+
+        const enumDescriptions = validEfforts.map((e) => {
+          if (e === 'minimal') return 'Minimal reasoning';
+          if (e === 'low') return 'Faster responses with light reasoning';
+          if (e === 'medium') return 'Balanced reasoning and speed';
+          if (e === 'high') return 'Deep reasoning';
+          if (e === 'xhigh') return 'Extra deep reasoning';
+          if (e === 'max') return 'Maximum reasoning depth';
+          return `${e} reasoning`;
+        });
+
         properties.reasoningEffort = {
           type: 'string',
           title: 'Thinking Effort',
-          enum: ['low', 'medium', 'high', 'max'],
-          enumItemLabels: ['Low', 'Medium', 'High', 'Max'],
-          enumDescriptions: [
-            'Faster responses with less reasoning',
-            'Balanced reasoning and speed',
-            'Deep reasoning',
-            'Maximum reasoning depth',
-          ],
-          default: 'medium',
+          enum: validEfforts,
+          enumItemLabels,
+          enumDescriptions,
+          default: validEfforts.includes('medium') ? 'medium' : validEfforts[0],
           group: 'navigation',
         };
       }
@@ -168,9 +191,9 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
           toolCalling: true,
           thinking: supportsReasoning,
         },
-        supportsReasoningEffort: supportsReasoning ? ['low', 'medium', 'high', 'max'] : undefined,
-        supportedReasoningEfforts: supportsReasoning ? ['low', 'medium', 'high', 'max'] : undefined,
-        defaultReasoningEffort: supportsReasoning ? 'medium' : undefined,
+        supportsReasoningEffort: validEfforts,
+        supportedReasoningEfforts: validEfforts,
+        defaultReasoningEffort: validEfforts ? (validEfforts.includes('medium') ? 'medium' : validEfforts[0]) : undefined,
         configurationSchema,
         isBYOK: true,
       } as any;

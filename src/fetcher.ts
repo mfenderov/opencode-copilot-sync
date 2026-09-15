@@ -29,16 +29,38 @@ export async function fetchOpenCodeModels(
 }
 
 export async function fetchModelsDevMetadata(): Promise<Record<string, any>> {
-  try {
-    const res = await fetch('https://models.dev/api.json', {
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!res.ok) return {};
-    const data = (await res.json()) as any;
-    return data['opencode']?.models || {};
-  } catch {
-    return {};
+  const urls = ['https://models.opencode.ai/api.json', 'https://models.dev/api.json'];
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) continue;
+      const data = (await res.json()) as any;
+      const result: Record<string, any> = {};
+
+      // 1. Gather all models across all providers as fallback
+      for (const [providerKey, providerData] of Object.entries(data)) {
+        if ((providerData as any)?.models) {
+          for (const [mId, mData] of Object.entries((providerData as any).models)) {
+            if (!result[mId]) {
+              result[mId] = mData;
+            }
+          }
+        }
+      }
+
+      // 2. OpenCode provider is authoritative - overlay OpenCode-specific definitions
+      if (data['opencode']?.models) {
+        for (const [mId, mData] of Object.entries(data['opencode'].models)) {
+          result[mId] = mData;
+        }
+      }
+
+      return result;
+    } catch {}
   }
+  return {};
 }
 
 export function filterFreeModels(modelIds: string[]): string[] {
