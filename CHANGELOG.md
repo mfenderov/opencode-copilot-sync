@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.16.4 - 2026-09-15
+#### Bug Fixes
+- (**network,provider**) robust HTTP retry policy and stable per-conversation session id - (db6220f) - Mark Fenderov
+
+- - -
+
 ## v0.16.3 - 2026-09-15
 #### Bug Fixes
 - (**quality**) buffer coverage/CRAP thresholds for cross-platform variance - (89f67d2) - Mark Fenderov
