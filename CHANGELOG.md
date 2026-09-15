@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.15.0 - 2026-09-15
+#### Features
+- (**provider**) dynamically restrict thinking effort to model capabilities - (de14f5b) - Mark Fenderov
+
+- - -
+
 ## v0.14.2 - 2026-09-15
 #### Bug Fixes
 - (**provider**) normalize reasoning effort to prevent 400 parameter errors - (e886d22) - Mark Fenderov
