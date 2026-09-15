@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.14.1 - 2026-09-15
+#### Bug Fixes
+- (**provider**) map flat tool definitions for OpenAI Responses API format - (575783f) - Mark Fenderov
+
+- - -
+
 ## v0.14.0 - 2026-09-14
 #### Features
 - multi-transport routing, dynamic models.dev metadata, and enterprise testing pyramid - (003423b) - Mark Fenderov
