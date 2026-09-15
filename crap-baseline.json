@@ -1,0 +1,152 @@
+{
+  "src/syncer.ts:234:getAllChatLanguageModelsPaths": {
+    "crap": 1433.48,
+    "complexity": 49,
+    "coverage": 0.168
+  },
+  "src/syncer.ts:66:syncWslMirror": {
+    "crap": 768.62,
+    "complexity": 29,
+    "coverage": 0.042
+  },
+  "src/syncer.ts:153:<anonymous>": {
+    "crap": 620.51,
+    "complexity": 26,
+    "coverage": 0.042
+  },
+  "src/auth.ts:9:getStoredOpenCodeKey": {
+    "crap": 368.31,
+    "complexity": 43,
+    "coverage": 0.44
+  },
+  "src/syncer.ts:601:syncOpenCodeModels": {
+    "crap": 367.55,
+    "complexity": 19,
+    "coverage": 0.012
+  },
+  "src/extension.ts:93:performSync": {
+    "crap": 156,
+    "complexity": 12,
+    "coverage": 0
+  },
+  "src/fetcher.ts:33:fetchModelsDevMetadata": {
+    "crap": 144.33,
+    "complexity": 12,
+    "coverage": 0.028
+  },
+  "src/provider.ts:472:streamResponse": {
+    "crap": 142.14,
+    "complexity": 131,
+    "coverage": 0.913
+  },
+  "src/auth.ts:178:resolveApiKey": {
+    "crap": 124.59,
+    "complexity": 11,
+    "coverage": 0.021
+  },
+  "src/provider.ts:308:provideLanguageModelChatResponse": {
+    "crap": 96.56,
+    "complexity": 38,
+    "coverage": 0.656
+  },
+  "src/enricher.ts:58:enrichModel": {
+    "crap": 67.89,
+    "complexity": 64,
+    "coverage": 0.902
+  },
+  "src/extension.ts:75:updateUsageMeter": {
+    "crap": 42,
+    "complexity": 6,
+    "coverage": 0
+  },
+  "src/extension.ts:153:<anonymous>": {
+    "crap": 42,
+    "complexity": 6,
+    "coverage": 0
+  },
+  "src/syncer.ts:9:getChatLanguageModelsPath": {
+    "crap": 38.64,
+    "complexity": 13,
+    "coverage": 0.467
+  },
+  "src/fetcher.ts:100:checkZenBalance": {
+    "crap": 38.52,
+    "complexity": 6,
+    "coverage": 0.033
+  },
+  "src/fetcher.ts:3:fetchOpenCodeModels": {
+    "crap": 38.4,
+    "complexity": 6,
+    "coverage": 0.034
+  },
+  "src/extension.ts:8:activate": {
+    "crap": 30,
+    "complexity": 5,
+    "coverage": 0
+  },
+  "src/auth.ts:126:getKeyFromExistingConfig": {
+    "crap": 24.35,
+    "complexity": 17,
+    "coverage": 0.706
+  },
+  "src/syncer.ts:478:safeWriteFileSync": {
+    "crap": 21.45,
+    "complexity": 15,
+    "coverage": 0.694
+  },
+  "src/extension.ts:43:<anonymous>": {
+    "crap": 20,
+    "complexity": 4,
+    "coverage": 0
+  },
+  "src/auth.ts:206:validateInput": {
+    "crap": 19.02,
+    "complexity": 4,
+    "coverage": 0.021
+  },
+  "src/usage.ts:19:fetchOpenCodeUsage": {
+    "crap": 18.91,
+    "complexity": 17,
+    "coverage": 0.813
+  },
+  "src/auth.ts:227:promptAndSetApiKey": {
+    "crap": 18.29,
+    "complexity": 4,
+    "coverage": 0.037
+  },
+  "src/network.ts:160:fetchWithRetry": {
+    "crap": 18.06,
+    "complexity": 18,
+    "coverage": 0.944
+  },
+  "src/enricher.ts:34:<anonymous>": {
+    "crap": 17,
+    "complexity": 17,
+    "coverage": 1
+  },
+  "src/provider.ts:227:<anonymous>": {
+    "crap": 12.02,
+    "complexity": 12,
+    "coverage": 0.952
+  },
+  "src/extension.ts:192:<anonymous>": {
+    "crap": 12,
+    "complexity": 3,
+    "coverage": 0
+  },
+  "src/auth.ts:238:validateInput": {
+    "crap": 11.04,
+    "complexity": 3,
+    "coverage": 0.037
+  },
+  "src/config.ts:29:isOpenCodeLegacyOrCustomEntry": {
+    "crap": 11,
+    "complexity": 11,
+    "coverage": 1
+  },
+  "src/syncer.ts:164:<anonymous>": {
+    "crap": 10.92,
+    "complexity": 3,
+    "coverage": 0.042
+  }
+}

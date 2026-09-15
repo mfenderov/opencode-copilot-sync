@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { resolveApiKey, promptAndSetApiKey } from './auth.js';
-import { syncOpenCodeModels, getChatLanguageModelsPath, cleanupLegacyOpenCodeCustomEndpoints } from './syncer.js';
+import { syncOpenCodeModels, getChatLanguageModelsPath } from './syncer.js';
 import { fetchOpenCodeUsage, formatStatusBarText, formatUsageTooltip } from './usage.js';
 import { OpenCodeChatProvider } from './provider.js';
 import { setVSCodeProxyUrl } from './network.js';
@@ -205,15 +205,15 @@ export async function activate(context: vscode.ExtensionContext) {
   const autoSync = config.get<boolean>('autoSyncOnStartup', true);
   if (autoSync) {
     setTimeout(() => {
-      performSync(false);
+      void performSync(false);
     }, 3000);
   }
 
   // Periodic usage meter refresh (every 60 seconds)
   const usageTimer = setInterval(() => {
-    updateUsageMeter();
+    void updateUsageMeter();
   }, 60000);
-  context.subscriptions.push({ dispose: () => clearInterval(usageTimer) });
+  context.subscriptions.push({ dispose: () => { clearInterval(usageTimer); } });
 
   return {
     chatProvider,

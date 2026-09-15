@@ -20,7 +20,7 @@ export async function fetchOpenCodeUsage(
   apiKey: string,
   fetchFn: typeof fetch = fetch
 ): Promise<GoUsageResult> {
-  if (!apiKey || !apiKey.trim()) {
+  if (!apiKey?.trim()) {
     return { ok: false, reason: 'no-key' };
   }
 

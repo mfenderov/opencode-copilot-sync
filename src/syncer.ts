@@ -2,9 +2,9 @@ import fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as cp from 'node:child_process';
-import { buildProviderEntry, mergeChatLanguageModels, purgeOpenCodeFromChatLanguageModels, type ProviderEntry } from './config.js';
+import { mergeChatLanguageModels, purgeOpenCodeFromChatLanguageModels, type ProviderEntry } from './config.js';
 import { enrichModel } from './enricher.js';
-import { fetchOpenCodeModels, fetchModelsDevMetadata, filterFreeModels, filterAvailableGoModels, checkZenBalance, KNOWN_UNAVAILABLE_MODELS } from './fetcher.js';
+import { fetchOpenCodeModels, fetchModelsDevMetadata, filterFreeModels } from './fetcher.js';
 
 export function getChatLanguageModelsPath(activeExtensionStoragePath?: string): string {
   if (activeExtensionStoragePath) {

@@ -15,6 +15,28 @@ on:
     branches: [main]
 
 jobs:
+  quality:
+    name: Quality Gates (lint, coverage, CRAP)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint (strict, scoped to src/)
+        run: npm run lint
+
+      - name: Run coverage gate and CRAP complexity gate
+        run: npm run crap
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -60,7 +82,7 @@ jobs:
         run: npm run package
 
   release:
-    needs: [test]
+    needs: [test, quality]
     runs-on: ubuntu-latest
     permissions:
       contents: write

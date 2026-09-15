@@ -1,7 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import * as cp from 'node:child_process';
 import type * as vscode from 'vscode';
 import { getAllChatLanguageModelsPaths, getChatLanguageModelsPath } from './syncer.js';
 
@@ -17,7 +16,7 @@ export function getStoredOpenCodeKey(customPath?: string): string | null {
       if (fs.existsSync(customPath)) {
         const raw = fs.readFileSync(customPath, 'utf-8');
         const data = JSON.parse(raw);
-        const key = data['opencode-go']?.key || data['opencode']?.key;
+        const key = data['opencode-go']?.key || data.opencode?.key;
         if (typeof key === 'string' && key.trim().length > 0) {
           return key.trim();
         }
@@ -113,7 +112,7 @@ export function getStoredOpenCodeKey(customPath?: string): string | null {
       if (fs.existsSync(authPath)) {
         const raw = fs.readFileSync(authPath, 'utf-8');
         const data = JSON.parse(raw);
-        const key = data['opencode-go']?.key || data['opencode']?.key;
+        const key = data['opencode-go']?.key || data.opencode?.key;
         if (typeof key === 'string' && key.trim().length > 0) {
           return key.trim();
         }
@@ -178,7 +177,7 @@ export function getKeyFromExistingConfig(customPath?: string): string | null {
 
 export async function resolveApiKey(
   secrets: vscode.SecretStorage,
-  promptIfMissing: boolean = true,
+  promptIfMissing = true,
   vscodeWindow?: typeof vscode.window
 ): Promise<string | undefined> {
   const stored = await secrets.get(SECRET_KEY);

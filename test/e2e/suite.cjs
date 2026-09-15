@@ -1,6 +1,27 @@
 const vscode = require('vscode');
 const assert = require('assert');
 
+// Retries a flaky live-network operation with exponential backoff. Used only for
+// the live OpenCode model calls below (real network + real, sometimes non-deterministic,
+// model output), where a transient blip, rate-limit, or provider hiccup shouldn't fail
+// the whole in-editor E2E run.
+async function withRetry(fn, { attempts = 3, delayMs = 1500, label = 'operation' } = {}) {
+  let lastErr;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < attempts) {
+        console.warn(`[E2E] >>> ${label} failed on attempt ${attempt}/${attempts}: ${err.message}. Retrying in ${delayMs}ms...`);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        delayMs *= 2;
+      }
+    }
+  }
+  throw new Error(`${label} failed after ${attempts} attempts: ${lastErr.message}`);
+}
+
 exports.run = async function () {
   console.log('\n=============================================');
   console.log('>>> [E2E] Running inside real VS Code host!');
@@ -102,17 +123,22 @@ exports.run = async function () {
     console.log(`[E2E] >>> [CHAT MODE] Testing Chat Mode with ${chatModel.name} (${chatModel.id})...`);
     const chatPrompt = 'Hello! What is 2 + 2? Please reply with only the number.';
     console.log(`[E2E] >>> [CHAT MODE] Prompt: "${chatPrompt}"`);
-    const chatResp = await chatModel.sendRequest(
-      [vscode.LanguageModelChatMessage.User(chatPrompt)],
-      {},
-      new vscode.CancellationTokenSource().token
+    await withRetry(
+      async () => {
+        const chatResp = await chatModel.sendRequest(
+          [vscode.LanguageModelChatMessage.User(chatPrompt)],
+          {},
+          new vscode.CancellationTokenSource().token
+        );
+        let chatStreamed = '';
+        for await (const chunk of chatResp.text) {
+          chatStreamed += chunk;
+        }
+        console.log(`[E2E] >>> [CHAT MODE] ${chatModel.name} streamed response: "${chatStreamed.trim()}"`);
+        assert.ok(chatStreamed.includes('4'), `Chat response must contain 4, got: "${chatStreamed}"`);
+      },
+      { label: `Chat Mode (${chatModel.id})` }
     );
-    let chatStreamed = '';
-    for await (const chunk of chatResp.text) {
-      chatStreamed += chunk;
-    }
-    console.log(`[E2E] >>> [CHAT MODE] ${chatModel.name} streamed response: "${chatStreamed.trim()}"`);
-    assert.ok(chatStreamed.includes('4'), `Chat response must contain 4, got: "${chatStreamed}"`);
     console.log('[E2E] >>> [CHAT MODE] PASSED! Model answered correctly in Chat Mode.');
 
     // =========================================================
@@ -121,23 +147,28 @@ exports.run = async function () {
     if (api && api.chatProvider) {
       console.log(`\n=============================================`);
       console.log(`[E2E] >>> [THINKING VERIFICATION] Testing thinking stream with Kimi K3...`);
-      const thinkParts = [];
-      const thinkProgress = { report: (p) => thinkParts.push(p) };
       const thinkMeta = { id: 'kimi-k3', name: 'Kimi K3 (OpenCode Go)', family: 'kimi-k3', thinking: true };
-      await api.chatProvider.provideLanguageModelChatResponse(
-        thinkMeta,
-        [{ role: vscode.LanguageModelChatMessageRole.User, content: [new vscode.LanguageModelTextPart('Solve step-by-step: what is 13 * 17?')] }],
-        {},
-        thinkProgress,
-        new vscode.CancellationTokenSource().token
+      await withRetry(
+        async () => {
+          const thinkParts = [];
+          const thinkProgress = { report: (p) => thinkParts.push(p) };
+          await api.chatProvider.provideLanguageModelChatResponse(
+            thinkMeta,
+            [{ role: vscode.LanguageModelChatMessageRole.User, content: [new vscode.LanguageModelTextPart('Solve step-by-step: what is 13 * 17?')] }],
+            {},
+            thinkProgress,
+            new vscode.CancellationTokenSource().token
+          );
+          console.log(`[E2E] >>> Total parts emitted: ${thinkParts.length}`);
+          for (const tp of thinkParts.slice(0, 10)) {
+            console.log(`[E2E] Part: constructor=${tp.constructor?.name}, keys=${Object.keys(tp)}, val=${JSON.stringify(tp.value || tp)}`);
+          }
+          const thinkingEmitted = thinkParts.filter(p => p.constructor?.name?.includes('Thinking') || p.$mid === 22 || p.id?.startsWith('thinking'));
+          console.log(`[E2E] >>> Thinking parts emitted: ${thinkingEmitted.length}`);
+          assert.ok(thinkingEmitted.length > 0, 'Must emit LanguageModelThinkingPart during reasoning');
+        },
+        { label: 'Thinking Verification (Kimi K3)' }
       );
-      console.log(`[E2E] >>> Total parts emitted: ${thinkParts.length}`);
-      for (const tp of thinkParts.slice(0, 10)) {
-        console.log(`[E2E] Part: constructor=${tp.constructor?.name}, keys=${Object.keys(tp)}, val=${JSON.stringify(tp.value || tp)}`);
-      }
-      const thinkingEmitted = thinkParts.filter(p => p.constructor?.name?.includes('Thinking') || p.$mid === 22 || p.id?.startsWith('thinking'));
-      console.log(`[E2E] >>> Thinking parts emitted: ${thinkingEmitted.length}`);
-      assert.ok(thinkingEmitted.length > 0, 'Must emit LanguageModelThinkingPart during reasoning');
       console.log('[E2E] >>> [THINKING VERIFICATION] PASSED! LanguageModelThinkingPart verified in live stream.');
     }
 
@@ -170,8 +201,6 @@ exports.run = async function () {
       }
       assert.strictEqual(dummyTools.length, 131, 'Must have 131 tools to verify beyond Copilot 128-tool limit');
 
-      const agentPartsTurn1 = [];
-      const progressTurn1 = { report: (part) => agentPartsTurn1.push(part) };
       const userAgentMsg = {
         role: vscode.LanguageModelChatMessageRole.User,
         content: [new vscode.LanguageModelTextPart('What is 47 * 89? Please use the calculator tool to compute this.')]
@@ -179,26 +208,34 @@ exports.run = async function () {
 
       const agentMeta = { id: 'kimi-k3', name: 'Kimi K3 (OpenCode Go)', family: 'kimi-k3' };
       console.log(`[E2E] >>> [AGENT MODE] Turn 1: Sending prompt with 131 tools attached...`);
-      await api.chatProvider.provideLanguageModelChatResponse(
-        agentMeta,
-        [userAgentMsg],
-        { tools: dummyTools },
-        progressTurn1,
-        new vscode.CancellationTokenSource().token
+      const { toolCallPart } = await withRetry(
+        async () => {
+          const agentPartsTurn1 = [];
+          const progressTurn1 = { report: (part) => agentPartsTurn1.push(part) };
+          await api.chatProvider.provideLanguageModelChatResponse(
+            agentMeta,
+            [userAgentMsg],
+            { tools: dummyTools },
+            progressTurn1,
+            new vscode.CancellationTokenSource().token
+          );
+
+          let toolCall = null;
+          let text = '';
+          for (const part of agentPartsTurn1) {
+            if (part instanceof vscode.LanguageModelToolCallPart) {
+              toolCall = part;
+            } else if (part instanceof vscode.LanguageModelTextPart) {
+              text += part.value;
+            }
+          }
+
+          console.log(`[E2E] >>> [AGENT MODE] Turn 1 response: text="${text.trim()}", toolCall=${toolCall ? `${toolCall.name}(${JSON.stringify(toolCall.input)})` : 'none'}`);
+          assert.ok(toolCall || text.includes('4183'), 'Model must either call tool or compute answer without 128-tool failure');
+          return { toolCallPart: toolCall };
+        },
+        { label: 'Agent Mode Turn 1 (tool call)' }
       );
-
-      let toolCallPart = null;
-      let textTurn1 = '';
-      for (const part of agentPartsTurn1) {
-        if (part instanceof vscode.LanguageModelToolCallPart) {
-          toolCallPart = part;
-        } else if (part instanceof vscode.LanguageModelTextPart) {
-          textTurn1 += part.value;
-        }
-      }
-
-      console.log(`[E2E] >>> [AGENT MODE] Turn 1 response: text="${textTurn1.trim()}", toolCall=${toolCallPart ? `${toolCallPart.name}(${JSON.stringify(toolCallPart.input)})` : 'none'}`);
-      assert.ok(toolCallPart || textTurn1.includes('4183'), 'Model must either call tool or compute answer without 128-tool failure');
 
       if (toolCallPart) {
         console.log(`[E2E] >>> [AGENT MODE] Tool call received: ${toolCallPart.name} with callId ${toolCallPart.callId}`);
@@ -216,25 +253,30 @@ exports.run = async function () {
           content: [new vscode.LanguageModelToolResultPart(toolCallPart.callId, toolResultContent)]
         };
 
-        const agentPartsTurn2 = [];
-        const progressTurn2 = { report: (part) => agentPartsTurn2.push(part) };
         console.log(`[E2E] >>> [AGENT MODE] Turn 2: Sending tool result back to model...`);
-        await api.chatProvider.provideLanguageModelChatResponse(
-          agentMeta,
-          [userAgentMsg, assistantMsg, toolResultMsg],
-          { tools: dummyTools },
-          progressTurn2,
-          new vscode.CancellationTokenSource().token
-        );
+        await withRetry(
+          async () => {
+            const agentPartsTurn2 = [];
+            const progressTurn2 = { report: (part) => agentPartsTurn2.push(part) };
+            await api.chatProvider.provideLanguageModelChatResponse(
+              agentMeta,
+              [userAgentMsg, assistantMsg, toolResultMsg],
+              { tools: dummyTools },
+              progressTurn2,
+              new vscode.CancellationTokenSource().token
+            );
 
-        let textTurn2 = '';
-        for (const part of agentPartsTurn2) {
-          if (part instanceof vscode.LanguageModelTextPart) {
-            textTurn2 += part.value;
-          }
-        }
-        console.log(`[E2E] >>> [AGENT MODE] Turn 2 final response: "${textTurn2.trim()}"`);
-        assert.ok(textTurn2.includes('4183') || textTurn2.includes('4,183'), `Final response must contain 4183, got: "${textTurn2}"`);
+            let textTurn2 = '';
+            for (const part of agentPartsTurn2) {
+              if (part instanceof vscode.LanguageModelTextPart) {
+                textTurn2 += part.value;
+              }
+            }
+            console.log(`[E2E] >>> [AGENT MODE] Turn 2 final response: "${textTurn2.trim()}"`);
+            assert.ok(textTurn2.includes('4183') || textTurn2.includes('4,183'), `Final response must contain 4183, got: "${textTurn2}"`);
+          },
+          { label: 'Agent Mode Turn 2 (final answer)' }
+        );
         console.log('[E2E] >>> [AGENT MODE] PASSED! Model completed full multi-turn Agent workflow with 131 tools.');
       }
       // =========================================================
@@ -243,38 +285,43 @@ exports.run = async function () {
       console.log(`\n=============================================`);
       console.log(`[E2E] >>> [RESPONSES API] Testing Muse Spark 1.3 via /responses transport...`);
       const museMeta = { id: 'muse-spark-1.3-contributor-free', name: 'Muse Spark 1.3 Contributor (OpenCode Free)', family: 'muse-spark-1.3-contributor-free' };
-      const museParts = [];
-      const museProgress = { report: (p) => museParts.push(p) };
-      
-      await api.chatProvider.provideLanguageModelChatResponse(
-        museMeta,
-        [{ role: vscode.LanguageModelChatMessageRole.User, content: [new vscode.LanguageModelTextPart('What is 3 + 5? Answer with only the number.')] }],
-        {
-          modelConfiguration: { reasoningEffort: 'high' },
-          tools: [{
-            name: 'calculator',
-            description: 'Evaluate mathematical expressions',
-            inputSchema: { type: 'object', properties: { expr: { type: 'string' } } }
-          }]
-        },
-        museProgress,
-        new vscode.CancellationTokenSource().token
-      );
+      await withRetry(
+        async () => {
+          const museParts = [];
+          const museProgress = { report: (p) => museParts.push(p) };
 
-      let museText = '';
-      let museToolCall = null;
-      let museThinkingParts = 0;
-      for (const p of museParts) {
-        if (p instanceof vscode.LanguageModelTextPart) {
-          museText += p.value;
-        } else if (p instanceof vscode.LanguageModelToolCallPart) {
-          museToolCall = p;
-        } else if (p.constructor?.name?.includes('Thinking') || p.$mid === 22 || p.id?.startsWith('thinking')) {
-          museThinkingParts++;
-        }
-      }
-      console.log(`[E2E] >>> Muse Spark 1.3 response: text="${museText.trim()}", toolCall=${museToolCall?.name || 'none'}, thinkingParts=${museThinkingParts}`);
-      assert.ok(museText.length > 0 || museToolCall !== null, 'Muse Spark must stream either text or a tool call without invalid_request_error');
+          await api.chatProvider.provideLanguageModelChatResponse(
+            museMeta,
+            [{ role: vscode.LanguageModelChatMessageRole.User, content: [new vscode.LanguageModelTextPart('What is 3 + 5? Answer with only the number.')] }],
+            {
+              modelConfiguration: { reasoningEffort: 'high' },
+              tools: [{
+                name: 'calculator',
+                description: 'Evaluate mathematical expressions',
+                inputSchema: { type: 'object', properties: { expr: { type: 'string' } } }
+              }]
+            },
+            museProgress,
+            new vscode.CancellationTokenSource().token
+          );
+
+          let museText = '';
+          let museToolCall = null;
+          let museThinkingParts = 0;
+          for (const p of museParts) {
+            if (p instanceof vscode.LanguageModelTextPart) {
+              museText += p.value;
+            } else if (p instanceof vscode.LanguageModelToolCallPart) {
+              museToolCall = p;
+            } else if (p.constructor?.name?.includes('Thinking') || p.$mid === 22 || p.id?.startsWith('thinking')) {
+              museThinkingParts++;
+            }
+          }
+          console.log(`[E2E] >>> Muse Spark 1.3 response: text="${museText.trim()}", toolCall=${museToolCall?.name || 'none'}, thinkingParts=${museThinkingParts}`);
+          assert.ok(museText.length > 0 || museToolCall !== null, 'Muse Spark must stream either text or a tool call without invalid_request_error');
+        },
+        { label: 'Responses API (Muse Spark 1.3)' }
+      );
       console.log('[E2E] >>> [RESPONSES API] PASSED! Muse Spark completed live completion via /responses with tools and thinking configured.');
     }
   } else {

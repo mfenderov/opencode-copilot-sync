@@ -22,7 +22,7 @@ export async function fetchOpenCodeModels(
     throw new Error(`Failed to fetch models (${res.status} ${res.statusText}): ${errorText}`);
   }
 
-  const json = (await res.json()) as { data?: Array<{ id: string }> };
+  const json = (await res.json()) as { data?: { id: string }[] };
   if (!json.data || !Array.isArray(json.data)) {
     throw new Error('Invalid response structure: expected data array');
   }
@@ -44,7 +44,7 @@ export async function fetchModelsDevMetadata(): Promise<Record<string, any>> {
       const result: Record<string, any> = {};
 
       // 1. Gather all models across all providers as fallback
-      for (const [providerKey, providerData] of Object.entries(data)) {
+      for (const providerData of Object.values(data)) {
         if ((providerData as any)?.models) {
           for (const [mId, mData] of Object.entries((providerData as any).models)) {
             if (!result[mId]) {
@@ -55,8 +55,8 @@ export async function fetchModelsDevMetadata(): Promise<Record<string, any>> {
       }
 
       // 2. OpenCode provider is authoritative - overlay OpenCode-specific definitions
-      if (data['opencode']?.models) {
-        for (const [mId, mData] of Object.entries(data['opencode'].models)) {
+      if (data.opencode?.models) {
+        for (const [mId, mData] of Object.entries(data.opencode.models)) {
           result[mId] = mData;
         }
       }

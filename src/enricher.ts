@@ -26,7 +26,7 @@ export interface CustomEndpointModel {
   };
 }
 
-export function formatModelName(id: string, suffix: string = '(OpenCode)'): string {
+export function formatModelName(id: string, suffix = '(OpenCode)'): string {
   // Normalize version patterns like "-4-6", "-1-3", "-2-7" to "-4.6"
   const normalized = id.replace(/-(\d+)-(\d+)(?=-|$)/g, '-$1.$2');
   const parts = normalized.split(/[-_]/);

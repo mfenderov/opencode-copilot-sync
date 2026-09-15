@@ -416,7 +416,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
       }
     }
 
-    let responsesInput: any[] = [];
+    const responsesInput: any[] = [];
     if (isResponses) {
       for (const msg of formattedMessages) {
         if (msg.role === 'user') {
@@ -447,10 +447,10 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     }
 
     const abortController = new AbortController();
-    const cancelListener = token.onCancellationRequested(() => abortController.abort());
+    const cancelListener = token.onCancellationRequested(() => { abortController.abort(); });
 
     try {
-      return await this.streamResponse(
+      await this.streamResponse(
         model,
         options,
         progress,
@@ -463,7 +463,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         toolsPayload,
         responsesInput,
         apiKey
-      );
+      ); return;
     } finally {
       cancelListener.dispose();
     }
@@ -614,14 +614,12 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     // Track in-progress tool calls and reasoning stream
     const pendingToolCalls = new Map<number, { id: string; name: string; args: string }>();
     const thinkingId = `thinking-${Date.now()}`;
-    let didEmitThinking = false;
     const thinkParser = new ThinkTagStreamParser();
     let hasStreamError = false;
     let lastReadAt = Date.now();
 
     const emitThinking = (thinking: string) => {
       if (!thinking) return;
-      didEmitThinking = true;
       const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
       if (ThinkingPart) {
         progress.report(new ThinkingPart(thinking, thinkingId));
@@ -638,7 +636,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         let idleTimer: ReturnType<typeof setTimeout> | undefined;
         const idleTimeout = new Promise<never>((_, reject) => {
           idleTimer = setTimeout(
-            () => reject(new Error(`Stream idle for over ${Math.round(STREAM_IDLE_TIMEOUT_MS / 1000)}s; no data received from OpenCode upstream.`)),
+            () => { reject(new Error(`Stream idle for over ${Math.round(STREAM_IDLE_TIMEOUT_MS / 1000)}s; no data received from OpenCode upstream.`)); },
             Math.max(0, idleMs)
           );
         });
@@ -686,7 +684,6 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
               if (data.type === 'response.reasoning_text.delta') {
                 const delta = typeof data.delta === 'string' ? data.delta : data.delta?.text || data.delta?.value || '';
                 if (delta && delta.length > 0) {
-                  didEmitThinking = true;
                   const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
                   if (ThinkingPart) {
                     progress.report(new ThinkingPart(delta, thinkingId));

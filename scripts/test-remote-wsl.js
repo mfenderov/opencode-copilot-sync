@@ -11,6 +11,29 @@ console.log("=============================================\n");
 const isLinux = process.platform === "linux";
 const forceOffline = process.argv.includes("--offline") || process.env.OPENCODE_OFFLINE === "1";
 
+// Retries a flaky live-network operation with exponential backoff. Used only for
+// the live OpenCode API calls at the end of this script (real network + real model
+// output), where a transient blip, rate-limit, or non-deterministic model reply
+// shouldn't fail the whole E2E run.
+async function withRetry(fn, { attempts = 3, delayMs = 1500, label = "operation" } = {}) {
+  let lastErr;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < attempts) {
+        console.warn(
+          "[Remote-WSL E2E] >>> " + label + " failed on attempt " + attempt + "/" + attempts + ": " + err.message + ". Retrying in " + delayMs + "ms..."
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        delayMs *= 2;
+      }
+    }
+  }
+  throw new Error(label + " failed after " + attempts + " attempts: " + lastErr.message);
+}
+
 if (isLinux) {
   // Running directly inside Linux / WSL / CI
   process.env.WSL_DISTRO_NAME = process.env.WSL_DISTRO_NAME || 'Ubuntu';
@@ -425,26 +448,31 @@ async function runRemoteAssertions({ forceOffline = false } = {}) {
 
   // Live Chat Mode
   console.log("[Remote-WSL E2E] >>> [CHAT MODE] Sending prompt to Kimi K3 from remote backend...");
-  const chatRes = await fetch("https://opencode.ai/zen/go/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: authHeader,
-      "Content-Type": "application/json",
-      "User-Agent": "opencode/1.18.30",
-      "x-opencode-session": "vscode-copilot",
+  await withRetry(
+    async () => {
+      const chatRes = await fetch("https://opencode.ai/zen/go/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: authHeader,
+          "Content-Type": "application/json",
+          "User-Agent": "opencode/1.18.30",
+          "x-opencode-session": "vscode-copilot",
+        },
+        body: JSON.stringify({
+          model: "kimi-k3",
+          messages: [{ role: "user", content: "What is 15 + 25? Answer with only the number." }],
+          stream: false,
+        }),
+      });
+      const chatData = await chatRes.json();
+      const chatContent = chatData.choices?.[0]?.message?.content?.trim() || chatData.choices?.[0]?.message?.reasoning_content?.trim();
+      console.log("[Remote-WSL E2E] >>> [CHAT MODE] Received: \"" + chatContent + "\"");
+      if (!chatContent || !chatContent.includes("40")) {
+        throw new Error("Chat Mode failed to return 40, got: " + chatContent);
+      }
     },
-    body: JSON.stringify({
-      model: "kimi-k3",
-      messages: [{ role: "user", content: "What is 15 + 25? Answer with only the number." }],
-      stream: false,
-    }),
-  });
-  const chatData = await chatRes.json();
-  const chatContent = chatData.choices?.[0]?.message?.content?.trim() || chatData.choices?.[0]?.message?.reasoning_content?.trim();
-  console.log("[Remote-WSL E2E] >>> [CHAT MODE] Received: \"" + chatContent + "\"");
-  if (!chatContent || !chatContent.includes("40")) {
-    throw new Error("Chat Mode failed to return 40, got: " + chatContent);
-  }
+    { label: "Chat Mode (Kimi K3)" }
+  );
 
   // Live Agent Mode with 131 tools (>128 tool boundary)
   console.log("[Remote-WSL E2E] >>> [AGENT MODE] Sending prompt with 131 tools from remote backend...");
@@ -472,80 +500,96 @@ async function runRemoteAssertions({ forceOffline = false } = {}) {
     });
   }
 
-  const agentRes1 = await fetch("https://opencode.ai/zen/go/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: authHeader,
-      "Content-Type": "application/json",
-      "User-Agent": "opencode/1.18.30",
-      "x-opencode-session": "vscode-copilot",
+  const toolCall = await withRetry(
+    async () => {
+      const agentRes1 = await fetch("https://opencode.ai/zen/go/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: authHeader,
+          "Content-Type": "application/json",
+          "User-Agent": "opencode/1.18.30",
+          "x-opencode-session": "vscode-copilot",
+        },
+        body: JSON.stringify({
+          model: "kimi-k3",
+          messages: [{ role: "user", content: "Calculate 33 * 33 using calculator tool." }],
+          tools: dummyTools,
+          stream: false,
+        }),
+      });
+      const agentData1 = await agentRes1.json();
+      const call = agentData1.choices?.[0]?.message?.tool_calls?.[0];
+      console.log(
+        "[Remote-WSL E2E] >>> [AGENT MODE] Turn 1 Tool Call: " + (call ? call.function.name + "(" + call.function.arguments + ")" : "none")
+      );
+      if (!call) {
+        throw new Error("Agent Mode failed to generate tool call");
+      }
+      return call;
     },
-    body: JSON.stringify({
-      model: "kimi-k3",
-      messages: [{ role: "user", content: "Calculate 33 * 33 using calculator tool." }],
-      tools: dummyTools,
-      stream: false,
-    }),
-  });
-  const agentData1 = await agentRes1.json();
-  const toolCall = agentData1.choices?.[0]?.message?.tool_calls?.[0];
-  console.log(
-    "[Remote-WSL E2E] >>> [AGENT MODE] Turn 1 Tool Call: " + (toolCall ? toolCall.function.name + "(" + toolCall.function.arguments + ")" : "none")
+    { label: "Agent Mode Turn 1 (tool call)" }
   );
-  if (!toolCall) {
-    throw new Error("Agent Mode failed to generate tool call");
-  }
 
   // Turn 2: Deliver tool result (33 * 33 = 1089)
-  const agentRes2 = await fetch("https://opencode.ai/zen/go/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: authHeader,
-      "Content-Type": "application/json",
-      "User-Agent": "opencode/1.18.30",
-      "x-opencode-session": "vscode-copilot",
+  await withRetry(
+    async () => {
+      const agentRes2 = await fetch("https://opencode.ai/zen/go/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: authHeader,
+          "Content-Type": "application/json",
+          "User-Agent": "opencode/1.18.30",
+          "x-opencode-session": "vscode-copilot",
+        },
+        body: JSON.stringify({
+          model: "kimi-k3",
+          messages: [
+            { role: "user", content: "Calculate 33 * 33 using calculator tool." },
+            { role: "assistant", tool_calls: [toolCall] },
+            { role: "tool", tool_call_id: toolCall.id, content: "1089" },
+          ],
+          tools: dummyTools,
+          stream: false,
+        }),
+      });
+      const agentData2 = await agentRes2.json();
+      const finalAnswer = agentData2.choices?.[0]?.message?.content?.trim();
+      console.log("[Remote-WSL E2E] >>> [AGENT MODE] Turn 2 Final Answer: \"" + finalAnswer + "\"");
+      if (!finalAnswer || !finalAnswer.includes("1089")) {
+        throw new Error("Agent Mode failed to return 1089, got: " + finalAnswer);
+      }
     },
-    body: JSON.stringify({
-      model: "kimi-k3",
-      messages: [
-        { role: "user", content: "Calculate 33 * 33 using calculator tool." },
-        { role: "assistant", tool_calls: [toolCall] },
-        { role: "tool", tool_call_id: toolCall.id, content: "1089" },
-      ],
-      tools: dummyTools,
-      stream: false,
-    }),
-  });
-  const agentData2 = await agentRes2.json();
-  const finalAnswer = agentData2.choices?.[0]?.message?.content?.trim();
-  console.log("[Remote-WSL E2E] >>> [AGENT MODE] Turn 2 Final Answer: \"" + finalAnswer + "\"");
-  if (!finalAnswer || !finalAnswer.includes("1089")) {
-    throw new Error("Agent Mode failed to return 1089, got: " + finalAnswer);
-  }
+    { label: "Agent Mode Turn 2 (final answer)" }
+  );
 
   // Live Responses API transport from remote backend (Muse Spark 1.3 Contributor Free)
   console.log("[Remote-WSL E2E] >>> [RESPONSES API] Sending prompt to Muse Spark 1.3 on /responses...");
-  const museRes = await fetch("https://opencode.ai/zen/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: authHeader,
-      "Content-Type": "application/json",
-      "User-Agent": "opencode/1.18.30",
-      "x-opencode-session": "vscode-copilot",
+  await withRetry(
+    async () => {
+      const museRes = await fetch("https://opencode.ai/zen/v1/responses", {
+        method: "POST",
+        headers: {
+          Authorization: authHeader,
+          "Content-Type": "application/json",
+          "User-Agent": "opencode/1.18.30",
+          "x-opencode-session": "vscode-copilot",
+        },
+        body: JSON.stringify({
+          model: "muse-spark-1.3-contributor-free",
+          input: [{ role: "user", content: "What is 5 + 7? Give only the number." }],
+          stream: false,
+        }),
+      });
+      const museData = await museRes.json();
+      const museItem = museData.output?.find((i) => i.type === "message");
+      const museText = museItem?.content?.[0]?.text?.trim();
+      console.log("[Remote-WSL E2E] >>> [RESPONSES API] Received: \"" + museText + "\"");
+      if (!museText || !museText.includes("12")) {
+        throw new Error("Responses API failed to return 12, got: " + museText);
+      }
     },
-    body: JSON.stringify({
-      model: "muse-spark-1.3-contributor-free",
-      input: [{ role: "user", content: "What is 5 + 7? Give only the number." }],
-      stream: false,
-    }),
-  });
-  const museData = await museRes.json();
-  const museItem = museData.output?.find((i) => i.type === "message");
-  const museText = museItem?.content?.[0]?.text?.trim();
-  console.log("[Remote-WSL E2E] >>> [RESPONSES API] Received: \"" + museText + "\"");
-  if (!museText || !museText.includes("12")) {
-    throw new Error("Responses API failed to return 12, got: " + museText);
-  }
+    { label: "Responses API (Muse Spark 1.3)" }
+  );
 
   console.log("\n=============================================");
   console.log(">>> [Remote-WSL E2E] All Remote Backend Assertions (Offline + Live) PASSED!");

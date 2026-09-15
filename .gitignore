@@ -6,3 +6,4 @@ out/
 .vscode-test/
 .test-user-data/
 .test-extensions/
+coverage/

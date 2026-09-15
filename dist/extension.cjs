@@ -27815,7 +27815,7 @@ async function fetchModelsDevMetadata() {
       if (!res.ok) continue;
       const data = await res.json();
       const result = {};
-      for (const [providerKey, providerData] of Object.entries(data)) {
+      for (const providerData of Object.values(data)) {
         if (providerData?.models) {
           for (const [mId, mData] of Object.entries(providerData.models)) {
             if (!result[mId]) {
@@ -27824,8 +27824,8 @@ async function fetchModelsDevMetadata() {
           }
         }
       }
-      if (data["opencode"]?.models) {
-        for (const [mId, mData] of Object.entries(data["opencode"].models)) {
+      if (data.opencode?.models) {
+        for (const [mId, mData] of Object.entries(data.opencode.models)) {
           result[mId] = mData;
         }
       }
@@ -28424,7 +28424,7 @@ function getStoredOpenCodeKey(customPath) {
       if (fs2.existsSync(customPath)) {
         const raw = fs2.readFileSync(customPath, "utf-8");
         const data = JSON.parse(raw);
-        const key = data["opencode-go"]?.key || data["opencode"]?.key;
+        const key = data["opencode-go"]?.key || data.opencode?.key;
         if (typeof key === "string" && key.trim().length > 0) {
           return key.trim();
         }
@@ -28512,7 +28512,7 @@ function getStoredOpenCodeKey(customPath) {
       if (fs2.existsSync(authPath)) {
         const raw = fs2.readFileSync(authPath, "utf-8");
         const data = JSON.parse(raw);
-        const key = data["opencode-go"]?.key || data["opencode"]?.key;
+        const key = data["opencode-go"]?.key || data.opencode?.key;
         if (typeof key === "string" && key.trim().length > 0) {
           return key.trim();
         }
@@ -28626,7 +28626,7 @@ async function promptAndSetApiKey(secrets, vscodeWindow) {
 // src/usage.ts
 var OPENCODE_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
 async function fetchOpenCodeUsage(apiKey, fetchFn = fetch) {
-  if (!apiKey || !apiKey.trim()) {
+  if (!apiKey?.trim()) {
     return { ok: false, reason: "no-key" };
   }
   try {
@@ -28996,7 +28996,7 @@ var OpenCodeChatProvider = class {
         }));
       }
     }
-    let responsesInput = [];
+    const responsesInput = [];
     if (isResponses) {
       for (const msg of formattedMessages) {
         if (msg.role === "user") {
@@ -29026,9 +29026,11 @@ var OpenCodeChatProvider = class {
       }
     }
     const abortController = new AbortController();
-    const cancelListener = token.onCancellationRequested(() => abortController.abort());
+    const cancelListener = token.onCancellationRequested(() => {
+      abortController.abort();
+    });
     try {
-      return await this.streamResponse(
+      await this.streamResponse(
         model,
         options,
         progress,
@@ -29042,6 +29044,7 @@ var OpenCodeChatProvider = class {
         responsesInput,
         apiKey
       );
+      return;
     } finally {
       cancelListener.dispose();
     }
@@ -29141,13 +29144,11 @@ var OpenCodeChatProvider = class {
     let buffer = "";
     const pendingToolCalls = /* @__PURE__ */ new Map();
     const thinkingId = `thinking-${Date.now()}`;
-    let didEmitThinking = false;
     const thinkParser = new ThinkTagStreamParser();
     let hasStreamError = false;
     let lastReadAt = Date.now();
     const emitThinking = (thinking) => {
       if (!thinking) return;
-      didEmitThinking = true;
       const ThinkingPart = vscode.LanguageModelThinkingPart;
       if (ThinkingPart) {
         progress.report(new ThinkingPart(thinking, thinkingId));
@@ -29162,7 +29163,9 @@ var OpenCodeChatProvider = class {
         let idleTimer;
         const idleTimeout = new Promise((_, reject) => {
           idleTimer = setTimeout(
-            () => reject(new Error(`Stream idle for over ${Math.round(STREAM_IDLE_TIMEOUT_MS / 1e3)}s; no data received from OpenCode upstream.`)),
+            () => {
+              reject(new Error(`Stream idle for over ${Math.round(STREAM_IDLE_TIMEOUT_MS / 1e3)}s; no data received from OpenCode upstream.`));
+            },
             Math.max(0, idleMs)
           );
         });
@@ -29202,7 +29205,6 @@ var OpenCodeChatProvider = class {
               if (data.type === "response.reasoning_text.delta") {
                 const delta = typeof data.delta === "string" ? data.delta : data.delta?.text || data.delta?.value || "";
                 if (delta && delta.length > 0) {
-                  didEmitThinking = true;
                   const ThinkingPart = vscode.LanguageModelThinkingPart;
                   if (ThinkingPart) {
                     progress.report(new ThinkingPart(delta, thinkingId));
@@ -29503,13 +29505,15 @@ async function activate(context) {
   const autoSync = config.get("autoSyncOnStartup", true);
   if (autoSync) {
     setTimeout(() => {
-      performSync(false);
+      void performSync(false);
     }, 3e3);
   }
   const usageTimer = setInterval(() => {
-    updateUsageMeter();
+    void updateUsageMeter();
   }, 6e4);
-  context.subscriptions.push({ dispose: () => clearInterval(usageTimer) });
+  context.subscriptions.push({ dispose: () => {
+    clearInterval(usageTimer);
+  } });
   return {
     chatProvider,
     statusBarItem,
