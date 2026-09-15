@@ -468,6 +468,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     const thinkingId = `thinking-${Date.now()}`;
     let didEmitThinking = false;
     let inThinkTag = false;
+    let hasStreamError = false;
 
     try {
       while (true) {
@@ -502,6 +503,18 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
                 const delta = typeof data.delta === 'string' ? data.delta : data.delta?.text || data.delta?.value || '';
                 if (delta) {
                   progress.report(new vscode.LanguageModelTextPart(delta));
+                }
+                continue;
+              }
+
+              if (data.type === 'response.reasoning_text.delta') {
+                const delta = typeof data.delta === 'string' ? data.delta : data.delta?.text || data.delta?.value || '';
+                if (delta && delta.length > 0) {
+                  didEmitThinking = true;
+                  const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
+                  if (ThinkingPart) {
+                    progress.report(new ThinkingPart(delta, thinkingId));
+                  }
                 }
                 continue;
               }
@@ -667,6 +680,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         if (isDone) break;
       }
     } catch (streamErr: any) {
+      hasStreamError = true;
       if (token.isCancellationRequested) {
         return;
       }
@@ -677,8 +691,8 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
       );
       return;
     } finally {
-      // Flush any remaining accumulated tool calls
-      if (pendingToolCalls.size > 0) {
+      // Flush any remaining accumulated tool calls ONLY if stream was NOT interrupted/canceled
+      if (!hasStreamError && !token.isCancellationRequested && !abortController.signal.aborted && pendingToolCalls.size > 0) {
         for (const [, call] of pendingToolCalls) {
           let parsedArgs: any = {};
           try {

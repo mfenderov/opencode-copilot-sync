@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as cp from 'node:child_process';
 import type * as vscode from 'vscode';
-import { getAllChatLanguageModelsPaths } from './syncer.js';
+import { getAllChatLanguageModelsPaths, getChatLanguageModelsPath } from './syncer.js';
 
 export const SECRET_KEY = 'opencode_api_key';
 
@@ -116,7 +116,15 @@ export function getStoredOpenCodeKey(customPath?: string): string | null {
 export function getKeyFromExistingConfig(customPath?: string): string | null {
   const pathsToCheck: string[] = [];
   if (customPath) {
-    pathsToCheck.push(customPath);
+    try {
+      if (fs.existsSync(customPath) && fs.statSync(customPath).isDirectory()) {
+        pathsToCheck.push(getChatLanguageModelsPath(customPath));
+      } else {
+        pathsToCheck.push(customPath);
+      }
+    } catch {
+      pathsToCheck.push(customPath);
+    }
   } else {
     try {
       pathsToCheck.push(...getAllChatLanguageModelsPaths());

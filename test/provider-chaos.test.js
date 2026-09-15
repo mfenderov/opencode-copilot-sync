@@ -453,6 +453,36 @@ test('Provider Chaos [Thinking Streaming]: handles inline <think> tags correctly
   assert.equal(textParts[0].value, 'Theorem is proven.');
 });
 
+test('Provider Chaos [Thinking Streaming on Responses API (Muse)]: emits LanguageModelThinkingPart on response.reasoning_text.delta', async () => {
+  mockServer.clearRequests();
+  mockServer.setScenario({
+    mode: 'thinking',
+    reasoning: 'Muse deep thinking: step 1 theorem proof.',
+    content: 'The proof concludes here.',
+  });
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+  const token = createMockToken();
+
+  await provider.provideLanguageModelChatResponse(
+    MUSE_RESPONSES_MODEL,
+    [createMockMessage('prove theorem')],
+    { modelConfiguration: { reasoningEffort: 'high' } },
+    progress,
+    token
+  );
+
+  const thinkingParts = progress.parts.filter((p) => p instanceof vscode.LanguageModelThinkingPart);
+  const textParts = progress.parts.filter((p) => p instanceof vscode.LanguageModelTextPart);
+
+  assert.ok(thinkingParts.length >= 1, 'Expected at least 1 LanguageModelThinkingPart for Muse');
+  assert.equal(thinkingParts[0].value, 'Muse deep thinking: step 1 theorem proof.');
+  assert.ok(textParts.length >= 1, 'Expected at least 1 LanguageModelTextPart');
+  assert.equal(textParts[0].value, 'The proof concludes here.');
+});
+
 test('Provider Chaos [Thinking Effort: "max" on Responses API (Muse)]: normalizes "max" to "high" to prevent 400', async () => {
   mockServer.clearRequests();
   mockServer.setScenario({ mode: 'standard', content: 'Muse response with high thinking' });

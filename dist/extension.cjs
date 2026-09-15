@@ -969,7 +969,15 @@ function getStoredOpenCodeKey(customPath) {
 function getKeyFromExistingConfig(customPath) {
   const pathsToCheck = [];
   if (customPath) {
-    pathsToCheck.push(customPath);
+    try {
+      if (fs2.existsSync(customPath) && fs2.statSync(customPath).isDirectory()) {
+        pathsToCheck.push(getChatLanguageModelsPath(customPath));
+      } else {
+        pathsToCheck.push(customPath);
+      }
+    } catch {
+      pathsToCheck.push(customPath);
+    }
   } else {
     try {
       pathsToCheck.push(...getAllChatLanguageModelsPaths());
@@ -1481,6 +1489,7 @@ var OpenCodeChatProvider = class {
     const thinkingId = `thinking-${Date.now()}`;
     let didEmitThinking = false;
     let inThinkTag = false;
+    let hasStreamError = false;
     try {
       while (true) {
         if (token.isCancellationRequested) break;
@@ -1508,6 +1517,17 @@ var OpenCodeChatProvider = class {
                 const delta = typeof data.delta === "string" ? data.delta : data.delta?.text || data.delta?.value || "";
                 if (delta) {
                   progress.report(new vscode.LanguageModelTextPart(delta));
+                }
+                continue;
+              }
+              if (data.type === "response.reasoning_text.delta") {
+                const delta = typeof data.delta === "string" ? data.delta : data.delta?.text || data.delta?.value || "";
+                if (delta && delta.length > 0) {
+                  didEmitThinking = true;
+                  const ThinkingPart = vscode.LanguageModelThinkingPart;
+                  if (ThinkingPart) {
+                    progress.report(new ThinkingPart(delta, thinkingId));
+                  }
                 }
                 continue;
               }
@@ -1652,6 +1672,7 @@ var OpenCodeChatProvider = class {
         if (isDone) break;
       }
     } catch (streamErr) {
+      hasStreamError = true;
       if (token.isCancellationRequested) {
         return;
       }
@@ -1664,7 +1685,7 @@ var OpenCodeChatProvider = class {
       );
       return;
     } finally {
-      if (pendingToolCalls.size > 0) {
+      if (!hasStreamError && !token.isCancellationRequested && !abortController.signal.aborted && pendingToolCalls.size > 0) {
         for (const [, call] of pendingToolCalls) {
           let parsedArgs = {};
           try {
