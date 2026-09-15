@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.16.2 - 2026-09-15
+#### Bug Fixes
+- (**robustness**) harden network, provider, sync, and auth across platforms - (3d87e14) - Mark Fenderov
+
+- - -
+
 ## v0.16.1 - 2026-09-15
 #### Tests
 - (**thinking**) add 19-case thinking serialization matrix and E2E verification - (ca33985) - Mark Fenderov
