@@ -308,3 +308,125 @@ test('fetchWithRetry aborts quickly during the backoff wait instead of waiting o
     globalThis.fetch = original;
   }
 });
+
+// ============================================================================
+// fetchWithRetry — patient 429 schedule (independent rate-limit budget)
+// ============================================================================
+
+test('fetchWithRetry gives 429 its own immediate-then-spaced schedule, independent of the 5xx budget', async () => {
+  let calls = 0;
+  const timestamps = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => {
+    timestamps.push(Date.now());
+    calls++;
+    // Fail with 429 for the first 4 attempts, then recover.
+    if (calls <= 4) return new Response('rate limited', { status: 429 });
+    return new Response('ok', { status: 200 });
+  };
+  try {
+    const res = await fetchWithRetry(
+      'https://opencode.ai/zen/v1/models',
+      {},
+      {
+        retries: 0, // the 5xx/network-error budget is irrelevant to this test
+        rateLimitRetries: 4,
+        rateLimitImmediateAttempts: 2,
+        rateLimitDelayMs: 500,
+      }
+    );
+    assert.equal(res.status, 200);
+    assert.equal(calls, 5, 'expected 1 initial attempt + 4 rate-limit retries');
+
+    const gaps = [];
+    for (let i = 1; i < timestamps.length; i++) gaps.push(timestamps[i] - timestamps[i - 1]);
+
+    // The first 2 retries (rateLimitImmediateAttempts) should be near-instant.
+    assert.ok(gaps[0] < 300, `expected immediate retry #1 to be fast, was ${gaps[0]}ms`);
+    assert.ok(gaps[1] < 300, `expected immediate retry #2 to be fast, was ${gaps[1]}ms`);
+    // The remaining retries should honor the full spaced-out delay.
+    assert.ok(gaps[2] >= 450, `expected spaced retry #1 to wait ~500ms, was ${gaps[2]}ms`);
+    assert.ok(gaps[3] >= 450, `expected spaced retry #2 to wait ~500ms, was ${gaps[3]}ms`);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test('fetchWithRetry returns the last 429 response once the rate-limit budget is exhausted, without throwing', async () => {
+  let calls = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => {
+    calls++;
+    return new Response('still rate limited', { status: 429 });
+  };
+  try {
+    const res = await fetchWithRetry(
+      'https://opencode.ai/zen/v1/models',
+      {},
+      { retries: 0, rateLimitRetries: 3, rateLimitImmediateAttempts: 3, rateLimitDelayMs: 10 }
+    );
+    assert.equal(res.status, 429);
+    assert.equal(calls, 4, 'expected 1 initial attempt + 3 rate-limit retries, then give up');
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test('fetchWithRetry caps a large Retry-After value at rateLimitMaxWaitMs', async () => {
+  let calls = 0;
+  const timestamps = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => {
+    timestamps.push(Date.now());
+    calls++;
+    if (calls === 1) {
+      return new Response('rate limited', { status: 429, headers: { 'retry-after': '5' } }); // 5s
+    }
+    return new Response('ok', { status: 200 });
+  };
+  try {
+    const res = await fetchWithRetry(
+      'https://opencode.ai/zen/v1/models',
+      {},
+      { retries: 0, rateLimitRetries: 1, rateLimitMaxWaitMs: 50 }
+    );
+    assert.equal(res.status, 200);
+    assert.equal(calls, 2);
+    const gap = timestamps[1] - timestamps[0];
+    assert.ok(gap < 1000, `expected the 5s Retry-After to be capped to ~50ms, gap was ${gap}ms`);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test('fetchWithRetry tracks 429 and 5xx retries with independent budgets in a mixed sequence', async () => {
+  let calls = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => {
+    calls++;
+    // Two 429s (consumes the rate-limit budget), then one 502 (consumes the
+    // separate 5xx budget), then success. This only succeeds if the two
+    // classes are tracked independently rather than sharing one counter.
+    if (calls <= 2) return new Response('rate limited', { status: 429 });
+    if (calls === 3) return new Response('bad gateway', { status: 502 });
+    return new Response('ok', { status: 200 });
+  };
+  try {
+    const res = await fetchWithRetry(
+      'https://opencode.ai/zen/v1/models',
+      {},
+      {
+        retries: 1,
+        baseDelayMs: 1,
+        maxDelayMs: 5,
+        rateLimitRetries: 2,
+        rateLimitImmediateAttempts: 2,
+        rateLimitDelayMs: 1,
+      }
+    );
+    assert.equal(res.status, 200);
+    assert.equal(calls, 4, 'expected 2 rate-limit retries + 1 server-error retry + the final success');
+  } finally {
+    globalThis.fetch = original;
+  }
+});

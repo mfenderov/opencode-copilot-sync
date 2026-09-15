@@ -115,15 +115,6 @@
     "@typescript-eslint/no-empty-function": {
       "count": 1
     },
-    "@typescript-eslint/no-explicit-any": {
-      "count": 6
-    },
-    "@typescript-eslint/no-unsafe-assignment": {
-      "count": 2
-    },
-    "@typescript-eslint/no-unsafe-member-access": {
-      "count": 5
-    },
     "@typescript-eslint/prefer-nullish-coalescing": {
       "count": 7
     },

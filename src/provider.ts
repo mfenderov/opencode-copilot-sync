@@ -174,10 +174,47 @@ function clampToolName(name: string): string {
   return name.length > 64 ? name.slice(0, 64) : name;
 }
 
+/** Cheap, dependency-free string hash (djb2) used to bucket conversations by their first message. */
+function djb2Hash(str: string): string {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash + str.charCodeAt(i)) | 0; // hash * 33 + c
+  }
+  return (hash >>> 0).toString(36);
+}
+
+/**
+ * Fingerprints a message's role + text content so the same opening message always
+ * produces the same key, without retaining the full message text in memory.
+ */
+function fingerprintMessage(msg: vscode.LanguageModelChatRequestMessage | undefined): string {
+  if (!msg) return 'empty';
+  let text = '';
+  try {
+    for (const part of msg.content) {
+      if (part instanceof vscode.LanguageModelTextPart) {
+        text += part.value;
+      } else if (part && typeof part === 'object') {
+        text += JSON.stringify(part);
+      }
+    }
+  } catch {
+    // Malformed/unexpected content falls back to a role-only fingerprint below.
+  }
+  return `${msg.role}:${djb2Hash(text)}`;
+}
+
 export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChangeLanguageModelChatInformation = this._onDidChange.event;
   private _models: OpenCodeModelMeta[] = [...VERIFIED_OPENCODE_MODELS];
+
+  // Copilot resends full conversation history each turn, so a conversation's first message
+  // stays constant across its turns. We use that as a cheap, heuristic conversation identity
+  // since VS Code's chat provider API exposes no native conversation/session id.
+  private readonly sessionCache = new Map<string, { sessionId: string; lastUsedAt: number }>();
+  private static readonly SESSION_CACHE_MAX_SIZE = 50;
+  private static readonly SESSION_CACHE_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -198,6 +235,47 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
 
   private log(message: string): void {
     this.outputChannel?.appendLine(`[Provider] ${message}`);
+  }
+
+  /**
+   * Returns a stable x-opencode-session id for this conversation, reused across all
+   * turns so OpenCode's routing/prompt caching sees one session instead of a fresh
+   * one per request. Conversations are identified by fingerprinting their first
+   * message (see `fingerprintMessage`), since VS Code's API exposes no session id.
+   */
+  private getConversationSessionId(messages: readonly vscode.LanguageModelChatRequestMessage[]): string {
+    const key = fingerprintMessage(messages[0]);
+    const now = Date.now();
+
+    const cached = this.sessionCache.get(key);
+    if (cached && now - cached.lastUsedAt < OpenCodeChatProvider.SESSION_CACHE_TTL_MS) {
+      cached.lastUsedAt = now;
+      return cached.sessionId;
+    }
+
+    // Drop stale entries, then evict the least-recently-used one if still at capacity.
+    for (const [k, v] of this.sessionCache) {
+      if (now - v.lastUsedAt >= OpenCodeChatProvider.SESSION_CACHE_TTL_MS) {
+        this.sessionCache.delete(k);
+      }
+    }
+    if (this.sessionCache.size >= OpenCodeChatProvider.SESSION_CACHE_MAX_SIZE) {
+      let oldestKey: string | undefined;
+      let oldestAt = Infinity;
+      for (const [k, v] of this.sessionCache) {
+        if (v.lastUsedAt < oldestAt) {
+          oldestAt = v.lastUsedAt;
+          oldestKey = k;
+        }
+      }
+      if (oldestKey !== undefined) {
+        this.sessionCache.delete(oldestKey);
+      }
+    }
+
+    const sessionId = `ses_${now.toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    this.sessionCache.set(key, { sessionId, lastUsedAt: now });
+    return sessionId;
   }
 
   refresh(): void {
@@ -448,6 +526,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
 
     const abortController = new AbortController();
     const cancelListener = token.onCancellationRequested(() => { abortController.abort(); });
+    const sessionId = this.getConversationSessionId(messages);
 
     try {
       await this.streamResponse(
@@ -462,7 +541,8 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         formattedMessages,
         toolsPayload,
         responsesInput,
-        apiKey
+        apiKey,
+        sessionId
       ); return;
     } finally {
       cancelListener.dispose();
@@ -481,7 +561,8 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     formattedMessages: any[],
     toolsPayload: any[] | undefined,
     responsesInput: any[],
-    apiKey: string
+    apiKey: string,
+    sessionId: string
   ): Promise<void> {
     // Free models and Zen-exclusive models route to zen/v1, flat-rate Go models route to zen/go/v1
     const isFreeOrZen =
@@ -521,8 +602,6 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
           ...reasoningPayload,
         };
 
-    const sessionId = `ses_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
-
     this.log(
       `Request: model=${model.id} protocol=${isResponses ? 'responses' : 'chat-completions'} url=${url} reasoningEffort=${reasoningEffort || 'none'} tools=${toolsPayload?.length ?? 0}`
     );
@@ -542,7 +621,22 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
           body: JSON.stringify(requestBody),
           signal: abortController.signal,
         },
-        { retries: 2 }
+        {
+          // 5xx / network errors: treated as a likely-dead upstream, so we
+          // only give it one quick courtesy retry before surfacing the alert.
+          retries: 1,
+          baseDelayMs: 300,
+          maxDelayMs: 1000,
+          // 429: a rate-limit cooldown is a "come back later" signal, not a
+          // dead upstream, so it gets its own much more patient budget — 3
+          // back-to-back attempts, then 7 more spaced 1s apart (10 retries
+          // total), honoring Retry-After up to a 3s cap per wait so a long
+          // server-requested cooldown can't block the user for a full minute.
+          rateLimitRetries: 10,
+          rateLimitImmediateAttempts: 3,
+          rateLimitDelayMs: 1000,
+          rateLimitMaxWaitMs: 3000,
+        }
       );
     } catch (err: any) {
       if (token.isCancellationRequested || abortController.signal.aborted) {

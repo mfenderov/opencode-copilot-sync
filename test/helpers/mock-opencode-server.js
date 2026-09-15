@@ -3,7 +3,8 @@ import http from 'node:http';
 /**
  * @typedef {Object} Scenario
  * @property {'standard' | 'thinking' | 'tool-call' | 'fault' | 'drop' | 'keep-alive'} [mode='standard']
- * @property {number} [status=500] HTTP status for 'fault' mode (500, 502, 503, 401, 404)
+ * @property {number} [status=500] HTTP status for 'fault' mode (429, 500, 502, 503, 401, 404)
+ * @property {string|number} [retryAfter] Value to send as the Retry-After header for 'fault' mode (seconds, or an HTTP-date string)
  * @property {string} [message] Custom error message or text
  * @property {string} [content] Custom response text
  * @property {string} [contentPart1] First delta of response text
@@ -32,6 +33,7 @@ const DEFAULT_SCENARIO = {
 const FAULT_MESSAGES = {
   401: 'OpenCode authentication failed: Invalid or expired API key.',
   404: 'OpenCode model not found in the remote catalog.',
+  429: 'Rate limit exceeded. Please try again later.',
   500: 'Internal Server Error: OpenCode upstream cluster failed.',
   502: 'Bad Gateway: Upstream OpenCode service unreachable.',
   503: 'Service Unavailable: OpenCode is temporarily overloaded.',
@@ -503,19 +505,25 @@ export async function startMockServer(port = 0) {
 
     const mode = activeScenario.mode || 'standard';
 
-    // 1. Fault injection mode (500, 502, 503, 401, 404)
+    // 1. Fault injection mode (429, 500, 502, 503, 401, 404)
     if (mode === 'fault') {
       const status = activeScenario.status || 500;
       const message = activeScenario.message || FAULT_MESSAGES[status] || `OpenCode fault simulation (${status})`;
       const type =
         status === 401 ? 'authentication_error' :
         status === 404 ? 'not_found_error' :
+        status === 429 ? 'rate_limit_error' :
         status >= 500 ? 'server_error' : 'invalid_request_error';
 
-      res.writeHead(status, {
+      const headers = {
         'Content-Type': 'application/json',
         'Cache-Control': 'no-store',
-      });
+      };
+      if (activeScenario.retryAfter != null) {
+        headers['Retry-After'] = String(activeScenario.retryAfter);
+      }
+
+      res.writeHead(status, headers);
       res.end(JSON.stringify({
         error: {
           message,

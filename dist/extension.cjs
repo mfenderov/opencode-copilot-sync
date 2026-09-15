@@ -27737,7 +27737,8 @@ function parseRetryAfter(value) {
   if (!Number.isNaN(dateMs)) return Math.max(0, dateMs - Date.now());
   return null;
 }
-var RETRYABLE_STATUS = /* @__PURE__ */ new Set([429, 502, 503, 504]);
+var RATE_LIMIT_STATUS = 429;
+var OTHER_RETRYABLE_STATUS = /* @__PURE__ */ new Set([502, 503, 504]);
 var RETRYABLE_ERROR_CODES = /* @__PURE__ */ new Set([
   "ECONNRESET",
   "ETIMEDOUT",
@@ -27749,35 +27750,84 @@ var RETRYABLE_ERROR_CODES = /* @__PURE__ */ new Set([
   "UND_ERR_SOCKET"
 ]);
 function isRetryableError(err) {
-  const code = err?.cause?.code || err?.code;
+  const e = err;
+  const code = e?.cause?.code || e?.code;
   return typeof code === "string" && RETRYABLE_ERROR_CODES.has(code);
 }
-async function fetchWithRetry(url, init = {}, opts = {}) {
+function exponentialBackoffMs(attempt, baseDelayMs, maxDelayMs) {
+  return Math.min(maxDelayMs, baseDelayMs * 2 ** attempt) + Math.random() * 100;
+}
+function isRetryableRateLimit(status, rateLimitAttempt, rateLimitRetries) {
+  return status === RATE_LIMIT_STATUS && rateLimitAttempt < rateLimitRetries;
+}
+function isRetryableServerError(status, otherAttempt, retries) {
+  return OTHER_RETRYABLE_STATUS.has(status) && otherAttempt < retries;
+}
+function isRetryableNetworkError(err, otherAttempt, retries, aborted) {
+  return otherAttempt < retries && !aborted && isRetryableError(err);
+}
+function resolveRetryConfig(opts) {
   const retries = opts.retries ?? 2;
-  const baseDelayMs = opts.baseDelayMs ?? 300;
-  const maxDelayMs = opts.maxDelayMs ?? 4e3;
-  let lastErr;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    if (init.signal?.aborted) {
-      throw init.signal.reason ?? new Error("Aborted");
+  return {
+    retries,
+    baseDelayMs: opts.baseDelayMs ?? 300,
+    maxDelayMs: opts.maxDelayMs ?? 4e3,
+    rateLimitRetries: opts.rateLimitRetries ?? retries,
+    rateLimitImmediateAttempts: opts.rateLimitImmediateAttempts ?? 0,
+    rateLimitDelayMs: opts.rateLimitDelayMs,
+    rateLimitMaxWaitMs: opts.rateLimitMaxWaitMs ?? Infinity
+  };
+}
+async function attemptOnce(url, init, signal, rateLimitAttempt, otherAttempt, config) {
+  if (signal?.aborted) {
+    return { kind: "throw", err: signal.reason ?? new Error("Aborted") };
+  }
+  try {
+    const res = await fetch(url, await withProxy(url, init));
+    if (isRetryableRateLimit(res.status, rateLimitAttempt, config.rateLimitRetries)) {
+      const delayMs = computeRateLimitDelay(res, rateLimitAttempt, config);
+      return { kind: "retry", bucket: "rateLimit", delayMs };
     }
-    try {
-      const res = await fetch(url, await withProxy(url, init));
-      if (RETRYABLE_STATUS.has(res.status) && attempt < retries) {
-        const retryAfterMs = parseRetryAfter(res.headers.get("retry-after"));
-        const backoff = Math.min(maxDelayMs, baseDelayMs * 2 ** attempt) + Math.random() * 100;
-        await sleep(retryAfterMs ?? backoff, init.signal);
-        continue;
-      }
-      return res;
-    } catch (err) {
-      lastErr = err;
-      if (attempt < retries && isRetryableError(err) && !init.signal?.aborted) {
-        const backoff = Math.min(maxDelayMs, baseDelayMs * 2 ** attempt) + Math.random() * 100;
-        await sleep(backoff, init.signal);
-        continue;
-      }
-      throw err;
+    if (isRetryableServerError(res.status, otherAttempt, config.retries)) {
+      const delayMs = exponentialBackoffMs(otherAttempt, config.baseDelayMs, config.maxDelayMs);
+      return { kind: "retry", bucket: "other", delayMs };
+    }
+    return { kind: "done", res };
+  } catch (err) {
+    if (isRetryableNetworkError(err, otherAttempt, config.retries, !!signal?.aborted)) {
+      const delayMs = exponentialBackoffMs(otherAttempt, config.baseDelayMs, config.maxDelayMs);
+      return { kind: "retry", bucket: "other", delayMs, err };
+    }
+    return { kind: "throw", err };
+  }
+}
+function computeRateLimitDelay(res, rateLimitAttempt, opts) {
+  const retryAfterMs = parseRetryAfter(res.headers.get("retry-after"));
+  if (retryAfterMs != null) {
+    return Math.min(retryAfterMs, opts.rateLimitMaxWaitMs);
+  }
+  if (opts.rateLimitDelayMs != null) {
+    return rateLimitAttempt < opts.rateLimitImmediateAttempts ? Math.random() * 100 : opts.rateLimitDelayMs + Math.random() * 100;
+  }
+  return exponentialBackoffMs(rateLimitAttempt, opts.baseDelayMs, opts.maxDelayMs);
+}
+async function fetchWithRetry(url, init = {}, opts = {}) {
+  const config = resolveRetryConfig(opts);
+  const maxAttempts = config.retries + config.rateLimitRetries;
+  const signal = init.signal;
+  let lastErr;
+  let rateLimitAttempt = 0;
+  let otherAttempt = 0;
+  for (let attempt = 0; attempt <= maxAttempts; attempt++) {
+    const outcome = await attemptOnce(url, init, signal, rateLimitAttempt, otherAttempt, config);
+    if (outcome.kind === "done") return outcome.res;
+    if (outcome.kind === "throw") throw outcome.err;
+    await sleep(outcome.delayMs, signal);
+    if (outcome.bucket === "rateLimit") {
+      rateLimitAttempt++;
+    } else {
+      otherAttempt++;
+      if (outcome.err !== void 0) lastErr = outcome.err;
     }
   }
   throw lastErr;
@@ -28806,7 +28856,30 @@ var STREAM_IDLE_TIMEOUT_MS = Number(process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS)
 function clampToolName(name) {
   return name.length > 64 ? name.slice(0, 64) : name;
 }
-var OpenCodeChatProvider = class {
+function djb2Hash(str) {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) + hash + str.charCodeAt(i) | 0;
+  }
+  return (hash >>> 0).toString(36);
+}
+function fingerprintMessage(msg) {
+  if (!msg) return "empty";
+  let text = "";
+  try {
+    for (const part of msg.content) {
+      if (part instanceof vscode.LanguageModelTextPart) {
+        text += part.value;
+      } else if (part && typeof part === "object") {
+        text += JSON.stringify(part);
+      }
+    }
+  } catch {
+  }
+  return `${msg.role}:${djb2Hash(text)}`;
+}
+var OpenCodeChatProvider = class _OpenCodeChatProvider {
+  // 4 hours
   constructor(context, outputChannel) {
     this.context = context;
     this.outputChannel = outputChannel;
@@ -28826,8 +28899,50 @@ var OpenCodeChatProvider = class {
   _onDidChange = new vscode.EventEmitter();
   onDidChangeLanguageModelChatInformation = this._onDidChange.event;
   _models = [...VERIFIED_OPENCODE_MODELS];
+  // Copilot resends full conversation history each turn, so a conversation's first message
+  // stays constant across its turns. We use that as a cheap, heuristic conversation identity
+  // since VS Code's chat provider API exposes no native conversation/session id.
+  sessionCache = /* @__PURE__ */ new Map();
+  static SESSION_CACHE_MAX_SIZE = 50;
+  static SESSION_CACHE_TTL_MS = 4 * 60 * 60 * 1e3;
   log(message) {
     this.outputChannel?.appendLine(`[Provider] ${message}`);
+  }
+  /**
+   * Returns a stable x-opencode-session id for this conversation, reused across all
+   * turns so OpenCode's routing/prompt caching sees one session instead of a fresh
+   * one per request. Conversations are identified by fingerprinting their first
+   * message (see `fingerprintMessage`), since VS Code's API exposes no session id.
+   */
+  getConversationSessionId(messages) {
+    const key = fingerprintMessage(messages[0]);
+    const now = Date.now();
+    const cached = this.sessionCache.get(key);
+    if (cached && now - cached.lastUsedAt < _OpenCodeChatProvider.SESSION_CACHE_TTL_MS) {
+      cached.lastUsedAt = now;
+      return cached.sessionId;
+    }
+    for (const [k, v] of this.sessionCache) {
+      if (now - v.lastUsedAt >= _OpenCodeChatProvider.SESSION_CACHE_TTL_MS) {
+        this.sessionCache.delete(k);
+      }
+    }
+    if (this.sessionCache.size >= _OpenCodeChatProvider.SESSION_CACHE_MAX_SIZE) {
+      let oldestKey;
+      let oldestAt = Infinity;
+      for (const [k, v] of this.sessionCache) {
+        if (v.lastUsedAt < oldestAt) {
+          oldestAt = v.lastUsedAt;
+          oldestKey = k;
+        }
+      }
+      if (oldestKey !== void 0) {
+        this.sessionCache.delete(oldestKey);
+      }
+    }
+    const sessionId = `ses_${now.toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    this.sessionCache.set(key, { sessionId, lastUsedAt: now });
+    return sessionId;
   }
   refresh() {
     this._onDidChange.fire();
@@ -29029,6 +29144,7 @@ var OpenCodeChatProvider = class {
     const cancelListener = token.onCancellationRequested(() => {
       abortController.abort();
     });
+    const sessionId = this.getConversationSessionId(messages);
     try {
       await this.streamResponse(
         model,
@@ -29042,14 +29158,15 @@ var OpenCodeChatProvider = class {
         formattedMessages,
         toolsPayload,
         responsesInput,
-        apiKey
+        apiKey,
+        sessionId
       );
       return;
     } finally {
       cancelListener.dispose();
     }
   }
-  async streamResponse(model, options, progress, token, abortController, meta, isResponses, lowerId, formattedMessages, toolsPayload, responsesInput, apiKey) {
+  async streamResponse(model, options, progress, token, abortController, meta, isResponses, lowerId, formattedMessages, toolsPayload, responsesInput, apiKey, sessionId) {
     const isFreeOrZen = meta?.catalog === "zen" || meta?.isFree === true || model.id.includes("free") || model.id.includes("contributor") || model.id.includes("community") || model.id === "big-pickle" || model.isFree === true;
     const baseUrl = isFreeOrZen ? "https://opencode.ai/zen/v1" : "https://opencode.ai/zen/go/v1";
     const url = isResponses ? `${baseUrl}/responses` : `${baseUrl}/chat/completions`;
@@ -29068,7 +29185,6 @@ var OpenCodeChatProvider = class {
       stream: true,
       ...reasoningPayload
     };
-    const sessionId = `ses_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
     this.log(
       `Request: model=${model.id} protocol=${isResponses ? "responses" : "chat-completions"} url=${url} reasoningEffort=${reasoningEffort || "none"} tools=${toolsPayload?.length ?? 0}`
     );
@@ -29087,7 +29203,22 @@ var OpenCodeChatProvider = class {
           body: JSON.stringify(requestBody),
           signal: abortController.signal
         },
-        { retries: 2 }
+        {
+          // 5xx / network errors: treated as a likely-dead upstream, so we
+          // only give it one quick courtesy retry before surfacing the alert.
+          retries: 1,
+          baseDelayMs: 300,
+          maxDelayMs: 1e3,
+          // 429: a rate-limit cooldown is a "come back later" signal, not a
+          // dead upstream, so it gets its own much more patient budget — 3
+          // back-to-back attempts, then 7 more spaced 1s apart (10 retries
+          // total), honoring Retry-After up to a 3s cap per wait so a long
+          // server-requested cooldown can't block the user for a full minute.
+          rateLimitRetries: 10,
+          rateLimitImmediateAttempts: 3,
+          rateLimitDelayMs: 1e3,
+          rateLimitMaxWaitMs: 3e3
+        }
       );
     } catch (err) {
       if (token.isCancellationRequested || abortController.signal.aborted) {

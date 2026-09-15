@@ -34,20 +34,20 @@
     "complexity": 12,
     "coverage": 0.028
   },
-  "src/provider.ts:472:streamResponse": {
-    "crap": 142.14,
+  "src/provider.ts:552:streamResponse": {
+    "crap": 140.93,
     "complexity": 131,
-    "coverage": 0.913
+    "coverage": 0.917
   },
   "src/auth.ts:178:resolveApiKey": {
     "crap": 124.59,
     "complexity": 11,
     "coverage": 0.021
   },
-  "src/provider.ts:308:provideLanguageModelChatResponse": {
-    "crap": 96.56,
+  "src/provider.ts:386:provideLanguageModelChatResponse": {
+    "crap": 94.45,
     "complexity": 38,
-    "coverage": 0.656
+    "coverage": 0.661
   },
   "src/enricher.ts:58:enrichModel": {
     "crap": 67.89,
@@ -114,17 +114,12 @@
     "complexity": 4,
     "coverage": 0.037
   },
-  "src/network.ts:160:fetchWithRetry": {
-    "crap": 18.06,
-    "complexity": 18,
-    "coverage": 0.944
-  },
   "src/enricher.ts:34:<anonymous>": {
     "crap": 17,
     "complexity": 17,
     "coverage": 1
   },
-  "src/provider.ts:227:<anonymous>": {
+  "src/provider.ts:305:<anonymous>": {
     "crap": 12.02,
     "complexity": 12,
     "coverage": 0.952

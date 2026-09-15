@@ -22,7 +22,7 @@ A lightweight (7 KB, zero runtime dependencies) VS Code extension that automatic
   - In cases of overlap, Go flat-rate takes priority—protecting you from paying per-token charges for models already included in your Go plan.
 - **🔑 Zero Key-Entry Friction**: Auto-imports your existing credentials from `~/.local/share/opencode/auth.json`. If missing, prompts securely and stores the token in VS Code's credential vault.
 - **⚡ Enriched Capabilities**: Configures each model with token limits, vision flags, tool calling, and thinking/reasoning effort levels (`low`, `medium`, `high`, `xhigh`, `max`).
-- **🛡️ Router Compliance**: Injects the required `x-opencode-session: vscode-copilot` header to ensure OpenCode's routing and prompt caching function correctly without `MissingSessionID` errors.
+- **🛡️ Router Compliance**: Injects the required `x-opencode-session` header on every request to ensure OpenCode's routing and prompt caching function correctly without `MissingSessionID` errors. Live chat requests get a stable ID reused for the whole conversation (not regenerated per turn), so prompt caching actually kicks in.
 - **🔒 Safe & Non-Destructive**: Merges into `chatLanguageModels.json` while preserving your other custom endpoints (like internal gateways or LiteLLM) and creating rolling timestamped backups.
 - **💻 Cross-Platform**: Works on macOS, Linux, Windows, and Windows WSL (configured with `extensionKind: ["ui", "workspace"]`).
 
