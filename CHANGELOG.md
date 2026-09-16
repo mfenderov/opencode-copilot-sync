@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.16.6 - 2026-09-16
+#### Bug Fixes
+- (**sync**) stop writing duplicate OpenCode customendpoint entry on local primary path - (70731cc) - Mark Fenderov, *Copilot*
+
+- - -
+
 ## v0.16.5 - 2026-09-15
 #### Documentation
 - (**readme**) document known Remote-WSL Agents window BYOK limitation - (448a91c) - Mark Fenderov
