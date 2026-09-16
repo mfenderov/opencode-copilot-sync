@@ -136,6 +136,52 @@ test('writeProvidersToConfig updates temp config without touching real files', (
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+test('writeProvidersToConfig purges (does not re-add) the OpenCode customendpoint entry at the local primary path, since the native `opencode` vendor already covers models there and a duplicate is how the reasoning `encrypted_content` idle-expiry bug gets triggered', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-primary-purge-'));
+  const storageDir = path.join(tmpDir, 'User', 'globalStorage', 'mfenderov.opencode-copilot-sync');
+  fs.mkdirSync(storageDir, { recursive: true });
+
+  const primaryPath = getChatLanguageModelsPath(storageDir);
+  assert.equal(primaryPath, path.join(tmpDir, 'User', 'chatLanguageModels.json'), 'sanity check on derivation');
+
+  const initial = [
+    { name: 'HF Router', vendor: 'customendpoint', models: [] },
+    { name: 'OpenCode', vendor: 'customendpoint', models: [{ id: 'kimi-k3' }] },
+  ];
+  fs.writeFileSync(primaryPath, JSON.stringify(initial, null, 2), 'utf-8');
+
+  const provider = buildProviderEntry('OpenCode', 'sk-test-key', ['kimi-k3'], { isGo: true });
+  writeProvidersToConfig([provider], primaryPath, storageDir);
+
+  const updated = JSON.parse(fs.readFileSync(primaryPath, 'utf-8'));
+  assert.deepEqual(
+    updated.map((e) => e.name),
+    ['HF Router'],
+    'OpenCode customendpoint entry must be purged (not re-added) at the local primary path, leaving unrelated entries untouched'
+  );
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test('writeProvidersToConfig still writes the OpenCode customendpoint entry to a non-primary path (e.g. a remote/WSL/Insiders mirror lacking the native vendor)', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-nonprimary-'));
+  const storageDir = path.join(tmpDir, 'User', 'globalStorage', 'mfenderov.opencode-copilot-sync');
+  fs.mkdirSync(storageDir, { recursive: true });
+  const otherPath = path.join(tmpDir, 'RemoteMirror', 'chatLanguageModels.json');
+  fs.mkdirSync(path.dirname(otherPath), { recursive: true });
+  fs.writeFileSync(otherPath, JSON.stringify([{ name: 'HF Router', vendor: 'customendpoint', models: [] }], null, 2), 'utf-8');
+
+  const provider = buildProviderEntry('OpenCode', 'sk-test-key', ['kimi-k3'], { isGo: true });
+  writeProvidersToConfig([provider], otherPath, storageDir);
+
+  const updated = JSON.parse(fs.readFileSync(otherPath, 'utf-8'));
+  const names = updated.map((e) => e.name);
+  assert.ok(names.includes('OpenCode'), 'non-primary paths must still receive the customendpoint entry');
+  assert.ok(names.includes('HF Router'));
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
 test('cleanupLegacyOpenCodeCustomEndpoints purges OpenCode from storage config', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-cleanup-'));
   // Create mock storage path structure: <tmpDir>/User/globalStorage/mfenderov.opencode-copilot-sync

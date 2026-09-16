@@ -94,6 +94,8 @@ VS Code Copilot natively reads custom OpenAI-compatible models from `chatLanguag
 
 This extension connects to OpenCode's catalog APIs (`/zen/go/v1/models` and `/zen/v1/models`), transforms them into valid `customendpoint` specs with the proper `x-opencode-session` header, and atomically merges them into your User configuration.
 
+In addition, the extension registers a **native** `opencode` Language Model Chat Provider directly with VS Code's API (no `chatLanguageModels.json` involved) wherever it's actually running — this is the primary path, handled entirely by our own request/retry/error-handling code. The `customendpoint` mirror described above exists only to guarantee visibility on machines/profiles the extension isn't installed on (a separate Windows box, a Remote-WSL server, a Code - Insiders install, etc.). To avoid two near-identical entries for the same models on the one install where the native vendor is already active, the extension does **not** write (and actively purges) the `customendpoint` OpenCode entry from that install's own local `chatLanguageModels.json` — it keeps writing it everywhere else.
+
 ---
 
 ## 📄 License

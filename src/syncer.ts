@@ -553,10 +553,21 @@ export function writeProvidersToConfig(
   storagePath?: string
 ): { targetPath: string; backupPath: string | null } {
   const filePaths = targetPath ? [targetPath] : getAllChatLanguageModelsPaths(storagePath);
+  // The native `opencode` vendor (registered directly by this same running extension)
+  // already serves every model on this exact local install, so writing a `customendpoint`
+  // duplicate into its own local chatLanguageModels.json only creates a second,
+  // near-indistinguishable entry for the same models — one handled by VS Code/Copilot's
+  // own closed-source Responses-API client instead of ours, which is how the
+  // reasoning `encrypted_content` idle-expiry bug gets triggered. Purge (not re-add) the
+  // OpenCode entry there instead, while every other candidate (Insiders on the same
+  // machine, WSL server paths, mirrored Windows paths, etc.) still gets the real
+  // customendpoint entry, since the native vendor may genuinely be unavailable there.
+  const primaryPath = getChatLanguageModelsPath(storagePath);
   let primaryBackup: string | null = null;
 
   for (const filePath of filePaths) {
     try {
+      const isLocalPrimary = filePath === primaryPath;
       const readRaw = (): string => {
         try {
           return fs.readFileSync(filePath, 'utf-8');
@@ -572,11 +583,21 @@ export function writeProvidersToConfig(
       // clobbering the other writer's changes.
       const beforeRaw = readRaw();
       let existingConfig = readChatLanguageModels(filePath);
-      let mergedConfig = mergeChatLanguageModels(existingConfig, providers);
+      let mergedConfig = isLocalPrimary
+        ? purgeOpenCodeFromChatLanguageModels(existingConfig)
+        : mergeChatLanguageModels(existingConfig, providers);
 
       if (readRaw() !== beforeRaw) {
         existingConfig = readChatLanguageModels(filePath);
-        mergedConfig = mergeChatLanguageModels(existingConfig, providers);
+        mergedConfig = isLocalPrimary
+          ? purgeOpenCodeFromChatLanguageModels(existingConfig)
+          : mergeChatLanguageModels(existingConfig, providers);
+      }
+
+      // Nothing to change (e.g. the local primary path has no OpenCode entry to purge) —
+      // skip the write so we don't bump mtime / create a needless backup every sync.
+      if (mergedConfig.length === existingConfig.length && mergedConfig.every((e, i) => e === existingConfig[i])) {
+        continue;
       }
 
       const backupPath = createBackup(filePath);
