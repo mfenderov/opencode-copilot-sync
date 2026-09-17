@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.16.7 - 2026-09-17
+#### Bug Fixes
+- (**provider**) align session format with OpenCode client and auto-repair reasoning echo - (3b4478a) - Mark Fenderov, *Copilot*
+
+- - -
+
 ## v0.16.6 - 2026-09-16
 #### Bug Fixes
 - (**sync**) stop writing duplicate OpenCode customendpoint entry on local primary path - (70731cc) - Mark Fenderov, *Copilot*
