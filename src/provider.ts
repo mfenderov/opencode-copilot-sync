@@ -204,6 +204,57 @@ function fingerprintMessage(msg: vscode.LanguageModelChatRequestMessage | undefi
   return `${msg.role}:${djb2Hash(text)}`;
 }
 
+const OPENCODE_ID_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+
+/**
+ * Generates an OpenCode descending identifier (12 hex chars timestamp prefix + 14 base62 chars)
+ * matching OpenCode client's `Identifier.descending()` format: `^[0-9a-f]{12}[0-9A-Za-z]{14}$`.
+ */
+export function generateOpenCodeDescendingId(): string {
+  const now = Date.now();
+  const counter = Math.floor(Math.random() * 0xfff) + 1;
+  const val = (~(BigInt(now) * 4096n + BigInt(counter))) & 0xffffffffffffn;
+  const hexPrefix = val.toString(16).padStart(12, '0');
+  let randSuffix = '';
+  for (let i = 0; i < 14; i++) {
+    randSuffix += OPENCODE_ID_ALPHABET[Math.floor(Math.random() * OPENCODE_ID_ALPHABET.length)];
+  }
+  return `${hexPrefix}${randSuffix}`;
+}
+
+export function generateOpenCodeSessionId(): string {
+  return `ses_${generateOpenCodeDescendingId()}`;
+}
+
+export function generateOpenCodeRequestId(): string {
+  return `msg_${generateOpenCodeDescendingId()}`;
+}
+
+function extractErrorMessage(rawJson: string): string {
+  try {
+    const data: unknown = JSON.parse(rawJson);
+    if (typeof data === 'object' && data !== null) {
+      const rec = data as Record<string, unknown>;
+      if (typeof rec.error === 'object' && rec.error !== null) {
+        const errRec = rec.error as Record<string, unknown>;
+        if (typeof errRec.message === 'string') {
+          return errRec.message;
+        }
+      }
+      if (typeof rec.message === 'string') {
+        return rec.message;
+      }
+    }
+  } catch {}
+  return rawJson;
+}
+
+function isStaleReasoningInput(item: unknown): boolean {
+  if (typeof item !== 'object' || item === null) return false;
+  const rec = item as Record<string, unknown>;
+  return rec.type === 'reasoning' || typeof rec.encrypted_content === 'string';
+}
+
 export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChangeLanguageModelChatInformation = this._onDidChange.event;
@@ -273,7 +324,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
       }
     }
 
-    const sessionId = `ses_${now.toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    const sessionId = generateOpenCodeSessionId();
     this.sessionCache.set(key, { sessionId, lastUsedAt: now });
     return sessionId;
   }
@@ -606,18 +657,22 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
       `Request: model=${model.id} protocol=${isResponses ? 'responses' : 'chat-completions'} url=${url} reasoningEffort=${reasoningEffort || 'none'} tools=${toolsPayload?.length ?? 0}`
     );
 
+    const clientHeaders: Record<string, string> = {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'User-Agent': 'opencode/1.18.31',
+      'x-opencode-client': 'cli',
+      'x-opencode-session': sessionId,
+      'x-opencode-request': generateOpenCodeRequestId(),
+    };
+
     let res: Response;
     try {
       res = await fetchWithRetry(
         url,
         {
           method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-            'User-Agent': 'opencode/1.18.30',
-            'x-opencode-session': sessionId,
-          },
+          headers: clientHeaders,
           body: JSON.stringify(requestBody),
           signal: abortController.signal,
         },
@@ -647,53 +702,86 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     }
 
     if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      let userDetail = errText;
-      try {
-        const parsed = JSON.parse(errText);
-        if (parsed.error?.message) {
-          userDetail = parsed.error.message;
-        }
-      } catch {}
+      let errText = await res.text().catch(() => '');
+      let userDetail = extractErrorMessage(errText);
 
       this.log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`);
 
-      // 1. Auth errors: throw NoPermissions to let VS Code trigger re-auth prompts if configured
-      if (res.status === 401 || res.status === 403) {
-        const LMError = (vscode as any).LanguageModelError;
-        if (LMError?.NoPermissions) {
-          throw LMError.NoPermissions('OpenCode authentication failed: Invalid or expired API key.');
-        }
-        throw new Error('OpenCode authentication failed: Invalid or expired API key.');
+      // 0. Responses-API reasoning echo repair: when an idle gap or session rebind causes
+      // the upstream to reject replayed reasoning with "reasoning `encrypted_content` was not issued to this caller",
+      // strip stale reasoning items from input and retry once transparently.
+      if (res.status === 400 && isResponses && userDetail.includes('encrypted_content')) {
+        this.log(`Detected reasoning echo error for model=${model.id}, retrying without stale reasoning...`);
+        const sanitizedInput = responsesInput.filter((item) => !isStaleReasoningInput(item));
+        const retryBody: Record<string, unknown> = {
+          ...requestBody,
+          input: sanitizedInput.length > 0 ? sanitizedInput : formattedMessages,
+        };
+        try {
+          const retryRes = await fetchWithRetry(
+            url,
+            {
+              method: 'POST',
+              headers: {
+                ...clientHeaders,
+                'x-opencode-request': generateOpenCodeRequestId(),
+              },
+              body: JSON.stringify(retryBody),
+              signal: abortController.signal,
+            },
+            { retries: 0 }
+          );
+          if (retryRes.ok) {
+            res = retryRes;
+          } else {
+            errText = await retryRes.text().catch(() => '');
+            userDetail = extractErrorMessage(errText);
+          }
+        } catch {}
       }
 
-      // 2. Model not found: throw NotFound
-      if (res.status === 404) {
-        const LMError = (vscode as any).LanguageModelError;
-        if (LMError?.NotFound) {
-          throw LMError.NotFound(`OpenCode model '${model.id}' was not found in the remote catalog.`);
+      if (!res.ok) {
+        // 1. Auth errors: throw NoPermissions to let VS Code trigger re-auth prompts if configured
+        if (res.status === 401 || res.status === 403) {
+          const LMError = (vscode as any).LanguageModelError;
+          const cleanDetail = userDetail.replace(/^OpenCode authentication failed:\s*/i, '').trim();
+          const errMessage = cleanDetail
+            ? `OpenCode authentication failed: ${cleanDetail}`
+            : 'OpenCode authentication failed: Invalid or expired API key.';
+          if (LMError?.NoPermissions) {
+            throw LMError.NoPermissions(errMessage);
+          }
+          throw new Error(errMessage);
         }
-        throw new Error(`OpenCode model '${model.id}' was not found in the remote catalog.`);
+
+        // 2. Model not found: throw NotFound
+        if (res.status === 404) {
+          const LMError = (vscode as any).LanguageModelError;
+          if (LMError?.NotFound) {
+            throw LMError.NotFound(`OpenCode model '${model.id}' was not found in the remote catalog.`);
+          }
+          throw new Error(`OpenCode model '${model.id}' was not found in the remote catalog.`);
+        }
+
+        // 3. Upstream Server Errors (500, 502 Bad Gateway, 503, 504) or rate limits
+        // Instead of throwing an Error (which causes Copilot's runtime to retry 5 times for 32.4 seconds),
+        // stream an informative Markdown alert card to the user and resolve cleanly (return void).
+        const alertNotice = [
+          `> ⚠️ **OpenCode Model Alert (${res.status} ${res.statusText || 'Service Error'})**`,
+          `>`,
+          `> Unable to reach **${model.name}** (\`${model.id}\`): upstream server error.`,
+          `>`,
+          `> **Upstream detail:** \`${userDetail.slice(0, 300) || 'Internal server error'}\``,
+          `>`,
+          `> **Suggestions:**`,
+          `> - If using an experimental/free tier model, try switching to active models like \`mimo-v2.5-free\` or \`big-pickle\`.`,
+          `> - For maximum reliability, use flat-rate OpenCode Go models (e.g. \`deepseek-v4-pro\`, \`qwen3.7-max\`, \`kimi-k3\`).`,
+          `> - Retry your request in a few moments if this is a temporary provider outage.`,
+        ].join('\n');
+
+        progress.report(new vscode.LanguageModelTextPart(alertNotice));
+        return; // Clean resolution bypasses Copilot's 5-retry 32-second loop!
       }
-
-      // 3. Upstream Server Errors (500, 502 Bad Gateway, 503, 504) or rate limits
-      // Instead of throwing an Error (which causes Copilot's runtime to retry 5 times for 32.4 seconds),
-      // stream an informative Markdown alert card to the user and resolve cleanly (return void).
-      const alertNotice = [
-        `> ⚠️ **OpenCode Model Alert (${res.status} ${res.statusText || 'Service Error'})**`,
-        `>`,
-        `> Unable to reach **${model.name}** (\`${model.id}\`): upstream server error.`,
-        `>`,
-        `> **Upstream detail:** \`${userDetail.slice(0, 300) || 'Internal server error'}\``,
-        `>`,
-        `> **Suggestions:**`,
-        `> - If using an experimental/free tier model, try switching to active models like \`mimo-v2.5-free\` or \`big-pickle\`.`,
-        `> - For maximum reliability, use flat-rate OpenCode Go models (e.g. \`deepseek-v4-pro\`, \`qwen3.7-max\`, \`kimi-k3\`).`,
-        `> - Retry your request in a few moments if this is a temporary provider outage.`,
-      ].join('\n');
-
-      progress.report(new vscode.LanguageModelTextPart(alertNotice));
-      return; // Clean resolution bypasses Copilot's 5-retry 32-second loop!
     }
 
     if (!res.body) {

@@ -139,13 +139,13 @@
       "count": 16
     },
     "@typescript-eslint/no-unsafe-assignment": {
-      "count": 36
+      "count": 35
     },
     "@typescript-eslint/no-unsafe-call": {
       "count": 8
     },
     "@typescript-eslint/no-unsafe-member-access": {
-      "count": 86
+      "count": 84
     },
     "@typescript-eslint/no-unsafe-return": {
       "count": 4

@@ -234,6 +234,44 @@ test('Provider Chaos [401 Auth Fault]: throws LanguageModelError.NoPermissions',
   assert.equal(progress.parts.length, 0, 'No progress parts should be emitted on auth rejection');
 });
 
+test('Provider Chaos [Reasoning Echo 400]: automatically repairs and retries when encrypted_content is rejected', async () => {
+  mockServer.setScenario([
+    {
+      mode: 'fault',
+      status: 400,
+      message: 'Error from provider (Console): Upstream request failed: [invalid_request_error] reasoning `encrypted_content` was not issued to this caller',
+    },
+    {
+      mode: 'standard',
+      content: 'Repaired successfully',
+    },
+  ]);
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+  const token = createMockToken();
+
+  const RESPONSES_MODEL = {
+    id: 'muse-spark-1.3-contributor-free',
+    name: 'Muse Spark 1.3 Contributor Free (OpenCode Free)',
+    family: 'muse-spark-1.3-contributor-free',
+  };
+
+  await provider.provideLanguageModelChatResponse(
+    RESPONSES_MODEL,
+    [createMockMessage('hello with stale reasoning')],
+    {},
+    progress,
+    token
+  );
+
+  const requests = mockServer.getRequests();
+  assert.equal(requests.length, 2, 'Expected 2 attempts: initial failed with 400, second retried and succeeded');
+  assert.equal(progress.parts.length, 1);
+  assert.match(progress.parts[0].value, /Repaired successfully/);
+});
+
 test('Provider Chaos [403 Forbidden Fault]: throws LanguageModelError.NoPermissions', async () => {
   mockServer.setScenario({ mode: 'fault', status: 403, message: 'Forbidden: API key has insufficient permissions' });
 
@@ -254,6 +292,7 @@ test('Provider Chaos [403 Forbidden Fault]: throws LanguageModelError.NoPermissi
     },
     (err) => {
       assert.equal(err.code, 'NoPermissions');
+      assert.match(err.message, /Forbidden: API key has insufficient permissions/);
       return true;
     }
   );

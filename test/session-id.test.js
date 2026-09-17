@@ -271,3 +271,55 @@ test('Session ID: bounded cache evicts the least-recently-used conversation once
     'Expected the evicted conversation to receive a brand-new session id'
   );
 });
+
+test('Session ID format matches OpenCode client descending pattern', async () => {
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage('test session format')],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+
+  const requests = mockServer.getRequests();
+  assert.equal(requests.length, 1);
+  const sessionHeader = sessionHeaderOf(requests[0]);
+  const re = /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
+  assert.match(
+    sessionHeader,
+    re,
+    `Session ID ${sessionHeader} must match ^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`
+  );
+});
+
+test('Request headers mirror OpenCode client fingerprint', async () => {
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage('test client headers')],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+
+  const requests = mockServer.getRequests();
+  assert.equal(requests.length, 1);
+  const headers = requests[0].headers;
+
+  assert.equal(headers['x-opencode-client'], 'cli', 'Expected x-opencode-client: cli');
+  assert.equal(headers['user-agent'], 'opencode/1.18.31', 'Expected User-Agent: opencode/1.18.31');
+  const reqHeader = headers['x-opencode-request'];
+  assert.ok(reqHeader, 'Expected x-opencode-request header');
+  const re = /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
+  assert.match(
+    reqHeader,
+    re,
+    `Request ID ${reqHeader} must match ^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$`
+  );
+});
+

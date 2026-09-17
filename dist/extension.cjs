@@ -27617,6 +27617,13 @@ function isOpenCodeLegacyOrCustomEntry(entry) {
   }
   return false;
 }
+function purgeOpenCodeFromChatLanguageModels(existingConfig) {
+  if (!Array.isArray(existingConfig)) return [];
+  return existingConfig.filter((entry) => {
+    if (!entry) return false;
+    return !isOpenCodeLegacyOrCustomEntry(entry) && entry.name !== "OpenCode";
+  });
+}
 function mergeChatLanguageModels(existingConfig, newProviders) {
   const addingUnifiedOpenCode = newProviders.some((p) => p.name === "OpenCode");
   const result = existingConfig.filter((entry) => {
@@ -28365,9 +28372,11 @@ function safeWriteFileSync(filePath, data, options) {
 }
 function writeProvidersToConfig(providers, targetPath, storagePath) {
   const filePaths = targetPath ? [targetPath] : getAllChatLanguageModelsPaths(storagePath);
+  const primaryPath = getChatLanguageModelsPath(storagePath);
   let primaryBackup = null;
   for (const filePath of filePaths) {
     try {
+      const isLocalPrimary = filePath === primaryPath;
       const readRaw = () => {
         try {
           return import_node_fs.default.readFileSync(filePath, "utf-8");
@@ -28377,10 +28386,13 @@ function writeProvidersToConfig(providers, targetPath, storagePath) {
       };
       const beforeRaw = readRaw();
       let existingConfig = readChatLanguageModels(filePath);
-      let mergedConfig = mergeChatLanguageModels(existingConfig, providers);
+      let mergedConfig = isLocalPrimary ? purgeOpenCodeFromChatLanguageModels(existingConfig) : mergeChatLanguageModels(existingConfig, providers);
       if (readRaw() !== beforeRaw) {
         existingConfig = readChatLanguageModels(filePath);
-        mergedConfig = mergeChatLanguageModels(existingConfig, providers);
+        mergedConfig = isLocalPrimary ? purgeOpenCodeFromChatLanguageModels(existingConfig) : mergeChatLanguageModels(existingConfig, providers);
+      }
+      if (mergedConfig.length === existingConfig.length && mergedConfig.every((e, i) => e === existingConfig[i])) {
+        continue;
       }
       const backupPath = createBackup(filePath);
       if (!primaryBackup) {
@@ -28878,6 +28890,48 @@ function fingerprintMessage(msg) {
   }
   return `${msg.role}:${djb2Hash(text)}`;
 }
+var OPENCODE_ID_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+function generateOpenCodeDescendingId() {
+  const now = Date.now();
+  const counter = Math.floor(Math.random() * 4095) + 1;
+  const val = ~(BigInt(now) * 4096n + BigInt(counter)) & 0xffffffffffffn;
+  const hexPrefix = val.toString(16).padStart(12, "0");
+  let randSuffix = "";
+  for (let i = 0; i < 14; i++) {
+    randSuffix += OPENCODE_ID_ALPHABET[Math.floor(Math.random() * OPENCODE_ID_ALPHABET.length)];
+  }
+  return `${hexPrefix}${randSuffix}`;
+}
+function generateOpenCodeSessionId() {
+  return `ses_${generateOpenCodeDescendingId()}`;
+}
+function generateOpenCodeRequestId() {
+  return `msg_${generateOpenCodeDescendingId()}`;
+}
+function extractErrorMessage(rawJson) {
+  try {
+    const data = JSON.parse(rawJson);
+    if (typeof data === "object" && data !== null) {
+      const rec = data;
+      if (typeof rec.error === "object" && rec.error !== null) {
+        const errRec = rec.error;
+        if (typeof errRec.message === "string") {
+          return errRec.message;
+        }
+      }
+      if (typeof rec.message === "string") {
+        return rec.message;
+      }
+    }
+  } catch {
+  }
+  return rawJson;
+}
+function isStaleReasoningInput(item) {
+  if (typeof item !== "object" || item === null) return false;
+  const rec = item;
+  return rec.type === "reasoning" || typeof rec.encrypted_content === "string";
+}
 var OpenCodeChatProvider = class _OpenCodeChatProvider {
   // 4 hours
   constructor(context, outputChannel) {
@@ -28940,7 +28994,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
         this.sessionCache.delete(oldestKey);
       }
     }
-    const sessionId = `ses_${now.toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    const sessionId = generateOpenCodeSessionId();
     this.sessionCache.set(key, { sessionId, lastUsedAt: now });
     return sessionId;
   }
@@ -29188,18 +29242,21 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
     this.log(
       `Request: model=${model.id} protocol=${isResponses ? "responses" : "chat-completions"} url=${url} reasoningEffort=${reasoningEffort || "none"} tools=${toolsPayload?.length ?? 0}`
     );
+    const clientHeaders = {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "User-Agent": "opencode/1.18.31",
+      "x-opencode-client": "cli",
+      "x-opencode-session": sessionId,
+      "x-opencode-request": generateOpenCodeRequestId()
+    };
     let res;
     try {
       res = await fetchWithRetry(
         url,
         {
           method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-            "User-Agent": "opencode/1.18.30",
-            "x-opencode-session": sessionId
-          },
+          headers: clientHeaders,
           body: JSON.stringify(requestBody),
           signal: abortController.signal
         },
@@ -29228,44 +29285,71 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
       throw err;
     }
     if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      let userDetail = errText;
-      try {
-        const parsed = JSON.parse(errText);
-        if (parsed.error?.message) {
-          userDetail = parsed.error.message;
-        }
-      } catch {
-      }
+      let errText = await res.text().catch(() => "");
+      let userDetail = extractErrorMessage(errText);
       this.log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`);
-      if (res.status === 401 || res.status === 403) {
-        const LMError = vscode.LanguageModelError;
-        if (LMError?.NoPermissions) {
-          throw LMError.NoPermissions("OpenCode authentication failed: Invalid or expired API key.");
+      if (res.status === 400 && isResponses && userDetail.includes("encrypted_content")) {
+        this.log(`Detected reasoning echo error for model=${model.id}, retrying without stale reasoning...`);
+        const sanitizedInput = responsesInput.filter((item) => !isStaleReasoningInput(item));
+        const retryBody = {
+          ...requestBody,
+          input: sanitizedInput.length > 0 ? sanitizedInput : formattedMessages
+        };
+        try {
+          const retryRes = await fetchWithRetry(
+            url,
+            {
+              method: "POST",
+              headers: {
+                ...clientHeaders,
+                "x-opencode-request": generateOpenCodeRequestId()
+              },
+              body: JSON.stringify(retryBody),
+              signal: abortController.signal
+            },
+            { retries: 0 }
+          );
+          if (retryRes.ok) {
+            res = retryRes;
+          } else {
+            errText = await retryRes.text().catch(() => "");
+            userDetail = extractErrorMessage(errText);
+          }
+        } catch {
         }
-        throw new Error("OpenCode authentication failed: Invalid or expired API key.");
       }
-      if (res.status === 404) {
-        const LMError = vscode.LanguageModelError;
-        if (LMError?.NotFound) {
-          throw LMError.NotFound(`OpenCode model '${model.id}' was not found in the remote catalog.`);
+      if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          const LMError = vscode.LanguageModelError;
+          const cleanDetail = userDetail.replace(/^OpenCode authentication failed:\s*/i, "").trim();
+          const errMessage = cleanDetail ? `OpenCode authentication failed: ${cleanDetail}` : "OpenCode authentication failed: Invalid or expired API key.";
+          if (LMError?.NoPermissions) {
+            throw LMError.NoPermissions(errMessage);
+          }
+          throw new Error(errMessage);
         }
-        throw new Error(`OpenCode model '${model.id}' was not found in the remote catalog.`);
+        if (res.status === 404) {
+          const LMError = vscode.LanguageModelError;
+          if (LMError?.NotFound) {
+            throw LMError.NotFound(`OpenCode model '${model.id}' was not found in the remote catalog.`);
+          }
+          throw new Error(`OpenCode model '${model.id}' was not found in the remote catalog.`);
+        }
+        const alertNotice = [
+          `> \u26A0\uFE0F **OpenCode Model Alert (${res.status} ${res.statusText || "Service Error"})**`,
+          `>`,
+          `> Unable to reach **${model.name}** (\`${model.id}\`): upstream server error.`,
+          `>`,
+          `> **Upstream detail:** \`${userDetail.slice(0, 300) || "Internal server error"}\``,
+          `>`,
+          `> **Suggestions:**`,
+          `> - If using an experimental/free tier model, try switching to active models like \`mimo-v2.5-free\` or \`big-pickle\`.`,
+          `> - For maximum reliability, use flat-rate OpenCode Go models (e.g. \`deepseek-v4-pro\`, \`qwen3.7-max\`, \`kimi-k3\`).`,
+          `> - Retry your request in a few moments if this is a temporary provider outage.`
+        ].join("\n");
+        progress.report(new vscode.LanguageModelTextPart(alertNotice));
+        return;
       }
-      const alertNotice = [
-        `> \u26A0\uFE0F **OpenCode Model Alert (${res.status} ${res.statusText || "Service Error"})**`,
-        `>`,
-        `> Unable to reach **${model.name}** (\`${model.id}\`): upstream server error.`,
-        `>`,
-        `> **Upstream detail:** \`${userDetail.slice(0, 300) || "Internal server error"}\``,
-        `>`,
-        `> **Suggestions:**`,
-        `> - If using an experimental/free tier model, try switching to active models like \`mimo-v2.5-free\` or \`big-pickle\`.`,
-        `> - For maximum reliability, use flat-rate OpenCode Go models (e.g. \`deepseek-v4-pro\`, \`qwen3.7-max\`, \`kimi-k3\`).`,
-        `> - Retry your request in a few moments if this is a temporary provider outage.`
-      ].join("\n");
-      progress.report(new vscode.LanguageModelTextPart(alertNotice));
-      return;
     }
     if (!res.body) {
       throw new Error("OpenCode API returned empty body");
