@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.16.8 - 2026-09-17
+#### Miscellaneous Chores
+- (**quality**) update crap-baseline.json line mappings for v0.16.7 - (2e34a35) - Mark Fenderov
+
+- - -
+
 ## v0.16.7 - 2026-09-17
 #### Bug Fixes
 - (**provider**) align session format with OpenCode client and auto-repair reasoning echo - (3b4478a) - Mark Fenderov, *Copilot*
