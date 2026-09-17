@@ -19,7 +19,7 @@
     "complexity": 43,
     "coverage": 0.44
   },
-  "src/syncer.ts:601:syncOpenCodeModels": {
+  "src/syncer.ts:622:syncOpenCodeModels": {
     "crap": 367.55,
     "complexity": 19,
     "coverage": 0.012
@@ -29,22 +29,22 @@
     "complexity": 12,
     "coverage": 0
   },
+  "src/provider.ts:603:streamResponse": {
+    "crap": 146.63,
+    "complexity": 136,
+    "coverage": 0.917
+  },
   "src/fetcher.ts:33:fetchModelsDevMetadata": {
     "crap": 144.33,
     "complexity": 12,
     "coverage": 0.028
-  },
-  "src/provider.ts:552:streamResponse": {
-    "crap": 140.93,
-    "complexity": 131,
-    "coverage": 0.917
   },
   "src/auth.ts:178:resolveApiKey": {
     "crap": 124.59,
     "complexity": 11,
     "coverage": 0.021
   },
-  "src/provider.ts:386:provideLanguageModelChatResponse": {
+  "src/provider.ts:437:provideLanguageModelChatResponse": {
     "crap": 94.45,
     "complexity": 38,
     "coverage": 0.661
@@ -119,7 +119,7 @@
     "complexity": 17,
     "coverage": 1
   },
-  "src/provider.ts:305:<anonymous>": {
+  "src/provider.ts:356:<anonymous>": {
     "crap": 12.02,
     "complexity": 12,
     "coverage": 0.952
@@ -128,6 +128,11 @@
     "crap": 12,
     "complexity": 3,
     "coverage": 0
+  },
+  "src/syncer.ts:550:writeProvidersToConfig": {
+    "crap": 11.07,
+    "complexity": 11,
+    "coverage": 0.915
   },
   "src/auth.ts:238:validateInput": {
     "crap": 11.04,
