@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.17.1 - 2026-09-18
+#### Miscellaneous Chores
+- (**version**) v0.17.0 - (799eb39) - Mark Fenderov
+
+- - -
+
 ## v0.17.0 - 2026-09-18
 #### Features
 - (**provider,view**) stream stall auto-recovery and dedicated usage sidebar view - (5aaa45e) - Mark Fenderov, *Copilot*
