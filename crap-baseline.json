@@ -24,7 +24,7 @@
     "complexity": 19,
     "coverage": 0.012
   },
-  "src/provider.ts:727:streamResponse": {
+  "src/provider.ts:728:streamResponse": {
     "crap": 150.75,
     "complexity": 140,
     "coverage": 0.918
@@ -44,7 +44,7 @@
     "complexity": 11,
     "coverage": 0.021
   },
-  "src/provider.ts:556:provideLanguageModelChatResponse": {
+  "src/provider.ts:557:provideLanguageModelChatResponse": {
     "crap": 93.37,
     "complexity": 39,
     "coverage": 0.671
@@ -114,7 +114,7 @@
     "complexity": 17,
     "coverage": 1
   },
-  "src/provider.ts:475:<anonymous>": {
+  "src/provider.ts:476:<anonymous>": {
     "crap": 12.02,
     "complexity": 12,
     "coverage": 0.952

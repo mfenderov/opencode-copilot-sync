@@ -28862,7 +28862,10 @@ function injectOpenCodeVerificationTools(toolsPayload, isResponses) {
   const existing = new Set(
     base.map((t) => {
       const fn = t.function;
-      return typeof fn === "object" && fn !== null && "name" in fn && typeof fn.name === "string" ? fn.name : "";
+      if (typeof fn === "object" && fn !== null && "name" in fn && typeof fn.name === "string") {
+        return fn.name;
+      }
+      return "";
     })
   );
   const toAdd = OPENCODE_CLIENT_VERIFICATION_TOOLS_CHAT.filter((t) => !existing.has(t.function.name));

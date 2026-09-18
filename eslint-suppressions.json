@@ -118,7 +118,7 @@
       "count": 1
     },
     "@typescript-eslint/no-explicit-any": {
-      "count": 27
+      "count": 26
     },
     "@typescript-eslint/no-unnecessary-condition": {
       "count": 5
@@ -136,7 +136,7 @@
       "count": 8
     },
     "@typescript-eslint/no-unsafe-member-access": {
-      "count": 82
+      "count": 81
     },
     "@typescript-eslint/no-unsafe-return": {
       "count": 4
