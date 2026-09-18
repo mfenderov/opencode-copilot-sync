@@ -2,6 +2,13 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.17.2 - 2026-09-18
+#### Bug Fixes
+- (**provider**) inject core verification tools for Zen and Free tier models - (32ec3e1) - Mark Fenderov
+- (**quality**) resolve lint assertion in verification tools and update crap baseline - (a1cf254) - Mark Fenderov
+
+- - -
+
 ## v0.17.1 - 2026-09-18
 #### Miscellaneous Chores
 - (**version**) v0.17.0 - (799eb39) - Mark Fenderov
