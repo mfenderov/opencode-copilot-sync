@@ -4,6 +4,7 @@ import { syncOpenCodeModels, getChatLanguageModelsPath } from './syncer.js';
 import { fetchOpenCodeUsage, formatStatusBarText, formatUsageTooltip } from './usage.js';
 import { OpenCodeChatProvider } from './provider.js';
 import { setVSCodeProxyUrl } from './network.js';
+import { OpenCodeUsageTreeProvider } from './views/usageTreeProvider.js';
 
 export async function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel('OpenCode Copilot Sync');
@@ -72,10 +73,19 @@ export async function activate(context: vscode.ExtensionContext) {
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
 
+  // Dedicated Activity Bar Sidebar View: Usage & Quotas
+  const usageTreeProvider = new OpenCodeUsageTreeProvider(async () => resolveApiKey(context.secrets, false));
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('opencode-usage-view', usageTreeProvider)
+  );
+
   async function updateUsageMeter(apiKey?: string) {
     try {
       const key = apiKey || (await resolveApiKey(context.secrets, false));
-      if (!key) return;
+      if (!key) {
+        usageTreeProvider.setUsage(null, 'No API key configured');
+        return;
+      }
 
       const res = await fetchOpenCodeUsage(key);
       if (res.ok) {
@@ -83,11 +93,17 @@ export async function activate(context: vscode.ExtensionContext) {
         const md = new vscode.MarkdownString(formatUsageTooltip(res.usage));
         md.isTrusted = true;
         statusBarItem.tooltip = md;
+        usageTreeProvider.setUsage(res.usage);
       } else if (res.reason === 'no-subscription') {
         statusBarItem.text = '$(hubot) OpenCode (Zen)';
         statusBarItem.tooltip = 'OpenCode Zen (Pay-as-you-go / Free tier). Click to sync models.';
+        usageTreeProvider.setUsage(null, 'No active Go subscription (Zen pay-as-you-go / free)');
+      } else {
+        usageTreeProvider.setUsage(null, `Unable to fetch usage (${res.reason})`);
       }
-    } catch {}
+    } catch {
+      usageTreeProvider.setUsage(null, 'Error fetching usage');
+    }
   }
 
   async function performSync(interactive: boolean) {
@@ -121,7 +137,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
       const storagePath = context.globalStorageUri?.fsPath;
 
-      let syncResult: any = null;
+      let syncResult: Awaited<ReturnType<typeof syncOpenCodeModels>> | null = null;
       if (interactive) {
         await vscode.window.withProgress(
           {
@@ -148,22 +164,23 @@ export async function activate(context: vscode.ExtensionContext) {
       }
 
       // Update native model provider catalog and refresh status bar usage
-      if (syncResult?.models && syncResult.models.length > 0) {
+      if (syncResult && syncResult.models.length > 0) {
         chatProvider.updateModels(
-          syncResult.models.map((m: any) => ({
+          syncResult.models.map((m) => ({
             id: m.id,
             name: m.name,
             family: m.family || m.id,
-            catalog: m.url?.includes('/go/') ? 'go' : 'zen',
+            catalog: m.url.includes('/go/') ? 'go' : 'zen',
             isFree: !!m.isFree,
-            contextWindow: m.contextWindow || 1048576,
-            maxOutputTokens: m.maxOutputTokens || 65536,
-            vision: !!m.vision,
-            thinking: m.thinking !== false,
+            contextWindow: m.contextWindow,
+            maxOutputTokens: m.maxOutputTokens,
+            vision: m.vision,
+            thinking: m.thinking,
             supportsReasoningEffort: m.supportsReasoningEffort,
             apiType: m.apiType,
           }))
         );
+        usageTreeProvider.updateModelCounts(syncResult.goCount, syncResult.zenCount);
       } else {
         chatProvider.refresh();
       }
@@ -181,7 +198,9 @@ export async function activate(context: vscode.ExtensionContext) {
   // Register commands
   context.subscriptions.push(
     vscode.commands.registerCommand('opencode-copilot-sync.sync', () => performSync(true)),
-    vscode.commands.registerCommand('opencode-copilot-sync.refreshUsage', () => updateUsageMeter()),
+    vscode.commands.registerCommand('opencode-copilot-sync.refreshUsage', async () => {
+      await Promise.all([updateUsageMeter(), usageTreeProvider.refresh()]);
+    }),
     vscode.commands.registerCommand('opencode-copilot-sync.setApiKey', async () => {
       const key = await promptAndSetApiKey(context.secrets, vscode.window);
       if (key) {

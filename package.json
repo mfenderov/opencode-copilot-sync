@@ -70,8 +70,41 @@
         "command": "opencode-copilot-sync.openConfig",
         "title": "Open Copilot Models Config",
         "category": "OpenCode"
+      },
+      {
+        "command": "opencode-copilot-sync.refreshUsage",
+        "title": "Refresh Usage",
+        "icon": "$(refresh)",
+        "category": "OpenCode"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "opencode-explorer",
+          "title": "OpenCode",
+          "icon": "icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "opencode-explorer": [
+        {
+          "id": "opencode-usage-view",
+          "name": "Usage & Quotas",
+          "type": "tree"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "opencode-copilot-sync.refreshUsage",
+          "when": "view == opencode-usage-view",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "OpenCode Copilot Sync",
       "properties": {
@@ -89,6 +122,11 @@
           "type": "boolean",
           "default": true,
           "description": "Include OpenCode Zen models (Free tier + Zen exclusive models, de-duplicated against Go)."
+        },
+        "opencode.streamIdleTimeoutSeconds": {
+          "type": "number",
+          "default": 90,
+          "description": "Timeout in seconds to wait for stream chunks from OpenCode before recovering or alerting on an idle stream."
         }
       }
     }

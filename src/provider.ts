@@ -170,6 +170,20 @@ export class ThinkTagStreamParser {
 
 const STREAM_IDLE_TIMEOUT_MS = Number(process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS) || 90_000;
 
+export function getStreamIdleTimeoutMs(): number {
+  if (process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS) {
+    const envVal = Number(process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS);
+    if (!isNaN(envVal) && envVal > 0) return envVal;
+  }
+  try {
+    const configSec = vscode.workspace.getConfiguration('opencode').get<number>('streamIdleTimeoutSeconds');
+    if (typeof configSec === 'number' && configSec > 0) {
+      return configSec * 1000;
+    }
+  } catch {}
+  return STREAM_IDLE_TIMEOUT_MS;
+}
+
 function clampToolName(name: string): string {
   return name.length > 64 ? name.slice(0, 64) : name;
 }
@@ -657,356 +671,393 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
       `Request: model=${model.id} protocol=${isResponses ? 'responses' : 'chat-completions'} url=${url} reasoningEffort=${reasoningEffort || 'none'} tools=${toolsPayload?.length ?? 0}`
     );
 
-    const clientHeaders: Record<string, string> = {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'User-Agent': 'opencode/1.18.31',
-      'x-opencode-client': 'cli',
-      'x-opencode-session': sessionId,
-      'x-opencode-request': generateOpenCodeRequestId(),
-    };
+    const maxStallRetries = 1;
+    const idleTimeoutMs = getStreamIdleTimeoutMs();
 
-    let res: Response;
-    try {
-      res = await fetchWithRetry(
-        url,
-        {
-          method: 'POST',
-          headers: clientHeaders,
-          body: JSON.stringify(requestBody),
-          signal: abortController.signal,
-        },
-        {
-          // 5xx / network errors: treated as a likely-dead upstream, so we
-          // only give it one quick courtesy retry before surfacing the alert.
-          retries: 1,
-          baseDelayMs: 300,
-          maxDelayMs: 1000,
-          // 429: a rate-limit cooldown is a "come back later" signal, not a
-          // dead upstream, so it gets its own much more patient budget — 3
-          // back-to-back attempts, then 7 more spaced 1s apart (10 retries
-          // total), honoring Retry-After up to a 3s cap per wait so a long
-          // server-requested cooldown can't block the user for a full minute.
-          rateLimitRetries: 10,
-          rateLimitImmediateAttempts: 3,
-          rateLimitDelayMs: 1000,
-          rateLimitMaxWaitMs: 3000,
-        }
-      );
-    } catch (err: any) {
-      if (token.isCancellationRequested || abortController.signal.aborted) {
-        return;
-      }
-      this.log(`Request failed before receiving a response: ${err?.message || err}`);
-      throw err;
-    }
+    for (let stallAttempt = 0; stallAttempt <= maxStallRetries; stallAttempt++) {
+      const clientHeaders: Record<string, string> = {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'opencode/1.18.31',
+        'x-opencode-client': 'cli',
+        'x-opencode-session': sessionId,
+        'x-opencode-request': generateOpenCodeRequestId(),
+      };
 
-    if (!res.ok) {
-      let errText = await res.text().catch(() => '');
-      let userDetail = extractErrorMessage(errText);
-
-      this.log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`);
-
-      // 0. Responses-API reasoning echo repair: when an idle gap or session rebind causes
-      // the upstream to reject replayed reasoning with "reasoning `encrypted_content` was not issued to this caller",
-      // strip stale reasoning items from input and retry once transparently.
-      if (res.status === 400 && isResponses && userDetail.includes('encrypted_content')) {
-        this.log(`Detected reasoning echo error for model=${model.id}, retrying without stale reasoning...`);
-        const sanitizedInput = responsesInput.filter((item) => !isStaleReasoningInput(item));
-        const retryBody: Record<string, unknown> = {
-          ...requestBody,
-          input: sanitizedInput.length > 0 ? sanitizedInput : formattedMessages,
-        };
-        try {
-          const retryRes = await fetchWithRetry(
-            url,
-            {
-              method: 'POST',
-              headers: {
-                ...clientHeaders,
-                'x-opencode-request': generateOpenCodeRequestId(),
-              },
-              body: JSON.stringify(retryBody),
-              signal: abortController.signal,
-            },
-            { retries: 0 }
-          );
-          if (retryRes.ok) {
-            res = retryRes;
-          } else {
-            errText = await retryRes.text().catch(() => '');
-            userDetail = extractErrorMessage(errText);
+      let res: Response;
+      try {
+        res = await fetchWithRetry(
+          url,
+          {
+            method: 'POST',
+            headers: clientHeaders,
+            body: JSON.stringify(requestBody),
+            signal: abortController.signal,
+          },
+          {
+            // 5xx / network errors: treated as a likely-dead upstream, so we
+            // only give it one quick courtesy retry before surfacing the alert.
+            retries: 1,
+            baseDelayMs: 300,
+            maxDelayMs: 1000,
+            // 429: a rate-limit cooldown is a "come back later" signal, not a
+            // dead upstream, so it gets its own much more patient budget — 3
+            // back-to-back attempts, then 7 more spaced 1s apart (10 retries
+            // total), honoring Retry-After up to a 3s cap per wait so a long
+            // server-requested cooldown can't block the user for a full minute.
+            rateLimitRetries: 10,
+            rateLimitImmediateAttempts: 3,
+            rateLimitDelayMs: 1000,
+            rateLimitMaxWaitMs: 3000,
           }
-        } catch {}
+        );
+      } catch (err: any) {
+        if (token.isCancellationRequested || abortController.signal.aborted) {
+          return;
+        }
+        this.log(`Request failed before receiving a response: ${err?.message || err}`);
+        throw err;
       }
 
       if (!res.ok) {
-        // 1. Auth errors: throw NoPermissions to let VS Code trigger re-auth prompts if configured
-        if (res.status === 401 || res.status === 403) {
-          const LMError = (vscode as any).LanguageModelError;
-          const cleanDetail = userDetail.replace(/^OpenCode authentication failed:\s*/i, '').trim();
-          const errMessage = cleanDetail
-            ? `OpenCode authentication failed: ${cleanDetail}`
-            : 'OpenCode authentication failed: Invalid or expired API key.';
-          if (LMError?.NoPermissions) {
-            throw LMError.NoPermissions(errMessage);
-          }
-          throw new Error(errMessage);
-        }
+        let errText = await res.text().catch(() => '');
+        let userDetail = extractErrorMessage(errText);
 
-        // 2. Model not found: throw NotFound
-        if (res.status === 404) {
-          const LMError = (vscode as any).LanguageModelError;
-          if (LMError?.NotFound) {
-            throw LMError.NotFound(`OpenCode model '${model.id}' was not found in the remote catalog.`);
-          }
-          throw new Error(`OpenCode model '${model.id}' was not found in the remote catalog.`);
-        }
+        this.log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`);
 
-        // 3. Upstream Server Errors (500, 502 Bad Gateway, 503, 504) or rate limits
-        // Instead of throwing an Error (which causes Copilot's runtime to retry 5 times for 32.4 seconds),
-        // stream an informative Markdown alert card to the user and resolve cleanly (return void).
-        const alertNotice = [
-          `> ⚠️ **OpenCode Model Alert (${res.status} ${res.statusText || 'Service Error'})**`,
-          `>`,
-          `> Unable to reach **${model.name}** (\`${model.id}\`): upstream server error.`,
-          `>`,
-          `> **Upstream detail:** \`${userDetail.slice(0, 300) || 'Internal server error'}\``,
-          `>`,
-          `> **Suggestions:**`,
-          `> - If using an experimental/free tier model, try switching to active models like \`mimo-v2.5-free\` or \`big-pickle\`.`,
-          `> - For maximum reliability, use flat-rate OpenCode Go models (e.g. \`deepseek-v4-pro\`, \`qwen3.7-max\`, \`kimi-k3\`).`,
-          `> - Retry your request in a few moments if this is a temporary provider outage.`,
-        ].join('\n');
-
-        progress.report(new vscode.LanguageModelTextPart(alertNotice));
-        return; // Clean resolution bypasses Copilot's 5-retry 32-second loop!
-      }
-    }
-
-    if (!res.body) {
-      throw new Error('OpenCode API returned empty body');
-    }
-
-    // Parse streaming SSE response
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    // Track in-progress tool calls and reasoning stream
-    const pendingToolCalls = new Map<number, { id: string; name: string; args: string }>();
-    const thinkingId = `thinking-${Date.now()}`;
-    const thinkParser = new ThinkTagStreamParser();
-    let hasStreamError = false;
-    let lastReadAt = Date.now();
-
-    const emitThinking = (thinking: string) => {
-      if (!thinking) return;
-      const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
-      if (ThinkingPart) {
-        progress.report(new ThinkingPart(thinking, thinkingId));
-      } else {
-        progress.report(new vscode.LanguageModelTextPart(thinking));
-      }
-    };
-
-    try {
-      while (true) {
-        if (token.isCancellationRequested) break;
-
-        const idleMs = STREAM_IDLE_TIMEOUT_MS - (Date.now() - lastReadAt);
-        let idleTimer: ReturnType<typeof setTimeout> | undefined;
-        const idleTimeout = new Promise<never>((_, reject) => {
-          idleTimer = setTimeout(
-            () => { reject(new Error(`Stream idle for over ${Math.round(STREAM_IDLE_TIMEOUT_MS / 1000)}s; no data received from OpenCode upstream.`)); },
-            Math.max(0, idleMs)
-          );
-        });
-
-        let done: boolean, value: Uint8Array | undefined;
-        try {
-          ({ done, value } = await Promise.race([reader.read(), idleTimeout]));
-        } finally {
-          clearTimeout(idleTimer);
-        }
-        lastReadAt = Date.now();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-
-        let isDone = false;
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith(':')) continue;
-          if (trimmed === 'data: [DONE]') {
-            isDone = true;
-            break;
-          }
-
-          if (trimmed.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(trimmed.slice(6));
-
-              // 1. Handle OpenAI Responses API stream format (used by Muse, GPT, Grok)
-              if (data.type === 'response.completed') {
-                isDone = true;
-                break;
-              }
-
-              if (data.type === 'response.output_text.delta') {
-                const delta = typeof data.delta === 'string' ? data.delta : data.delta?.text || data.delta?.value || '';
-                if (delta) {
-                  progress.report(new vscode.LanguageModelTextPart(delta));
-                }
-                continue;
-              }
-
-              if (data.type === 'response.reasoning_text.delta') {
-                const delta = typeof data.delta === 'string' ? data.delta : data.delta?.text || data.delta?.value || '';
-                if (delta && delta.length > 0) {
-                  const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
-                  if (ThinkingPart) {
-                    progress.report(new ThinkingPart(delta, thinkingId));
-                  }
-                }
-                continue;
-              }
-
-              if (data.type === 'response.output_item.added' && data.item?.type === 'function_call') {
-                const idx = typeof data.output_index === 'number' ? data.output_index : 0;
-                pendingToolCalls.set(idx, {
-                  id: data.item.call_id || data.item.id || `call_${Date.now()}`,
-                  name: data.item.name || '',
-                  args: data.item.arguments || '',
-                });
-                continue;
-              }
-
-              if (data.type === 'response.function_call_arguments.delta') {
-                const idx = typeof data.output_index === 'number' ? data.output_index : 0;
-                const current = pendingToolCalls.get(idx) || { id: '', name: '', args: '' };
-                const delta = typeof data.delta === 'string' ? data.delta : data.delta?.arguments || '';
-                current.args += delta;
-                pendingToolCalls.set(idx, current);
-                continue;
-              }
-
-              if (data.type === 'response.output_item.done' && data.item?.type === 'function_call') {
-                const idx = typeof data.output_index === 'number' ? data.output_index : 0;
-                const call = pendingToolCalls.get(idx);
-                if (call) {
-                  let parsedArgs: any = {};
-                  try {
-                    parsedArgs = JSON.parse(call.args);
-                  } catch {
-                    parsedArgs = { raw: call.args };
-                  }
-                  progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
-                  pendingToolCalls.delete(idx);
-                }
-                continue;
-              }
-
-              // 2. Handle OpenAI Chat Completions API stream format (used by DeepSeek, Kimi, GLM, MiMo, Qwen)
-              const choice = data.choices?.[0];
-              if (!choice) continue;
-
-              // 1. Stream reasoning / thinking content from explicit reasoning fields
-              const rawReasoning =
-                choice.delta?.reasoning_content ||
-                choice.delta?.thought ||
-                choice.delta?.reasoning ||
-                (Array.isArray(choice.delta?.reasoning_details)
-                  ? choice.delta.reasoning_details.map((d: any) => d.text || '').join('')
-                  : undefined);
-
-              if (rawReasoning && rawReasoning.length > 0) {
-                emitThinking(rawReasoning);
-              }
-
-              // 2. Stream delta text content, splitting out inline <think> tags
-              // via a chunk-boundary-safe parser (tags can be split across SSE chunks).
-              const content = choice.delta?.content;
-              if (content) {
-                const { text, thinking } = thinkParser.feed(content);
-                emitThinking(thinking);
-                if (text) {
-                  progress.report(new vscode.LanguageModelTextPart(text));
-                }
-              }
-
-              // Accumulate streaming tool calls
-              if (choice.delta?.tool_calls) {
-                choice.delta.tool_calls.forEach((tc: any, i: number) => {
-                  const idx = tc.index ?? i;
-                  const current = pendingToolCalls.get(idx) || { id: '', name: '', args: '' };
-                  if (tc.id) current.id = tc.id;
-                  if (tc.function?.name) current.name += tc.function.name;
-                  if (tc.function?.arguments) current.args += tc.function.arguments;
-                  pendingToolCalls.set(idx, current);
-                });
-              }
-
-              // If finish_reason indicates tool_calls, emit completed tool call parts
-              if (choice.finish_reason === 'tool_calls' || (choice.finish_reason === 'stop' && pendingToolCalls.size > 0)) {
-                for (const [, call] of pendingToolCalls) {
-                  let parsedArgs: any = {};
-                  try {
-                    parsedArgs = JSON.parse(call.args);
-                  } catch {
-                    parsedArgs = { raw: call.args };
-                  }
-                  progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
-                }
-                pendingToolCalls.clear();
-              }
-
-              if (choice.finish_reason === 'stop') {
-                isDone = true;
-                break;
-              }
-            } catch {}
-          }
-        }
-        if (isDone) break;
-      }
-      const flushed = thinkParser.flush();
-      if (flushed.thinking) emitThinking(flushed.thinking);
-      if (flushed.text) {
-        progress.report(new vscode.LanguageModelTextPart(flushed.text));
-      }
-    } catch (streamErr: any) {
-      hasStreamError = true;
-      if (token.isCancellationRequested) {
-        this.log(`Stream canceled by user for model=${model.id}`);
-        return;
-      }
-      this.log(`Stream interrupted for model=${model.id}: ${streamErr?.message || streamErr}`);
-      progress.report(
-        new vscode.LanguageModelTextPart(
-          `\n\n*(Response stream interrupted: ${streamErr?.message || 'Connection closed by upstream OpenCode service'})*`
-        )
-      );
-      return;
-    } finally {
-      // Flush any remaining accumulated tool calls ONLY if stream was NOT interrupted/canceled
-      if (!hasStreamError && !token.isCancellationRequested && !abortController.signal.aborted && pendingToolCalls.size > 0) {
-        for (const [, call] of pendingToolCalls) {
-          let parsedArgs: any = {};
+        // 0. Responses-API reasoning echo repair: when an idle gap or session rebind causes
+        // the upstream to reject replayed reasoning with "reasoning `encrypted_content` was not issued to this caller",
+        // strip stale reasoning items from input and retry once transparently.
+        if (res.status === 400 && isResponses && userDetail.includes('encrypted_content')) {
+          this.log(`Detected reasoning echo error for model=${model.id}, retrying without stale reasoning...`);
+          const sanitizedInput = responsesInput.filter((item) => !isStaleReasoningInput(item));
+          const retryBody: Record<string, unknown> = {
+            ...requestBody,
+            input: sanitizedInput.length > 0 ? sanitizedInput : formattedMessages,
+          };
           try {
-            parsedArgs = JSON.parse(call.args);
-          } catch {
-            parsedArgs = { raw: call.args };
-          }
-          progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+            const retryRes = await fetchWithRetry(
+              url,
+              {
+                method: 'POST',
+                headers: {
+                  ...clientHeaders,
+                  'x-opencode-request': generateOpenCodeRequestId(),
+                },
+                body: JSON.stringify(retryBody),
+                signal: abortController.signal,
+              },
+              { retries: 0 }
+            );
+            if (retryRes.ok) {
+              res = retryRes;
+            } else {
+              errText = await retryRes.text().catch(() => '');
+              userDetail = extractErrorMessage(errText);
+            }
+          } catch {}
         }
-        pendingToolCalls.clear();
+
+        if (!res.ok) {
+          // 1. Auth errors: throw NoPermissions to let VS Code trigger re-auth prompts if configured
+          if (res.status === 401 || res.status === 403) {
+            const LMError = (vscode as any).LanguageModelError;
+            const cleanDetail = userDetail.replace(/^OpenCode authentication failed:\s*/i, '').trim();
+            const errMessage = cleanDetail
+              ? `OpenCode authentication failed: ${cleanDetail}`
+              : 'OpenCode authentication failed: Invalid or expired API key.';
+            if (LMError?.NoPermissions) {
+              throw LMError.NoPermissions(errMessage);
+            }
+            throw new Error(errMessage);
+          }
+
+          // 2. Model not found: throw NotFound
+          if (res.status === 404) {
+            const LMError = (vscode as any).LanguageModelError;
+            if (LMError?.NotFound) {
+              throw LMError.NotFound(`OpenCode model '${model.id}' was not found in the remote catalog.`);
+            }
+            throw new Error(`OpenCode model '${model.id}' was not found in the remote catalog.`);
+          }
+
+          // 3. Upstream Server Errors (500, 502 Bad Gateway, 503, 504) or rate limits
+          // Instead of throwing an Error (which causes Copilot's runtime to retry 5 times for 32.4 seconds),
+          // stream an informative Markdown alert card to the user and resolve cleanly (return void).
+          const alertNotice = [
+            `> ⚠️ **OpenCode Model Alert (${res.status} ${res.statusText || 'Service Error'})**`,
+            `>`,
+            `> Unable to reach **${model.name}** (\`${model.id}\`): upstream server error.`,
+            `>`,
+            `> **Upstream detail:** \`${userDetail.slice(0, 300) || 'Internal server error'}\``,
+            `>`,
+            `> **Suggestions:**`,
+            `> - If using an experimental/free tier model, try switching to active models like \`mimo-v2.5-free\` or \`big-pickle\`.`,
+            `> - For maximum reliability, use flat-rate OpenCode Go models (e.g. \`deepseek-v4-pro\`, \`qwen3.7-max\`, \`kimi-k3\`).`,
+            `> - Retry your request in a few moments if this is a temporary provider outage.`,
+          ].join('\n');
+
+          progress.report(new vscode.LanguageModelTextPart(alertNotice));
+          return; // Clean resolution bypasses Copilot's 5-retry 32-second loop!
+        }
       }
-      if (!hasStreamError && !token.isCancellationRequested && !abortController.signal.aborted) {
-        this.log(`Stream completed for model=${model.id}`);
+
+      if (!res.body) {
+        throw new Error('OpenCode API returned empty body');
       }
+
+      // Parse streaming SSE response
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      // Track in-progress tool calls and reasoning stream
+      const pendingToolCalls = new Map<number, { id: string; name: string; args: string }>();
+      const thinkingId = `thinking-${Date.now()}`;
+      const thinkParser = new ThinkTagStreamParser();
+      let hasStreamError = false;
+      let lastReadAt = Date.now();
+      let partsReportedCount = 0;
+      let isStallRetry = false;
+
+      const emitThinking = (thinking: string) => {
+        if (!thinking) return;
+        partsReportedCount++;
+        const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
+        if (ThinkingPart) {
+          progress.report(new ThinkingPart(thinking, thinkingId));
+        } else {
+          progress.report(new vscode.LanguageModelTextPart(thinking));
+        }
+      };
+
+      try {
+        while (true) {
+          if (token.isCancellationRequested) break;
+
+          const idleMs = idleTimeoutMs - (Date.now() - lastReadAt);
+          let idleTimer: ReturnType<typeof setTimeout> | undefined;
+          const idleTimeout = new Promise<never>((_, reject) => {
+            idleTimer = setTimeout(
+              () => { reject(new Error(`Stream idle for over ${Math.round(idleTimeoutMs / 1000)}s; no data received from OpenCode upstream.`)); },
+              Math.max(0, idleMs)
+            );
+          });
+
+          let done: boolean, value: Uint8Array | undefined;
+          try {
+            ({ done, value } = await Promise.race([reader.read(), idleTimeout]));
+          } finally {
+            clearTimeout(idleTimer);
+          }
+          lastReadAt = Date.now();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+
+          let isDone = false;
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith(':')) continue;
+            if (trimmed === 'data: [DONE]') {
+              isDone = true;
+              break;
+            }
+
+            if (trimmed.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(trimmed.slice(6));
+
+                // 1. Handle OpenAI Responses API stream format (used by Muse, GPT, Grok)
+                if (data.type === 'response.completed') {
+                  isDone = true;
+                  break;
+                }
+
+                if (data.type === 'response.output_text.delta') {
+                  const delta = typeof data.delta === 'string' ? data.delta : data.delta?.text || data.delta?.value || '';
+                  if (delta) {
+                    partsReportedCount++;
+                    progress.report(new vscode.LanguageModelTextPart(delta));
+                  }
+                  continue;
+                }
+
+                if (data.type === 'response.reasoning_text.delta') {
+                  const delta = typeof data.delta === 'string' ? data.delta : data.delta?.text || data.delta?.value || '';
+                  if (delta && delta.length > 0) {
+                    partsReportedCount++;
+                    const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
+                    if (ThinkingPart) {
+                      progress.report(new ThinkingPart(delta, thinkingId));
+                    }
+                  }
+                  continue;
+                }
+
+                if (data.type === 'response.output_item.added' && data.item?.type === 'function_call') {
+                  const idx = typeof data.output_index === 'number' ? data.output_index : 0;
+                  pendingToolCalls.set(idx, {
+                    id: data.item.call_id || data.item.id || `call_${Date.now()}`,
+                    name: data.item.name || '',
+                    args: data.item.arguments || '',
+                  });
+                  continue;
+                }
+
+                if (data.type === 'response.function_call_arguments.delta') {
+                  const idx = typeof data.output_index === 'number' ? data.output_index : 0;
+                  const current = pendingToolCalls.get(idx) || { id: '', name: '', args: '' };
+                  const delta = typeof data.delta === 'string' ? data.delta : data.delta?.arguments || '';
+                  current.args += delta;
+                  pendingToolCalls.set(idx, current);
+                  continue;
+                }
+
+                if (data.type === 'response.output_item.done' && data.item?.type === 'function_call') {
+                  const idx = typeof data.output_index === 'number' ? data.output_index : 0;
+                  const call = pendingToolCalls.get(idx);
+                  if (call) {
+                    let parsedArgs: any = {};
+                    try {
+                      parsedArgs = JSON.parse(call.args);
+                    } catch {
+                      parsedArgs = { raw: call.args };
+                    }
+                    partsReportedCount++;
+                    progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+                    pendingToolCalls.delete(idx);
+                  }
+                  continue;
+                }
+
+                // 2. Handle OpenAI Chat Completions API stream format (used by DeepSeek, Kimi, GLM, MiMo, Qwen)
+                const choice = data.choices?.[0];
+                if (!choice) continue;
+
+                // 1. Stream reasoning / thinking content from explicit reasoning fields
+                const rawReasoning =
+                  choice.delta?.reasoning_content ||
+                  choice.delta?.thought ||
+                  choice.delta?.reasoning ||
+                  (Array.isArray(choice.delta?.reasoning_details)
+                    ? choice.delta.reasoning_details.map((d: any) => d.text || '').join('')
+                    : undefined);
+
+                if (rawReasoning && rawReasoning.length > 0) {
+                  emitThinking(rawReasoning);
+                }
+
+                // 2. Stream delta text content, splitting out inline <think> tags
+                // via a chunk-boundary-safe parser (tags can be split across SSE chunks).
+                const content = choice.delta?.content;
+                if (content) {
+                  const { text, thinking } = thinkParser.feed(content);
+                  emitThinking(thinking);
+                  if (text) {
+                    partsReportedCount++;
+                    progress.report(new vscode.LanguageModelTextPart(text));
+                  }
+                }
+
+                // Accumulate streaming tool calls
+                if (choice.delta?.tool_calls) {
+                  choice.delta.tool_calls.forEach((tc: any, i: number) => {
+                    const idx = tc.index ?? i;
+                    const current = pendingToolCalls.get(idx) || { id: '', name: '', args: '' };
+                    if (tc.id) current.id = tc.id;
+                    if (tc.function?.name) current.name += tc.function.name;
+                    if (tc.function?.arguments) current.args += tc.function.arguments;
+                    pendingToolCalls.set(idx, current);
+                  });
+                }
+
+                // If finish_reason indicates tool_calls, emit completed tool call parts
+                if (choice.finish_reason === 'tool_calls' || (choice.finish_reason === 'stop' && pendingToolCalls.size > 0)) {
+                  for (const [, call] of pendingToolCalls) {
+                    let parsedArgs: any = {};
+                    try {
+                      parsedArgs = JSON.parse(call.args);
+                    } catch {
+                      parsedArgs = { raw: call.args };
+                    }
+                    partsReportedCount++;
+                    progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+                  }
+                  pendingToolCalls.clear();
+                }
+
+                if (choice.finish_reason === 'stop') {
+                  isDone = true;
+                  break;
+                }
+              } catch {}
+            }
+          }
+          if (isDone) break;
+        }
+        const flushed = thinkParser.flush();
+        if (flushed.thinking) emitThinking(flushed.thinking);
+        if (flushed.text) {
+          partsReportedCount++;
+          progress.report(new vscode.LanguageModelTextPart(flushed.text));
+        }
+      } catch (streamErr: unknown) {
+        void reader.cancel().catch(() => { /* ignore */ });
+        const errMsg = streamErr instanceof Error ? streamErr.message : String(streamErr);
+        const isIdleTimeout = errMsg.includes('Stream idle for over');
+        if (
+          isIdleTimeout &&
+          partsReportedCount === 0 &&
+          stallAttempt < maxStallRetries &&
+          !token.isCancellationRequested &&
+          !abortController.signal.aborted
+        ) {
+          isStallRetry = true;
+          this.log(
+            `Stream stalled with 0 bytes received for model=${model.id}; initiating automatic recovery retry (${stallAttempt + 1}/${maxStallRetries})...`
+          );
+        } else {
+          hasStreamError = true;
+          if (token.isCancellationRequested) {
+            this.log(`Stream canceled by user for model=${model.id}`);
+            return;
+          }
+          this.log(`Stream interrupted for model=${model.id}: ${errMsg}`);
+          progress.report(
+            new vscode.LanguageModelTextPart(
+              `\n\n*(Response stream interrupted: ${errMsg || 'Connection closed by upstream OpenCode service'})*`
+            )
+          );
+          return;
+        }
+      } finally {
+        if (!isStallRetry) {
+          // Flush any remaining accumulated tool calls ONLY if stream was NOT interrupted/canceled
+          if (!hasStreamError && !token.isCancellationRequested && !abortController.signal.aborted && pendingToolCalls.size > 0) {
+            for (const [, call] of pendingToolCalls) {
+              let parsedArgs: any = {};
+              try {
+                parsedArgs = JSON.parse(call.args);
+              } catch {
+                parsedArgs = { raw: call.args };
+              }
+              progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+            }
+            pendingToolCalls.clear();
+          }
+          if (!hasStreamError && !token.isCancellationRequested && !abortController.signal.aborted) {
+            this.log(`Stream completed for model=${model.id}`);
+          }
+        }
+      }
+
+      if (isStallRetry) {
+        continue;
+      }
+      return;
     }
   }
 

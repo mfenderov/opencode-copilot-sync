@@ -39,7 +39,31 @@ export class LanguageModelError extends Error {
 }
 export const window = {
   createOutputChannel: () => ({ appendLine: () => {}, append: () => {}, show: () => {} }),
+  registerTreeDataProvider: () => ({ dispose: () => {} }),
 };
 export const lm = {
   registerLanguageModelChatProvider: () => ({ dispose: () => {} }),
 };
+export const TreeItemCollapsibleState = {
+  None: 0,
+  Collapsed: 1,
+  Expanded: 2,
+};
+export class ThemeColor {
+  constructor(id) {
+    this.id = id;
+  }
+}
+export class ThemeIcon {
+  constructor(id, color) {
+    this.id = id;
+    this.color = color;
+  }
+}
+export class TreeItem {
+  constructor(label, collapsibleState = TreeItemCollapsibleState.None) {
+    this.label = label;
+    this.collapsibleState = collapsibleState;
+  }
+}
+

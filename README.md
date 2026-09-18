@@ -15,6 +15,8 @@ A lightweight (7 KB, zero runtime dependencies) VS Code extension that automatic
 ## ✨ Features
 
 - **🔄 Automatic Background Sync**: Activates seamlessly on `onStartupFinished` when VS Code opens or window reloads.
+- **📊 Usage & Quotas Sidebar**: Live view in the Activity Bar showing real-time Go subscription limits (5-hour rolling, weekly, monthly countdowns), model catalog counts, and quick actions.
+- **🛡️ Silent Stall Auto-Recovery**: Automatically detects zero-byte stream hangs on upstream proxy connections and recovers with a fresh request ID before erroring.
 - **🎯 Single Unified Provider (`OpenCode`)**: All Go, Zen Free, and Zen-exclusive models appear together under a single clean "OpenCode" entry in Copilot's model picker with zero duplicate clutter.
 - **💰 Smart Cost-Optimized Routing**:
   - Any model covered by the **OpenCode Go flat subscription** (e.g. DeepSeek V4, GLM-5.3, Kimi K3, Qwen 3.8, MiniMax M3) routes to `/zen/go/v1/chat/completions` ($0 per-token).
@@ -58,14 +60,20 @@ Customize behavior via VS Code Settings (`Cmd+,` / `Ctrl+,` search for `opencode
 | `opencode.autoSyncOnStartup` | `true` | Automatically sync models on VS Code launch or window reload. |
 | `opencode.includeGoModels` | `true` | Include models from the OpenCode Go subscription catalog. |
 | `opencode.includeZenModels` | `true` | Include Zen models (Free tier + Zen exclusive models). |
+| `opencode.streamIdleTimeoutSeconds` | `90` | Watchdog timeout in seconds before auto-recovering or alerting on an idle stream. |
 
 ---
 
-## 🕹️ Commands & Status Bar
+## 🕹️ Commands, Status Bar & Sidebar
 
+- **Activity Bar View**: Click the **OpenCode** hubot icon in the left Activity Bar to see:
+  - 📊 Real-time Go subscription quotas (rolling 5-hour, weekly, monthly limits & reset timers)
+  - 🏷️ Active model counts (OpenCode Go flat-rate vs Zen Free tier)
+  - ⚡ Quick actions to sync models, update API key, and open config
 - **Status Bar Indicator**: Click `$(hubot) OpenCode` in the bottom-right status bar to trigger a live sync with spin animation.
 - **Command Palette** (`Cmd+Shift+P` / `Ctrl+Shift+P`):
   - `OpenCode: Sync Models to Copilot`: Manually fetch models and refresh Copilot.
+  - `OpenCode: Refresh Usage`: Refresh Go subscription limits in status bar and sidebar view.
   - `OpenCode: Set API Key`: Update your OpenCode API key securely.
   - `OpenCode: Open Copilot Models Config`: Open `chatLanguageModels.json` in editor.
 

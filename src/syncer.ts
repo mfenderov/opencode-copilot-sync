@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as cp from 'node:child_process';
 import { mergeChatLanguageModels, purgeOpenCodeFromChatLanguageModels, type ProviderEntry } from './config.js';
-import { enrichModel } from './enricher.js';
+import { enrichModel, type CustomEndpointModel } from './enricher.js';
 import { fetchOpenCodeModels, fetchModelsDevMetadata, filterFreeModels } from './fetcher.js';
 
 export function getChatLanguageModelsPath(activeExtensionStoragePath?: string): string {
@@ -622,7 +622,7 @@ export function writeProvidersToConfig(
 export async function syncOpenCodeModels(
   apiKey: string,
   options: { includeGo?: boolean; includeZen?: boolean; targetPath?: string; storagePath?: string } = {}
-): Promise<{ goCount: number; zenCount: number; totalCount: number; models: any[]; targetPath: string; backupPath: string | null }> {
+): Promise<{ goCount: number; zenCount: number; totalCount: number; models: CustomEndpointModel[]; targetPath: string; backupPath: string | null }> {
   const includeGo = options.includeGo ?? true;
   const includeZen = options.includeZen ?? true;
 
@@ -656,7 +656,7 @@ export async function syncOpenCodeModels(
   } catch {}
 
   const goSet = new Set(goModelIds);
-  const models = [];
+  const models: CustomEndpointModel[] = [];
 
   // Go models first (flat subscription rate) -> (OpenCode Go)
   for (const id of goModelIds) {

@@ -24,42 +24,37 @@
     "complexity": 19,
     "coverage": 0.012
   },
-  "src/extension.ts:93:performSync": {
-    "crap": 156,
-    "complexity": 12,
-    "coverage": 0
-  },
-  "src/provider.ts:603:streamResponse": {
-    "crap": 146.63,
-    "complexity": 136,
-    "coverage": 0.917
+  "src/provider.ts:617:streamResponse": {
+    "crap": 151.74,
+    "complexity": 142,
+    "coverage": 0.922
   },
   "src/fetcher.ts:33:fetchModelsDevMetadata": {
     "crap": 144.33,
     "complexity": 12,
     "coverage": 0.028
   },
+  "src/extension.ts:109:performSync": {
+    "crap": 132,
+    "complexity": 11,
+    "coverage": 0
+  },
   "src/auth.ts:178:resolveApiKey": {
     "crap": 124.59,
     "complexity": 11,
     "coverage": 0.021
   },
-  "src/provider.ts:437:provideLanguageModelChatResponse": {
+  "src/provider.ts:451:provideLanguageModelChatResponse": {
     "crap": 94.45,
     "complexity": 38,
     "coverage": 0.661
   },
-  "src/enricher.ts:58:enrichModel": {
-    "crap": 67.89,
+  "src/enricher.ts:59:enrichModel": {
+    "crap": 67.82,
     "complexity": 64,
     "coverage": 0.902
   },
-  "src/extension.ts:75:updateUsageMeter": {
-    "crap": 42,
-    "complexity": 6,
-    "coverage": 0
-  },
-  "src/extension.ts:153:<anonymous>": {
+  "src/extension.ts:82:updateUsageMeter": {
     "crap": 42,
     "complexity": 6,
     "coverage": 0
@@ -79,7 +74,12 @@
     "complexity": 6,
     "coverage": 0.034
   },
-  "src/extension.ts:8:activate": {
+  "src/views/usageTreeProvider.ts:47:refresh": {
+    "crap": 38,
+    "complexity": 6,
+    "coverage": 0.038
+  },
+  "src/extension.ts:9:activate": {
     "crap": 30,
     "complexity": 5,
     "coverage": 0
@@ -94,7 +94,7 @@
     "complexity": 15,
     "coverage": 0.694
   },
-  "src/extension.ts:43:<anonymous>": {
+  "src/extension.ts:44:<anonymous>": {
     "crap": 20,
     "complexity": 4,
     "coverage": 0
@@ -114,17 +114,22 @@
     "complexity": 4,
     "coverage": 0.037
   },
-  "src/enricher.ts:34:<anonymous>": {
+  "src/enricher.ts:35:<anonymous>": {
     "crap": 17,
     "complexity": 17,
     "coverage": 1
   },
-  "src/provider.ts:356:<anonymous>": {
+  "src/provider.ts:370:<anonymous>": {
     "crap": 12.02,
     "complexity": 12,
     "coverage": 0.952
   },
-  "src/extension.ts:192:<anonymous>": {
+  "src/extension.ts:169:<anonymous>": {
+    "crap": 12,
+    "complexity": 3,
+    "coverage": 0
+  },
+  "src/extension.ts:211:<anonymous>": {
     "crap": 12,
     "complexity": 3,
     "coverage": 0

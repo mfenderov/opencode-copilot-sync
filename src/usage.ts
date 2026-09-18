@@ -60,7 +60,7 @@ export function formatStatusBarText(usage: GoUsageData): string {
   return `${icon} OpenCode ${maxPercent}%`;
 }
 
-function formatRelativeTime(isoDateStr: string): string {
+export function formatRelativeTime(isoDateStr: string): string {
   try {
     const target = new Date(isoDateStr).getTime();
     const now = Date.now();

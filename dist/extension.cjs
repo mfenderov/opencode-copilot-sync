@@ -2586,9 +2586,9 @@ var require_request = __commonJS({
 var require_dispatcher = __commonJS({
   "node_modules/undici/lib/dispatcher/dispatcher.js"(exports2, module2) {
     "use strict";
-    var EventEmitter2 = require("node:events");
+    var EventEmitter3 = require("node:events");
     var { kOriginless, kUrl } = require_symbols();
-    var Dispatcher = class extends EventEmitter2 {
+    var Dispatcher = class extends EventEmitter3 {
       dispatch() {
         throw new Error("not implemented");
       }
@@ -10762,7 +10762,7 @@ var require_socks5_utils = __commonJS({
 var require_socks5_client = __commonJS({
   "node_modules/undici/lib/core/socks5-client.js"(exports2, module2) {
     "use strict";
-    var { EventEmitter: EventEmitter2 } = require("node:events");
+    var { EventEmitter: EventEmitter3 } = require("node:events");
     var { Buffer: Buffer2 } = require("node:buffer");
     var { InvalidArgumentError, Socks5ProxyError } = require_errors();
     var { debuglog } = require("node:util");
@@ -10807,7 +10807,7 @@ var require_socks5_client = __commonJS({
       ERROR: "error",
       CLOSED: "closed"
     };
-    var Socks5Client = class extends EventEmitter2 {
+    var Socks5Client = class extends EventEmitter3 {
       constructor(socket, options = {}) {
         super();
         if (!socket) {
@@ -18280,9 +18280,9 @@ var require_memory_cache_store = __commonJS({
   "node_modules/undici/lib/cache/memory-cache-store.js"(exports2, module2) {
     "use strict";
     var { Writable } = require("node:stream");
-    var { EventEmitter: EventEmitter2 } = require("node:events");
+    var { EventEmitter: EventEmitter3 } = require("node:events");
     var { assertCacheKey, assertCacheValue } = require_cache();
-    var MemoryCacheStore = class extends EventEmitter2 {
+    var MemoryCacheStore = class extends EventEmitter3 {
       #maxCount = 1024;
       #maxSize = 104857600;
       // 100MB
@@ -27407,7 +27407,7 @@ __export(extension_exports, {
   deactivate: () => deactivate
 });
 module.exports = __toCommonJS(extension_exports);
-var vscode2 = __toESM(require("vscode"), 1);
+var vscode3 = __toESM(require("vscode"), 1);
 
 // src/auth.ts
 var fs2 = __toESM(require("node:fs"), 1);
@@ -27587,7 +27587,8 @@ function enrichModel(modelId, options = {}) {
     modelOptions: {
       temperature: null,
       top_p: null
-    }
+    },
+    isFree
   };
   if (isGo || isFree) {
     model.requestHeaders = {
@@ -28865,6 +28866,20 @@ var ThinkTagStreamParser = class _ThinkTagStreamParser {
   }
 };
 var STREAM_IDLE_TIMEOUT_MS = Number(process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS) || 9e4;
+function getStreamIdleTimeoutMs() {
+  if (process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS) {
+    const envVal = Number(process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS);
+    if (!isNaN(envVal) && envVal > 0) return envVal;
+  }
+  try {
+    const configSec = vscode.workspace.getConfiguration("opencode").get("streamIdleTimeoutSeconds");
+    if (typeof configSec === "number" && configSec > 0) {
+      return configSec * 1e3;
+    }
+  } catch {
+  }
+  return STREAM_IDLE_TIMEOUT_MS;
+}
 function clampToolName(name) {
   return name.length > 64 ? name.slice(0, 64) : name;
 }
@@ -29242,305 +29257,335 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
     this.log(
       `Request: model=${model.id} protocol=${isResponses ? "responses" : "chat-completions"} url=${url} reasoningEffort=${reasoningEffort || "none"} tools=${toolsPayload?.length ?? 0}`
     );
-    const clientHeaders = {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "User-Agent": "opencode/1.18.31",
-      "x-opencode-client": "cli",
-      "x-opencode-session": sessionId,
-      "x-opencode-request": generateOpenCodeRequestId()
-    };
-    let res;
-    try {
-      res = await fetchWithRetry(
-        url,
-        {
-          method: "POST",
-          headers: clientHeaders,
-          body: JSON.stringify(requestBody),
-          signal: abortController.signal
-        },
-        {
-          // 5xx / network errors: treated as a likely-dead upstream, so we
-          // only give it one quick courtesy retry before surfacing the alert.
-          retries: 1,
-          baseDelayMs: 300,
-          maxDelayMs: 1e3,
-          // 429: a rate-limit cooldown is a "come back later" signal, not a
-          // dead upstream, so it gets its own much more patient budget — 3
-          // back-to-back attempts, then 7 more spaced 1s apart (10 retries
-          // total), honoring Retry-After up to a 3s cap per wait so a long
-          // server-requested cooldown can't block the user for a full minute.
-          rateLimitRetries: 10,
-          rateLimitImmediateAttempts: 3,
-          rateLimitDelayMs: 1e3,
-          rateLimitMaxWaitMs: 3e3
-        }
-      );
-    } catch (err) {
-      if (token.isCancellationRequested || abortController.signal.aborted) {
-        return;
-      }
-      this.log(`Request failed before receiving a response: ${err?.message || err}`);
-      throw err;
-    }
-    if (!res.ok) {
-      let errText = await res.text().catch(() => "");
-      let userDetail = extractErrorMessage(errText);
-      this.log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`);
-      if (res.status === 400 && isResponses && userDetail.includes("encrypted_content")) {
-        this.log(`Detected reasoning echo error for model=${model.id}, retrying without stale reasoning...`);
-        const sanitizedInput = responsesInput.filter((item) => !isStaleReasoningInput(item));
-        const retryBody = {
-          ...requestBody,
-          input: sanitizedInput.length > 0 ? sanitizedInput : formattedMessages
-        };
-        try {
-          const retryRes = await fetchWithRetry(
-            url,
-            {
-              method: "POST",
-              headers: {
-                ...clientHeaders,
-                "x-opencode-request": generateOpenCodeRequestId()
-              },
-              body: JSON.stringify(retryBody),
-              signal: abortController.signal
-            },
-            { retries: 0 }
-          );
-          if (retryRes.ok) {
-            res = retryRes;
-          } else {
-            errText = await retryRes.text().catch(() => "");
-            userDetail = extractErrorMessage(errText);
+    const maxStallRetries = 1;
+    const idleTimeoutMs = getStreamIdleTimeoutMs();
+    for (let stallAttempt = 0; stallAttempt <= maxStallRetries; stallAttempt++) {
+      const clientHeaders = {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "User-Agent": "opencode/1.18.31",
+        "x-opencode-client": "cli",
+        "x-opencode-session": sessionId,
+        "x-opencode-request": generateOpenCodeRequestId()
+      };
+      let res;
+      try {
+        res = await fetchWithRetry(
+          url,
+          {
+            method: "POST",
+            headers: clientHeaders,
+            body: JSON.stringify(requestBody),
+            signal: abortController.signal
+          },
+          {
+            // 5xx / network errors: treated as a likely-dead upstream, so we
+            // only give it one quick courtesy retry before surfacing the alert.
+            retries: 1,
+            baseDelayMs: 300,
+            maxDelayMs: 1e3,
+            // 429: a rate-limit cooldown is a "come back later" signal, not a
+            // dead upstream, so it gets its own much more patient budget — 3
+            // back-to-back attempts, then 7 more spaced 1s apart (10 retries
+            // total), honoring Retry-After up to a 3s cap per wait so a long
+            // server-requested cooldown can't block the user for a full minute.
+            rateLimitRetries: 10,
+            rateLimitImmediateAttempts: 3,
+            rateLimitDelayMs: 1e3,
+            rateLimitMaxWaitMs: 3e3
           }
-        } catch {
+        );
+      } catch (err) {
+        if (token.isCancellationRequested || abortController.signal.aborted) {
+          return;
         }
+        this.log(`Request failed before receiving a response: ${err?.message || err}`);
+        throw err;
       }
       if (!res.ok) {
-        if (res.status === 401 || res.status === 403) {
-          const LMError = vscode.LanguageModelError;
-          const cleanDetail = userDetail.replace(/^OpenCode authentication failed:\s*/i, "").trim();
-          const errMessage = cleanDetail ? `OpenCode authentication failed: ${cleanDetail}` : "OpenCode authentication failed: Invalid or expired API key.";
-          if (LMError?.NoPermissions) {
-            throw LMError.NoPermissions(errMessage);
+        let errText = await res.text().catch(() => "");
+        let userDetail = extractErrorMessage(errText);
+        this.log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`);
+        if (res.status === 400 && isResponses && userDetail.includes("encrypted_content")) {
+          this.log(`Detected reasoning echo error for model=${model.id}, retrying without stale reasoning...`);
+          const sanitizedInput = responsesInput.filter((item) => !isStaleReasoningInput(item));
+          const retryBody = {
+            ...requestBody,
+            input: sanitizedInput.length > 0 ? sanitizedInput : formattedMessages
+          };
+          try {
+            const retryRes = await fetchWithRetry(
+              url,
+              {
+                method: "POST",
+                headers: {
+                  ...clientHeaders,
+                  "x-opencode-request": generateOpenCodeRequestId()
+                },
+                body: JSON.stringify(retryBody),
+                signal: abortController.signal
+              },
+              { retries: 0 }
+            );
+            if (retryRes.ok) {
+              res = retryRes;
+            } else {
+              errText = await retryRes.text().catch(() => "");
+              userDetail = extractErrorMessage(errText);
+            }
+          } catch {
           }
-          throw new Error(errMessage);
         }
-        if (res.status === 404) {
-          const LMError = vscode.LanguageModelError;
-          if (LMError?.NotFound) {
-            throw LMError.NotFound(`OpenCode model '${model.id}' was not found in the remote catalog.`);
+        if (!res.ok) {
+          if (res.status === 401 || res.status === 403) {
+            const LMError = vscode.LanguageModelError;
+            const cleanDetail = userDetail.replace(/^OpenCode authentication failed:\s*/i, "").trim();
+            const errMessage = cleanDetail ? `OpenCode authentication failed: ${cleanDetail}` : "OpenCode authentication failed: Invalid or expired API key.";
+            if (LMError?.NoPermissions) {
+              throw LMError.NoPermissions(errMessage);
+            }
+            throw new Error(errMessage);
           }
-          throw new Error(`OpenCode model '${model.id}' was not found in the remote catalog.`);
+          if (res.status === 404) {
+            const LMError = vscode.LanguageModelError;
+            if (LMError?.NotFound) {
+              throw LMError.NotFound(`OpenCode model '${model.id}' was not found in the remote catalog.`);
+            }
+            throw new Error(`OpenCode model '${model.id}' was not found in the remote catalog.`);
+          }
+          const alertNotice = [
+            `> \u26A0\uFE0F **OpenCode Model Alert (${res.status} ${res.statusText || "Service Error"})**`,
+            `>`,
+            `> Unable to reach **${model.name}** (\`${model.id}\`): upstream server error.`,
+            `>`,
+            `> **Upstream detail:** \`${userDetail.slice(0, 300) || "Internal server error"}\``,
+            `>`,
+            `> **Suggestions:**`,
+            `> - If using an experimental/free tier model, try switching to active models like \`mimo-v2.5-free\` or \`big-pickle\`.`,
+            `> - For maximum reliability, use flat-rate OpenCode Go models (e.g. \`deepseek-v4-pro\`, \`qwen3.7-max\`, \`kimi-k3\`).`,
+            `> - Retry your request in a few moments if this is a temporary provider outage.`
+          ].join("\n");
+          progress.report(new vscode.LanguageModelTextPart(alertNotice));
+          return;
         }
-        const alertNotice = [
-          `> \u26A0\uFE0F **OpenCode Model Alert (${res.status} ${res.statusText || "Service Error"})**`,
-          `>`,
-          `> Unable to reach **${model.name}** (\`${model.id}\`): upstream server error.`,
-          `>`,
-          `> **Upstream detail:** \`${userDetail.slice(0, 300) || "Internal server error"}\``,
-          `>`,
-          `> **Suggestions:**`,
-          `> - If using an experimental/free tier model, try switching to active models like \`mimo-v2.5-free\` or \`big-pickle\`.`,
-          `> - For maximum reliability, use flat-rate OpenCode Go models (e.g. \`deepseek-v4-pro\`, \`qwen3.7-max\`, \`kimi-k3\`).`,
-          `> - Retry your request in a few moments if this is a temporary provider outage.`
-        ].join("\n");
-        progress.report(new vscode.LanguageModelTextPart(alertNotice));
-        return;
       }
-    }
-    if (!res.body) {
-      throw new Error("OpenCode API returned empty body");
-    }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    const pendingToolCalls = /* @__PURE__ */ new Map();
-    const thinkingId = `thinking-${Date.now()}`;
-    const thinkParser = new ThinkTagStreamParser();
-    let hasStreamError = false;
-    let lastReadAt = Date.now();
-    const emitThinking = (thinking) => {
-      if (!thinking) return;
-      const ThinkingPart = vscode.LanguageModelThinkingPart;
-      if (ThinkingPart) {
-        progress.report(new ThinkingPart(thinking, thinkingId));
-      } else {
-        progress.report(new vscode.LanguageModelTextPart(thinking));
+      if (!res.body) {
+        throw new Error("OpenCode API returned empty body");
       }
-    };
-    try {
-      while (true) {
-        if (token.isCancellationRequested) break;
-        const idleMs = STREAM_IDLE_TIMEOUT_MS - (Date.now() - lastReadAt);
-        let idleTimer;
-        const idleTimeout = new Promise((_, reject) => {
-          idleTimer = setTimeout(
-            () => {
-              reject(new Error(`Stream idle for over ${Math.round(STREAM_IDLE_TIMEOUT_MS / 1e3)}s; no data received from OpenCode upstream.`));
-            },
-            Math.max(0, idleMs)
-          );
-        });
-        let done, value;
-        try {
-          ({ done, value } = await Promise.race([reader.read(), idleTimeout]));
-        } finally {
-          clearTimeout(idleTimer);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      const pendingToolCalls = /* @__PURE__ */ new Map();
+      const thinkingId = `thinking-${Date.now()}`;
+      const thinkParser = new ThinkTagStreamParser();
+      let hasStreamError = false;
+      let lastReadAt = Date.now();
+      let partsReportedCount = 0;
+      let isStallRetry = false;
+      const emitThinking = (thinking) => {
+        if (!thinking) return;
+        partsReportedCount++;
+        const ThinkingPart = vscode.LanguageModelThinkingPart;
+        if (ThinkingPart) {
+          progress.report(new ThinkingPart(thinking, thinkingId));
+        } else {
+          progress.report(new vscode.LanguageModelTextPart(thinking));
         }
-        lastReadAt = Date.now();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        let isDone = false;
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith(":")) continue;
-          if (trimmed === "data: [DONE]") {
-            isDone = true;
-            break;
+      };
+      try {
+        while (true) {
+          if (token.isCancellationRequested) break;
+          const idleMs = idleTimeoutMs - (Date.now() - lastReadAt);
+          let idleTimer;
+          const idleTimeout = new Promise((_, reject) => {
+            idleTimer = setTimeout(
+              () => {
+                reject(new Error(`Stream idle for over ${Math.round(idleTimeoutMs / 1e3)}s; no data received from OpenCode upstream.`));
+              },
+              Math.max(0, idleMs)
+            );
+          });
+          let done, value;
+          try {
+            ({ done, value } = await Promise.race([reader.read(), idleTimeout]));
+          } finally {
+            clearTimeout(idleTimer);
           }
-          if (trimmed.startsWith("data: ")) {
-            try {
-              const data = JSON.parse(trimmed.slice(6));
-              if (data.type === "response.completed") {
-                isDone = true;
-                break;
-              }
-              if (data.type === "response.output_text.delta") {
-                const delta = typeof data.delta === "string" ? data.delta : data.delta?.text || data.delta?.value || "";
-                if (delta) {
-                  progress.report(new vscode.LanguageModelTextPart(delta));
+          lastReadAt = Date.now();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          let isDone = false;
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith(":")) continue;
+            if (trimmed === "data: [DONE]") {
+              isDone = true;
+              break;
+            }
+            if (trimmed.startsWith("data: ")) {
+              try {
+                const data = JSON.parse(trimmed.slice(6));
+                if (data.type === "response.completed") {
+                  isDone = true;
+                  break;
                 }
-                continue;
-              }
-              if (data.type === "response.reasoning_text.delta") {
-                const delta = typeof data.delta === "string" ? data.delta : data.delta?.text || data.delta?.value || "";
-                if (delta && delta.length > 0) {
-                  const ThinkingPart = vscode.LanguageModelThinkingPart;
-                  if (ThinkingPart) {
-                    progress.report(new ThinkingPart(delta, thinkingId));
+                if (data.type === "response.output_text.delta") {
+                  const delta = typeof data.delta === "string" ? data.delta : data.delta?.text || data.delta?.value || "";
+                  if (delta) {
+                    partsReportedCount++;
+                    progress.report(new vscode.LanguageModelTextPart(delta));
                   }
+                  continue;
                 }
-                continue;
-              }
-              if (data.type === "response.output_item.added" && data.item?.type === "function_call") {
-                const idx = typeof data.output_index === "number" ? data.output_index : 0;
-                pendingToolCalls.set(idx, {
-                  id: data.item.call_id || data.item.id || `call_${Date.now()}`,
-                  name: data.item.name || "",
-                  args: data.item.arguments || ""
-                });
-                continue;
-              }
-              if (data.type === "response.function_call_arguments.delta") {
-                const idx = typeof data.output_index === "number" ? data.output_index : 0;
-                const current = pendingToolCalls.get(idx) || { id: "", name: "", args: "" };
-                const delta = typeof data.delta === "string" ? data.delta : data.delta?.arguments || "";
-                current.args += delta;
-                pendingToolCalls.set(idx, current);
-                continue;
-              }
-              if (data.type === "response.output_item.done" && data.item?.type === "function_call") {
-                const idx = typeof data.output_index === "number" ? data.output_index : 0;
-                const call = pendingToolCalls.get(idx);
-                if (call) {
-                  let parsedArgs = {};
-                  try {
-                    parsedArgs = JSON.parse(call.args);
-                  } catch {
-                    parsedArgs = { raw: call.args };
+                if (data.type === "response.reasoning_text.delta") {
+                  const delta = typeof data.delta === "string" ? data.delta : data.delta?.text || data.delta?.value || "";
+                  if (delta && delta.length > 0) {
+                    partsReportedCount++;
+                    const ThinkingPart = vscode.LanguageModelThinkingPart;
+                    if (ThinkingPart) {
+                      progress.report(new ThinkingPart(delta, thinkingId));
+                    }
                   }
-                  progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
-                  pendingToolCalls.delete(idx);
+                  continue;
                 }
-                continue;
-              }
-              const choice = data.choices?.[0];
-              if (!choice) continue;
-              const rawReasoning = choice.delta?.reasoning_content || choice.delta?.thought || choice.delta?.reasoning || (Array.isArray(choice.delta?.reasoning_details) ? choice.delta.reasoning_details.map((d) => d.text || "").join("") : void 0);
-              if (rawReasoning && rawReasoning.length > 0) {
-                emitThinking(rawReasoning);
-              }
-              const content = choice.delta?.content;
-              if (content) {
-                const { text, thinking } = thinkParser.feed(content);
-                emitThinking(thinking);
-                if (text) {
-                  progress.report(new vscode.LanguageModelTextPart(text));
+                if (data.type === "response.output_item.added" && data.item?.type === "function_call") {
+                  const idx = typeof data.output_index === "number" ? data.output_index : 0;
+                  pendingToolCalls.set(idx, {
+                    id: data.item.call_id || data.item.id || `call_${Date.now()}`,
+                    name: data.item.name || "",
+                    args: data.item.arguments || ""
+                  });
+                  continue;
                 }
-              }
-              if (choice.delta?.tool_calls) {
-                choice.delta.tool_calls.forEach((tc, i) => {
-                  const idx = tc.index ?? i;
+                if (data.type === "response.function_call_arguments.delta") {
+                  const idx = typeof data.output_index === "number" ? data.output_index : 0;
                   const current = pendingToolCalls.get(idx) || { id: "", name: "", args: "" };
-                  if (tc.id) current.id = tc.id;
-                  if (tc.function?.name) current.name += tc.function.name;
-                  if (tc.function?.arguments) current.args += tc.function.arguments;
+                  const delta = typeof data.delta === "string" ? data.delta : data.delta?.arguments || "";
+                  current.args += delta;
                   pendingToolCalls.set(idx, current);
-                });
-              }
-              if (choice.finish_reason === "tool_calls" || choice.finish_reason === "stop" && pendingToolCalls.size > 0) {
-                for (const [, call] of pendingToolCalls) {
-                  let parsedArgs = {};
-                  try {
-                    parsedArgs = JSON.parse(call.args);
-                  } catch {
-                    parsedArgs = { raw: call.args };
-                  }
-                  progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+                  continue;
                 }
-                pendingToolCalls.clear();
+                if (data.type === "response.output_item.done" && data.item?.type === "function_call") {
+                  const idx = typeof data.output_index === "number" ? data.output_index : 0;
+                  const call = pendingToolCalls.get(idx);
+                  if (call) {
+                    let parsedArgs = {};
+                    try {
+                      parsedArgs = JSON.parse(call.args);
+                    } catch {
+                      parsedArgs = { raw: call.args };
+                    }
+                    partsReportedCount++;
+                    progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+                    pendingToolCalls.delete(idx);
+                  }
+                  continue;
+                }
+                const choice = data.choices?.[0];
+                if (!choice) continue;
+                const rawReasoning = choice.delta?.reasoning_content || choice.delta?.thought || choice.delta?.reasoning || (Array.isArray(choice.delta?.reasoning_details) ? choice.delta.reasoning_details.map((d) => d.text || "").join("") : void 0);
+                if (rawReasoning && rawReasoning.length > 0) {
+                  emitThinking(rawReasoning);
+                }
+                const content = choice.delta?.content;
+                if (content) {
+                  const { text, thinking } = thinkParser.feed(content);
+                  emitThinking(thinking);
+                  if (text) {
+                    partsReportedCount++;
+                    progress.report(new vscode.LanguageModelTextPart(text));
+                  }
+                }
+                if (choice.delta?.tool_calls) {
+                  choice.delta.tool_calls.forEach((tc, i) => {
+                    const idx = tc.index ?? i;
+                    const current = pendingToolCalls.get(idx) || { id: "", name: "", args: "" };
+                    if (tc.id) current.id = tc.id;
+                    if (tc.function?.name) current.name += tc.function.name;
+                    if (tc.function?.arguments) current.args += tc.function.arguments;
+                    pendingToolCalls.set(idx, current);
+                  });
+                }
+                if (choice.finish_reason === "tool_calls" || choice.finish_reason === "stop" && pendingToolCalls.size > 0) {
+                  for (const [, call] of pendingToolCalls) {
+                    let parsedArgs = {};
+                    try {
+                      parsedArgs = JSON.parse(call.args);
+                    } catch {
+                      parsedArgs = { raw: call.args };
+                    }
+                    partsReportedCount++;
+                    progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+                  }
+                  pendingToolCalls.clear();
+                }
+                if (choice.finish_reason === "stop") {
+                  isDone = true;
+                  break;
+                }
+              } catch {
               }
-              if (choice.finish_reason === "stop") {
-                isDone = true;
-                break;
-              }
-            } catch {
             }
           }
+          if (isDone) break;
         }
-        if (isDone) break;
-      }
-      const flushed = thinkParser.flush();
-      if (flushed.thinking) emitThinking(flushed.thinking);
-      if (flushed.text) {
-        progress.report(new vscode.LanguageModelTextPart(flushed.text));
-      }
-    } catch (streamErr) {
-      hasStreamError = true;
-      if (token.isCancellationRequested) {
-        this.log(`Stream canceled by user for model=${model.id}`);
-        return;
-      }
-      this.log(`Stream interrupted for model=${model.id}: ${streamErr?.message || streamErr}`);
-      progress.report(
-        new vscode.LanguageModelTextPart(
-          `
-
-*(Response stream interrupted: ${streamErr?.message || "Connection closed by upstream OpenCode service"})*`
-        )
-      );
-      return;
-    } finally {
-      if (!hasStreamError && !token.isCancellationRequested && !abortController.signal.aborted && pendingToolCalls.size > 0) {
-        for (const [, call] of pendingToolCalls) {
-          let parsedArgs = {};
-          try {
-            parsedArgs = JSON.parse(call.args);
-          } catch {
-            parsedArgs = { raw: call.args };
+        const flushed = thinkParser.flush();
+        if (flushed.thinking) emitThinking(flushed.thinking);
+        if (flushed.text) {
+          partsReportedCount++;
+          progress.report(new vscode.LanguageModelTextPart(flushed.text));
+        }
+      } catch (streamErr) {
+        void reader.cancel().catch(() => {
+        });
+        const errMsg = streamErr instanceof Error ? streamErr.message : String(streamErr);
+        const isIdleTimeout = errMsg.includes("Stream idle for over");
+        if (isIdleTimeout && partsReportedCount === 0 && stallAttempt < maxStallRetries && !token.isCancellationRequested && !abortController.signal.aborted) {
+          isStallRetry = true;
+          this.log(
+            `Stream stalled with 0 bytes received for model=${model.id}; initiating automatic recovery retry (${stallAttempt + 1}/${maxStallRetries})...`
+          );
+        } else {
+          hasStreamError = true;
+          if (token.isCancellationRequested) {
+            this.log(`Stream canceled by user for model=${model.id}`);
+            return;
           }
-          progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+          this.log(`Stream interrupted for model=${model.id}: ${errMsg}`);
+          progress.report(
+            new vscode.LanguageModelTextPart(
+              `
+
+*(Response stream interrupted: ${errMsg || "Connection closed by upstream OpenCode service"})*`
+            )
+          );
+          return;
         }
-        pendingToolCalls.clear();
+      } finally {
+        if (!isStallRetry) {
+          if (!hasStreamError && !token.isCancellationRequested && !abortController.signal.aborted && pendingToolCalls.size > 0) {
+            for (const [, call] of pendingToolCalls) {
+              let parsedArgs = {};
+              try {
+                parsedArgs = JSON.parse(call.args);
+              } catch {
+                parsedArgs = { raw: call.args };
+              }
+              progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+            }
+            pendingToolCalls.clear();
+          }
+          if (!hasStreamError && !token.isCancellationRequested && !abortController.signal.aborted) {
+            this.log(`Stream completed for model=${model.id}`);
+          }
+        }
       }
-      if (!hasStreamError && !token.isCancellationRequested && !abortController.signal.aborted) {
-        this.log(`Stream completed for model=${model.id}`);
+      if (isStallRetry) {
+        continue;
       }
+      return;
     }
   }
   provideTokenCount(_model, text, _token) {
@@ -29549,20 +29594,202 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
   }
 };
 
+// src/views/usageTreeProvider.ts
+var vscode2 = __toESM(require("vscode"), 1);
+var OpenCodeTreeItem = class extends vscode2.TreeItem {
+  constructor(label, collapsibleState = vscode2.TreeItemCollapsibleState.None, itemType = "status-item") {
+    super(label, collapsibleState);
+    this.itemType = itemType;
+  }
+};
+var OpenCodeUsageTreeProvider = class {
+  _onDidChangeTreeData = new vscode2.EventEmitter();
+  onDidChangeTreeData = this._onDidChangeTreeData.event;
+  usageData = null;
+  usageError = null;
+  goModelCount = 0;
+  zenModelCount = 0;
+  getApiKeyFn;
+  constructor(getApiKey) {
+    this.getApiKeyFn = getApiKey;
+  }
+  updateModelCounts(goCount, zenCount) {
+    this.goModelCount = goCount;
+    this.zenModelCount = zenCount;
+    this._onDidChangeTreeData.fire(void 0);
+  }
+  setUsage(usage, error) {
+    this.usageData = usage;
+    this.usageError = error ?? null;
+    this._onDidChangeTreeData.fire(void 0);
+  }
+  async refresh() {
+    try {
+      const apiKey = await this.getApiKeyFn();
+      if (!apiKey) {
+        this.usageData = null;
+        this.usageError = "No API key configured";
+        this._onDidChangeTreeData.fire(void 0);
+        return;
+      }
+      const res = await fetchOpenCodeUsage(apiKey);
+      if (res.ok) {
+        this.usageData = res.usage;
+        this.usageError = null;
+      } else if (res.reason === "no-subscription") {
+        this.usageData = null;
+        this.usageError = "No active Go subscription (Zen pay-as-you-go / free)";
+      } else {
+        this.usageData = null;
+        this.usageError = `Unable to fetch usage (${res.reason})`;
+      }
+    } catch (err) {
+      this.usageData = null;
+      this.usageError = err instanceof Error ? err.message : "Error fetching usage";
+    }
+    this._onDidChangeTreeData.fire(void 0);
+  }
+  getTreeItem(element) {
+    return element;
+  }
+  getChildren(element) {
+    if (!element) {
+      return this.getRootItems();
+    }
+    if (element.itemType === "category") {
+      return this.getCategoryChildren(element);
+    }
+    return [];
+  }
+  getRootItems() {
+    const quotaCategory = new OpenCodeTreeItem(
+      "Go Subscription Quotas",
+      vscode2.TreeItemCollapsibleState.Expanded,
+      "category"
+    );
+    quotaCategory.iconPath = new vscode2.ThemeIcon("dashboard");
+    const catalogCategory = new OpenCodeTreeItem(
+      "Model Catalogs",
+      vscode2.TreeItemCollapsibleState.Expanded,
+      "category"
+    );
+    catalogCategory.iconPath = new vscode2.ThemeIcon("layers");
+    const actionCategory = new OpenCodeTreeItem(
+      "Quick Actions",
+      vscode2.TreeItemCollapsibleState.Expanded,
+      "category"
+    );
+    actionCategory.iconPath = new vscode2.ThemeIcon("zap");
+    return [quotaCategory, catalogCategory, actionCategory];
+  }
+  getCategoryChildren(element) {
+    if (element.label === "Go Subscription Quotas") {
+      if (this.usageError) {
+        const errItem = new OpenCodeTreeItem(this.usageError, vscode2.TreeItemCollapsibleState.None, "status-item");
+        errItem.iconPath = new vscode2.ThemeIcon("info");
+        if (this.usageError.includes("API key")) {
+          errItem.command = {
+            command: "opencode-copilot-sync.setApiKey",
+            title: "Set API Key"
+          };
+        }
+        return [errItem];
+      }
+      if (!this.usageData) {
+        const loadingItem = new OpenCodeTreeItem("Loading usage data...", vscode2.TreeItemCollapsibleState.None, "status-item");
+        loadingItem.iconPath = new vscode2.ThemeIcon("loading~spin");
+        return [loadingItem];
+      }
+      const { rolling, weekly, monthly } = this.usageData;
+      const createPeriodItem = (name, period) => {
+        const resetsIn = formatRelativeTime(period.resetsAt);
+        const item = new OpenCodeTreeItem(
+          `${name}: ${period.percent}% (resets ${resetsIn})`,
+          vscode2.TreeItemCollapsibleState.None,
+          "quota-item"
+        );
+        const isLimited = period.status === "rate-limited";
+        item.iconPath = new vscode2.ThemeIcon(
+          isLimited ? "warning" : "pass",
+          isLimited ? new vscode2.ThemeColor("charts.red") : new vscode2.ThemeColor("charts.green")
+        );
+        item.tooltip = `${name} limit: ${period.percent}% used. Status: ${period.status}. Resets at ${period.resetsAt}`;
+        return item;
+      };
+      return [
+        createPeriodItem("Rolling 5-Hour", rolling),
+        createPeriodItem("Weekly Quota", weekly),
+        createPeriodItem("Monthly Quota", monthly)
+      ];
+    }
+    if (element.label === "Model Catalogs") {
+      const goItem = new OpenCodeTreeItem(
+        `OpenCode Go: ${this.goModelCount} models`,
+        vscode2.TreeItemCollapsibleState.None,
+        "catalog-item"
+      );
+      goItem.description = "Flat-rate ($0/token)";
+      goItem.iconPath = new vscode2.ThemeIcon("package");
+      const zenItem = new OpenCodeTreeItem(
+        `Zen & Free Tier: ${this.zenModelCount} models`,
+        vscode2.TreeItemCollapsibleState.None,
+        "catalog-item"
+      );
+      zenItem.description = "Free & pay-as-you-go";
+      zenItem.iconPath = new vscode2.ThemeIcon("gift");
+      return [goItem, zenItem];
+    }
+    if (element.label === "Quick Actions") {
+      const syncItem = new OpenCodeTreeItem(
+        "Sync Models to Copilot",
+        vscode2.TreeItemCollapsibleState.None,
+        "action-item"
+      );
+      syncItem.iconPath = new vscode2.ThemeIcon("sync");
+      syncItem.command = {
+        command: "opencode-copilot-sync.sync",
+        title: "Sync Models to Copilot"
+      };
+      const keyItem = new OpenCodeTreeItem(
+        "Set API Key",
+        vscode2.TreeItemCollapsibleState.None,
+        "action-item"
+      );
+      keyItem.iconPath = new vscode2.ThemeIcon("key");
+      keyItem.command = {
+        command: "opencode-copilot-sync.setApiKey",
+        title: "Set API Key"
+      };
+      const cfgItem = new OpenCodeTreeItem(
+        "Open Models Config",
+        vscode2.TreeItemCollapsibleState.None,
+        "action-item"
+      );
+      cfgItem.iconPath = new vscode2.ThemeIcon("settings-gear");
+      cfgItem.command = {
+        command: "opencode-copilot-sync.openConfig",
+        title: "Open Models Config"
+      };
+      return [syncItem, keyItem, cfgItem];
+    }
+    return [];
+  }
+};
+
 // src/extension.ts
 async function activate(context) {
-  const outputChannel = vscode2.window.createOutputChannel("OpenCode Copilot Sync");
+  const outputChannel = vscode3.window.createOutputChannel("OpenCode Copilot Sync");
   context.subscriptions.push(outputChannel);
   outputChannel.appendLine(
-    `[Platform] OS: ${process.platform} (${process.arch}), Remote: ${vscode2.env.remoteName || "local"}, App: ${vscode2.env.appName}`
+    `[Platform] OS: ${process.platform} (${process.arch}), Remote: ${vscode3.env.remoteName || "local"}, App: ${vscode3.env.appName}`
   );
   const applyProxySetting = () => {
-    const proxyUrl = vscode2.workspace.getConfiguration("http").get("proxy");
+    const proxyUrl = vscode3.workspace.getConfiguration("http").get("proxy");
     setVSCodeProxyUrl(proxyUrl || void 0);
   };
   applyProxySetting();
   context.subscriptions.push(
-    vscode2.workspace.onDidChangeConfiguration((e) => {
+    vscode3.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("http.proxy")) {
         applyProxySetting();
       }
@@ -29570,7 +29797,7 @@ async function activate(context) {
   );
   const chatProvider = new OpenCodeChatProvider(context, outputChannel);
   context.subscriptions.push(
-    vscode2.lm.registerLanguageModelChatProvider("opencode", chatProvider)
+    vscode3.lm.registerLanguageModelChatProvider("opencode", chatProvider)
   );
   outputChannel.appendLine("Registered native OpenCode LanguageModelChatProvider with VS Code.");
   void (async () => {
@@ -29587,54 +29814,66 @@ async function activate(context) {
     }
   })();
   try {
-    const agentHostCfg = vscode2.workspace.getConfiguration("chat.agentHost");
+    const agentHostCfg = vscode3.workspace.getConfiguration("chat.agentHost");
     if (!agentHostCfg.get("byokModels.enabled", false)) {
-      await agentHostCfg.update("byokModels.enabled", true, vscode2.ConfigurationTarget.Global);
+      await agentHostCfg.update("byokModels.enabled", true, vscode3.ConfigurationTarget.Global);
       outputChannel.appendLine("Enabled chat.agentHost.byokModels.enabled for Agent Mode support.");
     }
   } catch (err) {
     outputChannel.appendLine(`Note: Could not set chat.agentHost.byokModels.enabled: ${err.message}`);
   }
-  const statusBarItem = vscode2.window.createStatusBarItem(vscode2.StatusBarAlignment.Right, 99);
+  const statusBarItem = vscode3.window.createStatusBarItem(vscode3.StatusBarAlignment.Right, 99);
   statusBarItem.text = "$(hubot) OpenCode";
   statusBarItem.tooltip = "Click to sync OpenCode models & refresh usage";
   statusBarItem.command = "opencode-copilot-sync.sync";
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
+  const usageTreeProvider = new OpenCodeUsageTreeProvider(async () => resolveApiKey(context.secrets, false));
+  context.subscriptions.push(
+    vscode3.window.registerTreeDataProvider("opencode-usage-view", usageTreeProvider)
+  );
   async function updateUsageMeter(apiKey) {
     try {
       const key = apiKey || await resolveApiKey(context.secrets, false);
-      if (!key) return;
+      if (!key) {
+        usageTreeProvider.setUsage(null, "No API key configured");
+        return;
+      }
       const res = await fetchOpenCodeUsage(key);
       if (res.ok) {
         statusBarItem.text = formatStatusBarText(res.usage);
-        const md = new vscode2.MarkdownString(formatUsageTooltip(res.usage));
+        const md = new vscode3.MarkdownString(formatUsageTooltip(res.usage));
         md.isTrusted = true;
         statusBarItem.tooltip = md;
+        usageTreeProvider.setUsage(res.usage);
       } else if (res.reason === "no-subscription") {
         statusBarItem.text = "$(hubot) OpenCode (Zen)";
         statusBarItem.tooltip = "OpenCode Zen (Pay-as-you-go / Free tier). Click to sync models.";
+        usageTreeProvider.setUsage(null, "No active Go subscription (Zen pay-as-you-go / free)");
+      } else {
+        usageTreeProvider.setUsage(null, `Unable to fetch usage (${res.reason})`);
       }
     } catch {
+      usageTreeProvider.setUsage(null, "Error fetching usage");
     }
   }
   async function performSync(interactive) {
     try {
-      const config2 = vscode2.workspace.getConfiguration("opencode");
+      const config2 = vscode3.workspace.getConfiguration("opencode");
       const includeGo = config2.get("includeGoModels", true);
       const includeZen = config2.get("includeZenModels", true);
       const shouldPrompt = interactive && !process.env.CI;
-      const apiKey = await resolveApiKey(context.secrets, shouldPrompt, shouldPrompt ? vscode2.window : void 0);
+      const apiKey = await resolveApiKey(context.secrets, shouldPrompt, shouldPrompt ? vscode3.window : void 0);
       if (!apiKey) {
         if (interactive) {
-          vscode2.window.showWarningMessage("OpenCode sync cancelled: No API key provided.");
+          vscode3.window.showWarningMessage("OpenCode sync cancelled: No API key provided.");
         } else {
-          vscode2.window.showInformationMessage(
+          vscode3.window.showInformationMessage(
             "OpenCode Copilot Sync: Set your API key to sync OpenCode models to Copilot.",
             "Set API Key"
           ).then((choice) => {
             if (choice === "Set API Key") {
-              vscode2.commands.executeCommand("opencode-copilot-sync.setApiKey");
+              vscode3.commands.executeCommand("opencode-copilot-sync.setApiKey");
             }
           });
         }
@@ -29645,9 +29884,9 @@ async function activate(context) {
       const storagePath = context.globalStorageUri?.fsPath;
       let syncResult = null;
       if (interactive) {
-        await vscode2.window.withProgress(
+        await vscode3.window.withProgress(
           {
-            location: vscode2.ProgressLocation.Notification,
+            location: vscode3.ProgressLocation.Notification,
             title: "OpenCode: Fetching models and syncing to Copilot...",
             cancellable: false
           },
@@ -29656,7 +29895,7 @@ async function activate(context) {
             outputChannel.appendLine(
               `Synced ${syncResult.totalCount} unified OpenCode models (${syncResult.goCount} Go + ${syncResult.zenCount} Zen) to native provider.`
             );
-            vscode2.window.showInformationMessage(
+            vscode3.window.showInformationMessage(
               `Synced ${syncResult.totalCount} OpenCode models (${syncResult.goCount} Go flat-rate + ${syncResult.zenCount} Zen exclusive) to Copilot!`
             );
           }
@@ -29667,22 +29906,23 @@ async function activate(context) {
           `[Startup] Synced ${syncResult.totalCount} unified OpenCode models (${syncResult.goCount} Go + ${syncResult.zenCount} Zen) to native provider.`
         );
       }
-      if (syncResult?.models && syncResult.models.length > 0) {
+      if (syncResult && syncResult.models.length > 0) {
         chatProvider.updateModels(
           syncResult.models.map((m) => ({
             id: m.id,
             name: m.name,
             family: m.family || m.id,
-            catalog: m.url?.includes("/go/") ? "go" : "zen",
+            catalog: m.url.includes("/go/") ? "go" : "zen",
             isFree: !!m.isFree,
-            contextWindow: m.contextWindow || 1048576,
-            maxOutputTokens: m.maxOutputTokens || 65536,
-            vision: !!m.vision,
-            thinking: m.thinking !== false,
+            contextWindow: m.contextWindow,
+            maxOutputTokens: m.maxOutputTokens,
+            vision: m.vision,
+            thinking: m.thinking,
             supportsReasoningEffort: m.supportsReasoningEffort,
             apiType: m.apiType
           }))
         );
+        usageTreeProvider.updateModelCounts(syncResult.goCount, syncResult.zenCount);
       } else {
         chatProvider.refresh();
       }
@@ -29690,33 +29930,35 @@ async function activate(context) {
     } catch (err) {
       outputChannel.appendLine(`[Sync Error] ${err.message}`);
       if (interactive) {
-        vscode2.window.showErrorMessage(`OpenCode sync failed: ${err.message}`);
+        vscode3.window.showErrorMessage(`OpenCode sync failed: ${err.message}`);
       }
       statusBarItem.text = "$(hubot) OpenCode";
       statusBarItem.tooltip = "OpenCode models synced with Copilot (click to re-sync)";
     }
   }
   context.subscriptions.push(
-    vscode2.commands.registerCommand("opencode-copilot-sync.sync", () => performSync(true)),
-    vscode2.commands.registerCommand("opencode-copilot-sync.refreshUsage", () => updateUsageMeter()),
-    vscode2.commands.registerCommand("opencode-copilot-sync.setApiKey", async () => {
-      const key = await promptAndSetApiKey(context.secrets, vscode2.window);
+    vscode3.commands.registerCommand("opencode-copilot-sync.sync", () => performSync(true)),
+    vscode3.commands.registerCommand("opencode-copilot-sync.refreshUsage", async () => {
+      await Promise.all([updateUsageMeter(), usageTreeProvider.refresh()]);
+    }),
+    vscode3.commands.registerCommand("opencode-copilot-sync.setApiKey", async () => {
+      const key = await promptAndSetApiKey(context.secrets, vscode3.window);
       if (key) {
-        vscode2.window.showInformationMessage("OpenCode API Key updated! Syncing models now...");
+        vscode3.window.showInformationMessage("OpenCode API Key updated! Syncing models now...");
         await performSync(true);
       }
     }),
-    vscode2.commands.registerCommand("opencode-copilot-sync.openConfig", async () => {
+    vscode3.commands.registerCommand("opencode-copilot-sync.openConfig", async () => {
       const p = getChatLanguageModelsPath(context.globalStorageUri?.fsPath);
       try {
-        const doc = await vscode2.workspace.openTextDocument(p);
-        await vscode2.window.showTextDocument(doc);
+        const doc = await vscode3.workspace.openTextDocument(p);
+        await vscode3.window.showTextDocument(doc);
       } catch (err) {
-        vscode2.window.showErrorMessage(`Unable to open config: ${err.message}`);
+        vscode3.window.showErrorMessage(`Unable to open config: ${err.message}`);
       }
     })
   );
-  const config = vscode2.workspace.getConfiguration("opencode");
+  const config = vscode3.workspace.getConfiguration("opencode");
   const autoSync = config.get("autoSyncOnStartup", true);
   if (autoSync) {
     setTimeout(() => {

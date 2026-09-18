@@ -20,6 +20,7 @@ export interface CustomEndpointModel {
   supportsReasoningEffort?: string[];
   reasoningEffortFormat?: string;
   requestHeaders?: Record<string, string>;
+  isFree?: boolean;
   modelOptions?: {
     temperature: number | null;
     top_p: number | null;
@@ -218,6 +219,7 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
       temperature: null,
       top_p: null,
     },
+    isFree,
   };
 
   if (isGo || isFree) {

@@ -124,3 +124,69 @@ test('Idle-timeout watchdog: a stalled stream with no data is surfaced as a frie
   assert.match(combined, /stream interrupted/i);
   assert.match(combined, /idle/i);
 });
+
+test('Idle-timeout auto-recovery: when stream stalls with zero bytes, retries once and completes transparently', async () => {
+  mockServer.setScenario([
+    { mode: 'silent-stall' },
+    { mode: 'standard', content: 'Recovered after zero-byte stall!' },
+  ]);
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+  const token = createMockToken();
+
+  const start = Date.now();
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage('hello stall recovery')],
+    {},
+    progress,
+    token
+  );
+  const elapsed = Date.now() - start;
+
+  assert.ok(elapsed < 5000, `expected recovery within timeout budget, took ${elapsed}ms`);
+
+  const requests = mockServer.getRequests();
+  assert.equal(requests.length, 2, 'expected exactly 2 upstream requests (initial stall + auto-retry)');
+  assert.notEqual(
+    requests[0].headers['x-opencode-request'],
+    requests[1].headers['x-opencode-request'],
+    'retry must use a fresh request ID'
+  );
+
+  const textParts = progress.parts.filter((p) => p instanceof vscode.LanguageModelTextPart);
+  const combined = textParts.map((p) => p.value).join('');
+  assert.match(combined, /Recovered after zero-byte stall!/);
+  assert.doesNotMatch(combined, /stream interrupted/i, 'should not report interruption when recovery succeeds');
+});
+
+test('Idle-timeout auto-recovery: when retry also stalls with zero bytes, surfaces interruption message', async () => {
+  mockServer.setScenario([
+    { mode: 'silent-stall' },
+    { mode: 'silent-stall' },
+  ]);
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+  const token = createMockToken();
+
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage('double stall')],
+    {},
+    progress,
+    token
+  );
+
+  const requests = mockServer.getRequests();
+  assert.equal(requests.length, 2, 'expected exactly 2 upstream requests');
+
+  const textParts = progress.parts.filter((p) => p instanceof vscode.LanguageModelTextPart);
+  const combined = textParts.map((p) => p.value).join('');
+  assert.match(combined, /stream interrupted/i);
+  assert.match(combined, /idle for over/i);
+});
+
