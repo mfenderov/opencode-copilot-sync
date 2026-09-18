@@ -71,6 +71,111 @@ export function isResponsesModel(modelId: string, apiType?: string): boolean {
   return lower.includes('muse') || lower.includes('gpt-') || lower.includes('grok-');
 }
 
+const FREE_OR_ZEN_PATTERNS = /(?:free|contributor|community|big-pickle)/i;
+
+export type WireToolDefinition = Record<string, unknown>;
+
+/**
+ * Determines whether a model belongs to OpenCode Zen catalog or Free tier,
+ * which routes to https://opencode.ai/zen/v1 instead of the flat-rate Go gateway.
+ */
+export function isFreeOrZenModel(modelId: string, meta?: OpenCodeModelMeta): boolean {
+  if (meta?.catalog === 'zen' || meta?.isFree) {
+    return true;
+  }
+  return FREE_OR_ZEN_PATTERNS.test(modelId);
+}
+
+/**
+ * OpenCode's free tier and Zen gateway strictly verify that callers originate
+ * from within the official OpenCode client by requiring core client tools
+ * (`bash` and `read`) to be present in the request payload.
+ */
+export const OPENCODE_CLIENT_VERIFICATION_TOOLS_RESPONSES = [
+  {
+    type: 'function',
+    name: 'bash',
+    description: 'OpenCode client environment verification tool. Do not call this tool directly.',
+    parameters: {
+      type: 'object',
+      properties: { command: { type: 'string' } },
+      required: ['command'],
+    },
+  },
+  {
+    type: 'function',
+    name: 'read',
+    description: 'OpenCode client environment verification tool. Do not call this tool directly.',
+    parameters: {
+      type: 'object',
+      properties: { filePath: { type: 'string' } },
+      required: ['filePath'],
+    },
+  },
+];
+
+export const OPENCODE_CLIENT_VERIFICATION_TOOLS_CHAT = [
+  {
+    type: 'function',
+    function: {
+      name: 'bash',
+      description: 'OpenCode client environment verification tool. Do not call this tool directly.',
+      parameters: {
+        type: 'object',
+        properties: { command: { type: 'string' } },
+        required: ['command'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read',
+      description: 'OpenCode client environment verification tool. Do not call this tool directly.',
+      parameters: {
+        type: 'object',
+        properties: { filePath: { type: 'string' } },
+        required: ['filePath'],
+      },
+    },
+  },
+];
+
+export function injectOpenCodeVerificationTools(
+  toolsPayload: WireToolDefinition[] | undefined,
+  isResponses: boolean
+): WireToolDefinition[] {
+  const base = toolsPayload ?? [];
+  if (isResponses) {
+    const existing = new Set(base.map((t) => (typeof t.name === 'string' ? t.name : '')));
+    const toAdd = OPENCODE_CLIENT_VERIFICATION_TOOLS_RESPONSES.filter((t) => !existing.has(t.name));
+    return toAdd.length > 0 ? [...base, ...toAdd] : base;
+  }
+  const existing = new Set(
+    base.map((t) => {
+      const fn = t.function;
+      return typeof fn === 'object' && fn !== null && 'name' in fn && typeof (fn as { name: unknown }).name === 'string'
+        ? (fn as { name: string }).name
+        : '';
+    })
+  );
+  const toAdd = OPENCODE_CLIENT_VERIFICATION_TOOLS_CHAT.filter((t) => !existing.has(t.function.name));
+  return toAdd.length > 0 ? [...base, ...toAdd] : base;
+}
+
+export function isSyntheticVerificationTool(
+  toolName: string,
+  callerTools: readonly vscode.LanguageModelChatTool[] | undefined
+): boolean {
+  if (toolName !== 'bash' && toolName !== 'read') {
+    return false;
+  }
+  if (!callerTools || callerTools.length === 0) {
+    return true;
+  }
+  return !callerTools.some((t) => clampToolName(t.name) === toolName);
+}
+
 const VALID_REASONING_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh']);
 
 export function normalizeReasoningEffort(
@@ -532,6 +637,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     const lowerId = model.id.toLowerCase();
     const meta = this._models.find((m) => m.id === model.id);
     const isResponses = isResponsesModel(model.id, meta?.apiType);
+    const isFreeOrZen = isFreeOrZenModel(model.id, meta);
 
     // Format tool definitions appropriately for the target endpoint protocol
     let toolsPayload: any[] | undefined = undefined;
@@ -557,6 +663,10 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
           },
         }));
       }
+    }
+
+    if (isFreeOrZen) {
+      toolsPayload = injectOpenCodeVerificationTools(toolsPayload, isResponses);
     }
 
     const responsesInput: any[] = [];
@@ -630,14 +740,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     sessionId: string
   ): Promise<void> {
     // Free models and Zen-exclusive models route to zen/v1, flat-rate Go models route to zen/go/v1
-    const isFreeOrZen =
-      meta?.catalog === 'zen' ||
-      meta?.isFree === true ||
-      model.id.includes('free') ||
-      model.id.includes('contributor') ||
-      model.id.includes('community') ||
-      model.id === 'big-pickle' ||
-      (model as any).isFree === true;
+    const isFreeOrZen = isFreeOrZenModel(model.id, meta);
 
     const baseUrl = isFreeOrZen
       ? 'https://opencode.ai/zen/v1'
@@ -759,8 +862,15 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         }
 
         if (!res.ok) {
-          // 1. Auth errors: throw NoPermissions to let VS Code trigger re-auth prompts if configured
-          if (res.status === 401 || res.status === 403) {
+          const isFreeTierError =
+            userDetail.includes('FreeTierError') ||
+            userDetail.toLowerCase().includes('free tier');
+
+          // 1. Auth errors: throw NoPermissions to let VS Code trigger re-auth prompts if configured.
+          // IMPORTANT: Do NOT throw NoPermissions for upstream FreeTierError (e.g. policy/model restriction);
+          // doing so causes Copilot to enter an unhelpful 5-retry 16-second loop. Let FreeTierError fall
+          // through to the alert notice card for immediate, helpful fail-fast resolution.
+          if (!isFreeTierError && (res.status === 401 || res.status === 403)) {
             const LMError = (vscode as any).LanguageModelError;
             const cleanDetail = userDetail.replace(/^OpenCode authentication failed:\s*/i, '').trim();
             const errMessage = cleanDetail
@@ -781,13 +891,13 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
             throw new Error(`OpenCode model '${model.id}' was not found in the remote catalog.`);
           }
 
-          // 3. Upstream Server Errors (500, 502 Bad Gateway, 503, 504) or rate limits
+          // 3. Upstream Server Errors (500, 502 Bad Gateway, 503, 504), rate limits, or FreeTierError policy alerts
           // Instead of throwing an Error (which causes Copilot's runtime to retry 5 times for 32.4 seconds),
           // stream an informative Markdown alert card to the user and resolve cleanly (return void).
           const alertNotice = [
             `> ⚠️ **OpenCode Model Alert (${res.status} ${res.statusText || 'Service Error'})**`,
             `>`,
-            `> Unable to reach **${model.name}** (\`${model.id}\`): upstream server error.`,
+            `> Unable to reach **${model.name}** (\`${model.id}\`): ${isFreeTierError ? 'upstream free-tier policy error' : 'upstream server error'}.`,
             `>`,
             `> **Upstream detail:** \`${userDetail.slice(0, 300) || 'Internal server error'}\``,
             `>`,
@@ -926,8 +1036,10 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
                     } catch {
                       parsedArgs = { raw: call.args };
                     }
-                    partsReportedCount++;
-                    progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+                    if (!isSyntheticVerificationTool(call.name, options.tools)) {
+                      partsReportedCount++;
+                      progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+                    }
                     pendingToolCalls.delete(idx);
                   }
                   continue;
@@ -983,8 +1095,10 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
                     } catch {
                       parsedArgs = { raw: call.args };
                     }
-                    partsReportedCount++;
-                    progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+                    if (!isSyntheticVerificationTool(call.name, options.tools)) {
+                      partsReportedCount++;
+                      progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+                    }
                   }
                   pendingToolCalls.clear();
                 }
@@ -1044,7 +1158,9 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
               } catch {
                 parsedArgs = { raw: call.args };
               }
-              progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+              if (!isSyntheticVerificationTool(call.name, options.tools)) {
+                progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+              }
             }
             pendingToolCalls.clear();
           }

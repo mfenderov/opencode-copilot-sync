@@ -24,10 +24,10 @@
     "complexity": 19,
     "coverage": 0.012
   },
-  "src/provider.ts:617:streamResponse": {
-    "crap": 151.74,
-    "complexity": 142,
-    "coverage": 0.922
+  "src/provider.ts:727:streamResponse": {
+    "crap": 150.75,
+    "complexity": 140,
+    "coverage": 0.918
   },
   "src/fetcher.ts:33:fetchModelsDevMetadata": {
     "crap": 144.33,
@@ -44,10 +44,10 @@
     "complexity": 11,
     "coverage": 0.021
   },
-  "src/provider.ts:451:provideLanguageModelChatResponse": {
-    "crap": 94.45,
-    "complexity": 38,
-    "coverage": 0.661
+  "src/provider.ts:556:provideLanguageModelChatResponse": {
+    "crap": 93.37,
+    "complexity": 39,
+    "coverage": 0.671
   },
   "src/enricher.ts:59:enrichModel": {
     "crap": 67.82,
@@ -74,11 +74,6 @@
     "complexity": 6,
     "coverage": 0.034
   },
-  "src/views/usageTreeProvider.ts:47:refresh": {
-    "crap": 38,
-    "complexity": 6,
-    "coverage": 0.038
-  },
   "src/extension.ts:9:activate": {
     "crap": 30,
     "complexity": 5,
@@ -104,22 +99,22 @@
     "complexity": 4,
     "coverage": 0.021
   },
-  "src/usage.ts:19:fetchOpenCodeUsage": {
-    "crap": 18.91,
-    "complexity": 17,
-    "coverage": 0.813
-  },
   "src/auth.ts:227:promptAndSetApiKey": {
     "crap": 18.29,
     "complexity": 4,
     "coverage": 0.037
+  },
+  "src/usage.ts:19:fetchOpenCodeUsage": {
+    "crap": 17.56,
+    "complexity": 17,
+    "coverage": 0.875
   },
   "src/enricher.ts:35:<anonymous>": {
     "crap": 17,
     "complexity": 17,
     "coverage": 1
   },
-  "src/provider.ts:370:<anonymous>": {
+  "src/provider.ts:475:<anonymous>": {
     "crap": 12.02,
     "complexity": 12,
     "coverage": 0.952

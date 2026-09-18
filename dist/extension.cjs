@@ -28797,6 +28797,86 @@ function isResponsesModel(modelId, apiType) {
   const lower = modelId.toLowerCase();
   return lower.includes("muse") || lower.includes("gpt-") || lower.includes("grok-");
 }
+var FREE_OR_ZEN_PATTERNS = /(?:free|contributor|community|big-pickle)/i;
+function isFreeOrZenModel(modelId, meta) {
+  if (meta?.catalog === "zen" || meta?.isFree) {
+    return true;
+  }
+  return FREE_OR_ZEN_PATTERNS.test(modelId);
+}
+var OPENCODE_CLIENT_VERIFICATION_TOOLS_RESPONSES = [
+  {
+    type: "function",
+    name: "bash",
+    description: "OpenCode client environment verification tool. Do not call this tool directly.",
+    parameters: {
+      type: "object",
+      properties: { command: { type: "string" } },
+      required: ["command"]
+    }
+  },
+  {
+    type: "function",
+    name: "read",
+    description: "OpenCode client environment verification tool. Do not call this tool directly.",
+    parameters: {
+      type: "object",
+      properties: { filePath: { type: "string" } },
+      required: ["filePath"]
+    }
+  }
+];
+var OPENCODE_CLIENT_VERIFICATION_TOOLS_CHAT = [
+  {
+    type: "function",
+    function: {
+      name: "bash",
+      description: "OpenCode client environment verification tool. Do not call this tool directly.",
+      parameters: {
+        type: "object",
+        properties: { command: { type: "string" } },
+        required: ["command"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "read",
+      description: "OpenCode client environment verification tool. Do not call this tool directly.",
+      parameters: {
+        type: "object",
+        properties: { filePath: { type: "string" } },
+        required: ["filePath"]
+      }
+    }
+  }
+];
+function injectOpenCodeVerificationTools(toolsPayload, isResponses) {
+  const base = toolsPayload ?? [];
+  if (isResponses) {
+    const existing2 = new Set(base.map((t) => typeof t.name === "string" ? t.name : ""));
+    const toAdd2 = OPENCODE_CLIENT_VERIFICATION_TOOLS_RESPONSES.filter((t) => !existing2.has(t.name));
+    return toAdd2.length > 0 ? [...base, ...toAdd2] : base;
+  }
+  const existing = new Set(
+    base.map((t) => {
+      const fn = t.function;
+      return typeof fn === "object" && fn !== null && "name" in fn && typeof fn.name === "string" ? fn.name : "";
+    })
+  );
+  const toAdd = OPENCODE_CLIENT_VERIFICATION_TOOLS_CHAT.filter((t) => !existing.has(t.function.name));
+  return toAdd.length > 0 ? [...base, ...toAdd] : base;
+}
+function isSyntheticVerificationTool(toolName, callerTools) {
+  if (toolName !== "bash" && toolName !== "read") {
+    return false;
+  }
+  if (!callerTools || callerTools.length === 0) {
+    return true;
+  }
+  return !callerTools.some((t) => clampToolName(t.name) === toolName);
+}
 var VALID_REASONING_EFFORTS = /* @__PURE__ */ new Set(["minimal", "low", "medium", "high", "xhigh"]);
 function normalizeReasoningEffort(effort, isResponses) {
   if (!effort) return {};
@@ -29160,6 +29240,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
     const lowerId = model.id.toLowerCase();
     const meta = this._models.find((m) => m.id === model.id);
     const isResponses = isResponsesModel(model.id, meta?.apiType);
+    const isFreeOrZen = isFreeOrZenModel(model.id, meta);
     let toolsPayload = void 0;
     if (options.tools && options.tools.length > 0) {
       if (isResponses) {
@@ -29179,6 +29260,9 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
           }
         }));
       }
+    }
+    if (isFreeOrZen) {
+      toolsPayload = injectOpenCodeVerificationTools(toolsPayload, isResponses);
     }
     const responsesInput = [];
     if (isResponses) {
@@ -29236,7 +29320,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
     }
   }
   async streamResponse(model, options, progress, token, abortController, meta, isResponses, lowerId, formattedMessages, toolsPayload, responsesInput, apiKey, sessionId) {
-    const isFreeOrZen = meta?.catalog === "zen" || meta?.isFree === true || model.id.includes("free") || model.id.includes("contributor") || model.id.includes("community") || model.id === "big-pickle" || model.isFree === true;
+    const isFreeOrZen = isFreeOrZenModel(model.id, meta);
     const baseUrl = isFreeOrZen ? "https://opencode.ai/zen/v1" : "https://opencode.ai/zen/go/v1";
     const url = isResponses ? `${baseUrl}/responses` : `${baseUrl}/chat/completions`;
     const reasoningEffort = options?.modelConfiguration?.reasoningEffort || options?.configuration?.reasoningEffort || options?.reasoningEffort;
@@ -29337,7 +29421,8 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
           }
         }
         if (!res.ok) {
-          if (res.status === 401 || res.status === 403) {
+          const isFreeTierError = userDetail.includes("FreeTierError") || userDetail.toLowerCase().includes("free tier");
+          if (!isFreeTierError && (res.status === 401 || res.status === 403)) {
             const LMError = vscode.LanguageModelError;
             const cleanDetail = userDetail.replace(/^OpenCode authentication failed:\s*/i, "").trim();
             const errMessage = cleanDetail ? `OpenCode authentication failed: ${cleanDetail}` : "OpenCode authentication failed: Invalid or expired API key.";
@@ -29356,7 +29441,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
           const alertNotice = [
             `> \u26A0\uFE0F **OpenCode Model Alert (${res.status} ${res.statusText || "Service Error"})**`,
             `>`,
-            `> Unable to reach **${model.name}** (\`${model.id}\`): upstream server error.`,
+            `> Unable to reach **${model.name}** (\`${model.id}\`): ${isFreeTierError ? "upstream free-tier policy error" : "upstream server error"}.`,
             `>`,
             `> **Upstream detail:** \`${userDetail.slice(0, 300) || "Internal server error"}\``,
             `>`,
@@ -29477,8 +29562,10 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
                     } catch {
                       parsedArgs = { raw: call.args };
                     }
-                    partsReportedCount++;
-                    progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+                    if (!isSyntheticVerificationTool(call.name, options.tools)) {
+                      partsReportedCount++;
+                      progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+                    }
                     pendingToolCalls.delete(idx);
                   }
                   continue;
@@ -29516,8 +29603,10 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
                     } catch {
                       parsedArgs = { raw: call.args };
                     }
-                    partsReportedCount++;
-                    progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+                    if (!isSyntheticVerificationTool(call.name, options.tools)) {
+                      partsReportedCount++;
+                      progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+                    }
                   }
                   pendingToolCalls.clear();
                 }
@@ -29573,7 +29662,9 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
               } catch {
                 parsedArgs = { raw: call.args };
               }
-              progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+              if (!isSyntheticVerificationTool(call.name, options.tools)) {
+                progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+              }
             }
             pendingToolCalls.clear();
           }
