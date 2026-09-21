@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.17.3 - 2026-09-21
+#### Bug Fixes
+- (**routing,provider**) robust metadata-driven free tier detection and clean error alerts - (36a211d) - Mark Fenderov
+
+- - -
+
 ## v0.17.2 - 2026-09-18
 #### Bug Fixes
 - (**provider**) inject core verification tools for Zen and Free tier models - (32ec3e1) - Mark Fenderov
