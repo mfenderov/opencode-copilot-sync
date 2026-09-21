@@ -581,7 +581,11 @@ export async function startMockServer(port = 0) {
       });
       res.flushHeaders();
 
-      if (mode !== 'silent-stall' && !activeScenario.silent) {
+      if (Array.isArray(activeScenario.chunks)) {
+        for (const chunk of activeScenario.chunks) {
+          writeSse(res, chunk);
+        }
+      } else if (mode !== 'silent-stall' && !activeScenario.silent) {
         if (isResponses) {
           writeSse(res, {
             type: 'response.output_text.delta',

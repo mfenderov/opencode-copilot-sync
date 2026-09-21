@@ -84,31 +84,34 @@
       "count": 1
     },
     "@typescript-eslint/no-explicit-any": {
-      "count": 26
+      "count": 34
     },
     "@typescript-eslint/no-unnecessary-condition": {
-      "count": 5
+      "count": 7
     },
     "@typescript-eslint/no-unnecessary-type-conversion": {
       "count": 1
     },
     "@typescript-eslint/no-unsafe-argument": {
-      "count": 16
+      "count": 25
     },
     "@typescript-eslint/no-unsafe-assignment": {
-      "count": 35
+      "count": 43
     },
     "@typescript-eslint/no-unsafe-call": {
-      "count": 8
+      "count": 9
     },
     "@typescript-eslint/no-unsafe-member-access": {
-      "count": 81
+      "count": 104
     },
     "@typescript-eslint/no-unsafe-return": {
       "count": 4
     },
     "@typescript-eslint/prefer-nullish-coalescing": {
-      "count": 28
+      "count": 40
+    },
+    "@typescript-eslint/prefer-optional-chain": {
+      "count": 1
     },
     "@typescript-eslint/require-await": {
       "count": 1

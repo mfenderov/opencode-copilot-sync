@@ -184,7 +184,7 @@ const VALID_REASONING_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xh
 export function normalizeReasoningEffort(
   effort: string | undefined,
   isResponses: boolean
-): Record<string, any> {
+): Record<string, unknown> {
   if (!effort) return {};
   const lower = String(effort).toLowerCase().trim();
   if (lower === 'none' || lower === 'off') {
@@ -371,10 +371,145 @@ function extractErrorMessage(rawJson: string): string {
   return rawJson;
 }
 
-function isStaleReasoningInput(item: unknown): boolean {
+export interface FormattedToolCall {
+  id?: string;
+  type?: string;
+  function?: {
+    name?: string;
+    arguments?: string;
+  };
+}
+
+export interface FormattedMessage {
+  role: string;
+  content?: string;
+  tool_calls?: FormattedToolCall[];
+  tool_call_id?: string;
+}
+
+export interface ResponsesInputMessage {
+  role: 'user' | 'assistant';
+  content: string | { type: string; text?: string; [key: string]: unknown }[];
+}
+
+export interface ResponsesInputFunctionCall {
+  type: 'function_call';
+  id: string;
+  call_id: string;
+  name: string;
+  arguments: string;
+}
+
+export interface ResponsesInputFunctionCallOutput {
+  type: 'function_call_output';
+  call_id: string;
+  output: string;
+}
+
+export type ResponsesInputItem =
+  | ResponsesInputMessage
+  | ResponsesInputFunctionCall
+  | ResponsesInputFunctionCallOutput
+  | Record<string, unknown>;
+
+export function isStaleReasoningInput(item: unknown): boolean {
   if (typeof item !== 'object' || item === null) return false;
   const rec = item as Record<string, unknown>;
-  return rec.type === 'reasoning' || typeof rec.encrypted_content === 'string';
+  if (
+    rec.type === 'reasoning' ||
+    rec.type === 'thought' ||
+    rec.type === 'thinking' ||
+    typeof rec.encrypted_content === 'string'
+  ) {
+    return true;
+  }
+  if (Array.isArray(rec.content)) {
+    return rec.content.some((part: unknown) => {
+      if (typeof part !== 'object' || part === null) return false;
+      const p = part as Record<string, unknown>;
+      return (
+        p.type === 'reasoning' ||
+        p.type === 'thought' ||
+        p.type === 'thinking' ||
+        typeof p.encrypted_content === 'string'
+      );
+    });
+  }
+  return false;
+}
+
+export function sanitizeResponsesInput(input: unknown[]): ResponsesInputItem[] {
+  const result: ResponsesInputItem[] = [];
+  for (const item of input) {
+    if (typeof item !== 'object' || item === null) continue;
+    const rec = item as Record<string, unknown>;
+    // If top-level reasoning item or encrypted_content, drop completely
+    if (
+      rec.type === 'reasoning' ||
+      rec.type === 'thought' ||
+      rec.type === 'thinking' ||
+      typeof rec.encrypted_content === 'string'
+    ) {
+      continue;
+    }
+    // If message contains content array with reasoning parts, filter out the reasoning parts
+    if (Array.isArray(rec.content)) {
+      const contentArr = rec.content as unknown[];
+      const filteredParts = contentArr.filter((part: unknown) => {
+        if (typeof part !== 'object' || part === null) return true;
+        const p = part as Record<string, unknown>;
+        return (
+          p.type !== 'reasoning' &&
+          p.type !== 'thought' &&
+          p.type !== 'thinking' &&
+          typeof p.encrypted_content !== 'string'
+        );
+      });
+      if (filteredParts.length === 0 && !rec.tool_calls) {
+        continue;
+      }
+      result.push({ ...rec, content: filteredParts });
+      continue;
+    }
+    result.push(item as ResponsesInputItem);
+  }
+  return result;
+}
+
+export function buildResponsesInput(formattedMessages: FormattedMessage[]): ResponsesInputItem[] {
+  const responsesInput: ResponsesInputItem[] = [];
+  for (const msg of formattedMessages) {
+    if (msg.role === 'user') {
+      responsesInput.push({ role: 'user', content: msg.content ?? '' });
+    } else if (msg.role === 'assistant') {
+      if (msg.content) {
+        responsesInput.push({
+          role: 'assistant',
+          content: [{ type: 'output_text', text: msg.content }],
+        });
+      }
+      if (msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          const rawId = tc.id ?? '';
+          const callId = rawId.length > 0 ? rawId : `call_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          responsesInput.push({
+            type: 'function_call',
+            id: callId,
+            call_id: callId,
+            name: tc.function?.name ?? '',
+            arguments: tc.function?.arguments ?? '',
+          });
+        }
+      }
+    } else if (msg.role === 'tool') {
+      responsesInput.push({
+        type: 'function_call_output',
+        call_id: msg.tool_call_id ?? '',
+        output: msg.content ?? '',
+      });
+    }
+  }
+  return sanitizeResponsesInput(responsesInput);
 }
 
 export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
@@ -394,7 +529,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     private readonly outputChannel?: vscode.OutputChannel
   ) {
     try {
-      if (this.context.globalStorageUri?.fsPath) {
+      if (this.context.globalStorageUri.fsPath) {
         const cacheFile = path.join(this.context.globalStorageUri.fsPath, 'models_cache.json');
         if (fs.existsSync(cacheFile)) {
           const parsed = JSON.parse(fs.readFileSync(cacheFile, 'utf-8'));
@@ -460,7 +595,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
       this._models = models;
       this.refresh();
       try {
-        if (this.context.globalStorageUri?.fsPath) {
+        if (this.context.globalStorageUri.fsPath) {
           const cacheDir = this.context.globalStorageUri.fsPath;
           if (!fs.existsSync(cacheDir)) {
             fs.mkdirSync(cacheDir, { recursive: true });
@@ -565,9 +700,9 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
   ): Promise<void> {
     const apiKey =
       (await this.context.secrets.get('opencode_api_key')) ||
-      getStoredOpenCodeKey(this.context.globalStorageUri?.fsPath) ||
+      getStoredOpenCodeKey(this.context.globalStorageUri.fsPath) ||
       getStoredOpenCodeKey() ||
-      getKeyFromExistingConfig(this.context.globalStorageUri?.fsPath) ||
+      getKeyFromExistingConfig(this.context.globalStorageUri.fsPath) ||
       getKeyFromExistingConfig();
 
     if (!apiKey) {
@@ -595,6 +730,16 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
       const toolCalls: any[] = [];
 
       for (const part of msg.content) {
+        const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
+        const isThinkingPart =
+          (ThinkingPart && part instanceof ThinkingPart) ||
+          (part as any)?.constructor?.name === 'LanguageModelThinkingPart' ||
+          (part as any)?.type === 'thinking' ||
+          (part as any)?.type === 'reasoning';
+        if (isThinkingPart) {
+          // Stale reasoning from prior turns MUST NEVER be replayed into textContent or input
+          continue;
+        }
         if (part instanceof vscode.LanguageModelTextPart) {
           textContent += part.value;
         } else if (part instanceof vscode.LanguageModelToolCallPart) {
@@ -615,10 +760,16 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
             resultStr = part.content;
           } else if (Array.isArray(part.content)) {
             resultStr = part.content
-              .map((p: any) => p.value || JSON.stringify(p))
+              .map((p: any) => {
+                if (typeof p === 'string') return p;
+                if (p && typeof p.value === 'string') return p.value;
+                return JSON.stringify(p ?? '') ?? '';
+              })
               .join('\n');
+          } else if (part.content !== undefined && part.content !== null) {
+            resultStr = JSON.stringify(part.content) ?? '';
           } else {
-            resultStr = JSON.stringify(part.content);
+            resultStr = '';
           }
           formattedMessages.push({
             role: 'tool',
@@ -672,35 +823,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
       toolsPayload = injectOpenCodeVerificationTools(toolsPayload, isResponses);
     }
 
-    const responsesInput: any[] = [];
-    if (isResponses) {
-      for (const msg of formattedMessages) {
-        if (msg.role === 'user') {
-          responsesInput.push({ role: 'user', content: msg.content });
-        } else if (msg.role === 'assistant') {
-          if (msg.content) {
-            responsesInput.push({ role: 'assistant', content: [{ type: 'output_text', text: msg.content }] });
-          }
-          if (msg.tool_calls) {
-            for (const tc of msg.tool_calls) {
-              responsesInput.push({
-                type: 'function_call',
-                id: tc.id?.startsWith('fc_') ? tc.id : `fc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-                call_id: tc.id,
-                name: tc.function?.name || '',
-                arguments: tc.function?.arguments || '',
-              });
-            }
-          }
-        } else if (msg.role === 'tool') {
-          responsesInput.push({
-            type: 'function_call_output',
-            call_id: msg.tool_call_id,
-            output: msg.content,
-          });
-        }
-      }
-    }
+    const responsesInput: any[] = isResponses ? buildResponsesInput(formattedMessages) : [];
 
     const abortController = new AbortController();
     const cancelListener = token.onCancellationRequested(() => { abortController.abort(); });
@@ -752,15 +875,19 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
 
     const reasoningEffort =
       (options as any)?.modelConfiguration?.reasoningEffort ||
+      (options as any)?.modelConfiguration?.thinkingLevel ||
       (options as any)?.configuration?.reasoningEffort ||
-      (options as any)?.reasoningEffort;
+      (options as any)?.configuration?.thinkingLevel ||
+      (options as any)?.reasoningEffort ||
+      (options as any)?.thinkingLevel;
 
     const reasoningPayload = normalizeReasoningEffort(reasoningEffort, isResponses);
 
+    const sanitizedInput = sanitizeResponsesInput(responsesInput);
     const requestBody: any = isResponses
       ? {
           model: model.id,
-          input: responsesInput.length > 0 ? responsesInput : formattedMessages,
+          input: sanitizedInput.length > 0 ? sanitizedInput : formattedMessages.filter((m) => !isStaleReasoningInput(m)),
           tools: toolsPayload,
           stream: true,
           ...reasoningPayload,
@@ -836,10 +963,10 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         // strip stale reasoning items from input and retry once transparently.
         if (res.status === 400 && isResponses && userDetail.includes('encrypted_content')) {
           this.log(`Detected reasoning echo error for model=${model.id}, retrying without stale reasoning...`);
-          const sanitizedInput = responsesInput.filter((item) => !isStaleReasoningInput(item));
+          const resanitized = sanitizeResponsesInput(responsesInput).filter((item) => !isStaleReasoningInput(item));
           const retryBody: Record<string, unknown> = {
             ...requestBody,
-            input: sanitizedInput.length > 0 ? sanitizedInput : formattedMessages,
+            input: resanitized.length > 0 ? resanitized : formattedMessages.filter((m) => !isStaleReasoningInput(m)),
           };
           try {
             const retryRes = await fetchWithRetry(
@@ -921,11 +1048,15 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
 
       // Track in-progress tool calls and reasoning stream
       const pendingToolCalls = new Map<number, { id: string; name: string; args: string }>();
+      const emittedToolCallIds = new Set<string>();
       const thinkingId = `thinking-${Date.now()}`;
+      let currentThinkingId = thinkingId;
       const thinkParser = new ThinkTagStreamParser();
       let hasStreamError = false;
       let lastReadAt = Date.now();
       let partsReportedCount = 0;
+      let isReasoningActive = false;
+      let reasoningDeltasEmitted = false;
       let isStallRetry = false;
 
       const emitThinking = (thinking: string) => {
@@ -933,21 +1064,247 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         partsReportedCount++;
         const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
         if (ThinkingPart) {
-          progress.report(new ThinkingPart(thinking, thinkingId));
+          progress.report(new ThinkingPart(thinking, currentThinkingId));
         } else {
           progress.report(new vscode.LanguageModelTextPart(thinking));
         }
+      };
+
+      const flushPendingToolCalls = () => {
+        if (pendingToolCalls.size === 0) return;
+        for (const [, call] of pendingToolCalls) {
+          if (emittedToolCallIds.has(call.id)) continue;
+          let parsedArgs: any = {};
+          try {
+            parsedArgs = JSON.parse(call.args);
+          } catch {
+            parsedArgs = { raw: call.args };
+          }
+          if (!isSyntheticVerificationTool(call.name, options.tools)) {
+            partsReportedCount++;
+            emittedToolCallIds.add(call.id);
+            progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+          }
+        }
+        pendingToolCalls.clear();
+      };
+
+      const processLine = (line: string): boolean => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith(':')) return false;
+        if (trimmed === 'data: [DONE]') {
+          return true;
+        }
+
+        if (trimmed.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(trimmed.slice(6));
+
+            // 1. Handle OpenAI Responses API stream format (used by Muse, GPT, Grok)
+            if (data.type === 'response.completed') {
+              isReasoningActive = false;
+              if (Array.isArray(data.response?.output)) {
+                for (const item of data.response.output) {
+                  if (item?.type === 'function_call') {
+                    const callId = item.call_id || item.id || `call_${Date.now()}`;
+                    const idx = typeof item.output_index === 'number' ? item.output_index : pendingToolCalls.size;
+                    const existing = pendingToolCalls.get(idx) || { id: callId, name: item.name || '', args: '' };
+                    if (item.arguments) {
+                      existing.args = typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments);
+                    }
+                    pendingToolCalls.set(idx, existing);
+                  }
+                }
+              }
+              return true;
+            }
+
+            if (data.type === 'response.output_text.delta') {
+              const delta = typeof data.delta === 'string' ? data.delta : data.delta?.text || data.delta?.value || '';
+              if (delta) {
+                partsReportedCount++;
+                progress.report(new vscode.LanguageModelTextPart(delta));
+              }
+              return false;
+            }
+
+            if (data.type === 'response.output_item.added') {
+              if (data.item?.type === 'reasoning') {
+                isReasoningActive = true;
+                if (data.item.id) {
+                  currentThinkingId = data.item.id;
+                }
+                partsReportedCount++;
+                const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
+                if (ThinkingPart) {
+                  progress.report(new ThinkingPart(data.item.text || '', currentThinkingId));
+                }
+                return false;
+              }
+              if (data.item?.type === 'function_call') {
+                const idx = typeof data.output_index === 'number' ? data.output_index : 0;
+                pendingToolCalls.set(idx, {
+                  id: data.item.call_id || data.item.id || `call_${Date.now()}`,
+                  name: data.item.name || '',
+                  args: data.item.arguments || '',
+                });
+                return false;
+              }
+            }
+
+            if (data.type === 'response.reasoning_text.delta') {
+              const delta = typeof data.delta === 'string' ? data.delta : data.delta?.text || data.delta?.value || '';
+              if (delta && delta.length > 0) {
+                reasoningDeltasEmitted = true;
+                partsReportedCount++;
+                const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
+                if (ThinkingPart) {
+                  progress.report(new ThinkingPart(delta, currentThinkingId));
+                }
+              }
+              return false;
+            }
+
+            if (data.type === 'response.function_call_arguments.delta') {
+              const idx = typeof data.output_index === 'number' ? data.output_index : 0;
+              const current = pendingToolCalls.get(idx) || { id: '', name: '', args: '' };
+              const delta = typeof data.delta === 'string' ? data.delta : data.delta?.arguments || '';
+              current.args += delta;
+              pendingToolCalls.set(idx, current);
+              return false;
+            }
+
+            if (data.type === 'response.output_item.done') {
+              if (data.item?.type === 'reasoning') {
+                isReasoningActive = false;
+                if (!reasoningDeltasEmitted && typeof data.item.text === 'string' && data.item.text.length > 0) {
+                  partsReportedCount++;
+                  const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
+                  if (ThinkingPart) {
+                    progress.report(new ThinkingPart(data.item.text, currentThinkingId));
+                  }
+                }
+                return false;
+              }
+              if (data.item?.type === 'function_call') {
+                const idx = typeof data.output_index === 'number' ? data.output_index : 0;
+                const call = pendingToolCalls.get(idx) || {
+                  id: data.item.call_id || data.item.id || `call_${Date.now()}`,
+                  name: data.item.name || '',
+                  args: '',
+                };
+                if (data.item.name && !call.name) call.name = data.item.name;
+                if (data.item.call_id && !call.id) call.id = data.item.call_id;
+
+                const itemArgsRaw = data.item.arguments;
+                if (itemArgsRaw !== undefined && itemArgsRaw !== null) {
+                  const itemArgsStr = typeof itemArgsRaw === 'string' ? itemArgsRaw : JSON.stringify(itemArgsRaw);
+                  if (!call.args || !call.args.trim()) {
+                    call.args = itemArgsStr;
+                  } else {
+                    let callValid = false;
+                    let parsedCallArgs: any = null;
+                    try {
+                      parsedCallArgs = JSON.parse(call.args);
+                      callValid = true;
+                    } catch {}
+
+                    if (!callValid) {
+                      call.args = itemArgsStr;
+                    } else {
+                      try {
+                        const parsedItemArgs = typeof itemArgsRaw === 'object' ? itemArgsRaw : JSON.parse(itemArgsStr);
+                        if (
+                          parsedItemArgs && typeof parsedItemArgs === 'object' && !Array.isArray(parsedItemArgs) &&
+                          parsedCallArgs && typeof parsedCallArgs === 'object' && !Array.isArray(parsedCallArgs)
+                        ) {
+                          call.args = JSON.stringify({ ...parsedCallArgs, ...parsedItemArgs });
+                        }
+                      } catch {}
+                    }
+                  }
+                }
+
+                let parsedArgs: any = {};
+                try {
+                  parsedArgs = JSON.parse(call.args);
+                } catch {
+                  parsedArgs = { raw: call.args };
+                }
+                if (!emittedToolCallIds.has(call.id) && !isSyntheticVerificationTool(call.name, options.tools)) {
+                  partsReportedCount++;
+                  emittedToolCallIds.add(call.id);
+                  progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+                }
+                pendingToolCalls.delete(idx);
+                return false;
+              }
+            }
+
+            // 2. Handle OpenAI Chat Completions API stream format (used by DeepSeek, Kimi, GLM, MiMo, Qwen)
+            const choice = data.choices?.[0];
+            if (!choice) return false;
+
+            // 1. Stream reasoning / thinking content from explicit reasoning fields
+            const rawReasoning =
+              choice.delta?.reasoning_content ||
+              choice.delta?.thought ||
+              choice.delta?.reasoning ||
+              (Array.isArray(choice.delta?.reasoning_details)
+                ? choice.delta.reasoning_details.map((d: any) => d.text || '').join('')
+                : undefined);
+
+            if (rawReasoning && rawReasoning.length > 0) {
+              emitThinking(rawReasoning);
+            }
+
+            // 2. Stream delta text content, splitting out inline <think> tags
+            // via a chunk-boundary-safe parser (tags can be split across SSE chunks).
+            const content = choice.delta?.content;
+            if (content) {
+              const { text, thinking } = thinkParser.feed(content);
+              emitThinking(thinking);
+              if (text) {
+                partsReportedCount++;
+                progress.report(new vscode.LanguageModelTextPart(text));
+              }
+            }
+
+            // Accumulate streaming tool calls
+            if (choice.delta?.tool_calls) {
+              choice.delta.tool_calls.forEach((tc: any, i: number) => {
+                const idx = tc.index ?? i;
+                const current = pendingToolCalls.get(idx) || { id: '', name: '', args: '' };
+                if (tc.id) current.id = tc.id;
+                if (tc.function?.name) current.name += tc.function.name;
+                if (tc.function?.arguments) current.args += tc.function.arguments;
+                pendingToolCalls.set(idx, current);
+              });
+            }
+
+            // If finish_reason indicates tool_calls, emit completed tool call parts
+            if (choice.finish_reason === 'tool_calls' || (choice.finish_reason === 'stop' && pendingToolCalls.size > 0)) {
+              flushPendingToolCalls();
+            }
+
+            if (choice.finish_reason === 'stop') {
+              return true;
+            }
+          } catch {}
+        }
+        return false;
       };
 
       try {
         while (true) {
           if (token.isCancellationRequested) break;
 
-          const idleMs = idleTimeoutMs - (Date.now() - lastReadAt);
+          const effectiveIdleTimeoutMs = isReasoningActive ? idleTimeoutMs * 2 : idleTimeoutMs;
+          const idleMs = effectiveIdleTimeoutMs - (Date.now() - lastReadAt);
           let idleTimer: ReturnType<typeof setTimeout> | undefined;
           const idleTimeout = new Promise<never>((_, reject) => {
             idleTimer = setTimeout(
-              () => { reject(new Error(`Stream idle for over ${Math.round(idleTimeoutMs / 1000)}s; no data received from OpenCode upstream.`)); },
+              () => { reject(new Error(`Stream idle for over ${Math.round(effectiveIdleTimeoutMs / 1000)}s; no data received from OpenCode upstream.`)); },
               Math.max(0, idleMs)
             );
           });
@@ -959,155 +1316,49 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
             clearTimeout(idleTimer);
           }
           lastReadAt = Date.now();
-          if (done) break;
 
-          buffer += decoder.decode(value, { stream: true });
+          if (value) {
+            buffer += decoder.decode(value, { stream: !done });
+          }
           const lines = buffer.split('\n');
           buffer = lines.pop() ?? '';
 
           let isDone = false;
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || trimmed.startsWith(':')) continue;
-            if (trimmed === 'data: [DONE]') {
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const finished = processLine(line);
+            if (finished) {
+              // Ensure any remaining lines in this batch are processed before terminating
+              for (let j = i + 1; j < lines.length; j++) {
+                processLine(lines[j]);
+              }
+              // If buffer still has remaining content, process it
+              if (buffer.trim()) {
+                const remainingLines = buffer.split('\n');
+                buffer = '';
+                for (const remLine of remainingLines) {
+                  processLine(remLine);
+                }
+              }
+              flushPendingToolCalls();
               isDone = true;
               break;
             }
-
-            if (trimmed.startsWith('data: ')) {
-              try {
-                const data = JSON.parse(trimmed.slice(6));
-
-                // 1. Handle OpenAI Responses API stream format (used by Muse, GPT, Grok)
-                if (data.type === 'response.completed') {
-                  isDone = true;
-                  break;
-                }
-
-                if (data.type === 'response.output_text.delta') {
-                  const delta = typeof data.delta === 'string' ? data.delta : data.delta?.text || data.delta?.value || '';
-                  if (delta) {
-                    partsReportedCount++;
-                    progress.report(new vscode.LanguageModelTextPart(delta));
-                  }
-                  continue;
-                }
-
-                if (data.type === 'response.reasoning_text.delta') {
-                  const delta = typeof data.delta === 'string' ? data.delta : data.delta?.text || data.delta?.value || '';
-                  if (delta && delta.length > 0) {
-                    partsReportedCount++;
-                    const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
-                    if (ThinkingPart) {
-                      progress.report(new ThinkingPart(delta, thinkingId));
-                    }
-                  }
-                  continue;
-                }
-
-                if (data.type === 'response.output_item.added' && data.item?.type === 'function_call') {
-                  const idx = typeof data.output_index === 'number' ? data.output_index : 0;
-                  pendingToolCalls.set(idx, {
-                    id: data.item.call_id || data.item.id || `call_${Date.now()}`,
-                    name: data.item.name || '',
-                    args: data.item.arguments || '',
-                  });
-                  continue;
-                }
-
-                if (data.type === 'response.function_call_arguments.delta') {
-                  const idx = typeof data.output_index === 'number' ? data.output_index : 0;
-                  const current = pendingToolCalls.get(idx) || { id: '', name: '', args: '' };
-                  const delta = typeof data.delta === 'string' ? data.delta : data.delta?.arguments || '';
-                  current.args += delta;
-                  pendingToolCalls.set(idx, current);
-                  continue;
-                }
-
-                if (data.type === 'response.output_item.done' && data.item?.type === 'function_call') {
-                  const idx = typeof data.output_index === 'number' ? data.output_index : 0;
-                  const call = pendingToolCalls.get(idx);
-                  if (call) {
-                    let parsedArgs: any = {};
-                    try {
-                      parsedArgs = JSON.parse(call.args);
-                    } catch {
-                      parsedArgs = { raw: call.args };
-                    }
-                    if (!isSyntheticVerificationTool(call.name, options.tools)) {
-                      partsReportedCount++;
-                      progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
-                    }
-                    pendingToolCalls.delete(idx);
-                  }
-                  continue;
-                }
-
-                // 2. Handle OpenAI Chat Completions API stream format (used by DeepSeek, Kimi, GLM, MiMo, Qwen)
-                const choice = data.choices?.[0];
-                if (!choice) continue;
-
-                // 1. Stream reasoning / thinking content from explicit reasoning fields
-                const rawReasoning =
-                  choice.delta?.reasoning_content ||
-                  choice.delta?.thought ||
-                  choice.delta?.reasoning ||
-                  (Array.isArray(choice.delta?.reasoning_details)
-                    ? choice.delta.reasoning_details.map((d: any) => d.text || '').join('')
-                    : undefined);
-
-                if (rawReasoning && rawReasoning.length > 0) {
-                  emitThinking(rawReasoning);
-                }
-
-                // 2. Stream delta text content, splitting out inline <think> tags
-                // via a chunk-boundary-safe parser (tags can be split across SSE chunks).
-                const content = choice.delta?.content;
-                if (content) {
-                  const { text, thinking } = thinkParser.feed(content);
-                  emitThinking(thinking);
-                  if (text) {
-                    partsReportedCount++;
-                    progress.report(new vscode.LanguageModelTextPart(text));
-                  }
-                }
-
-                // Accumulate streaming tool calls
-                if (choice.delta?.tool_calls) {
-                  choice.delta.tool_calls.forEach((tc: any, i: number) => {
-                    const idx = tc.index ?? i;
-                    const current = pendingToolCalls.get(idx) || { id: '', name: '', args: '' };
-                    if (tc.id) current.id = tc.id;
-                    if (tc.function?.name) current.name += tc.function.name;
-                    if (tc.function?.arguments) current.args += tc.function.arguments;
-                    pendingToolCalls.set(idx, current);
-                  });
-                }
-
-                // If finish_reason indicates tool_calls, emit completed tool call parts
-                if (choice.finish_reason === 'tool_calls' || (choice.finish_reason === 'stop' && pendingToolCalls.size > 0)) {
-                  for (const [, call] of pendingToolCalls) {
-                    let parsedArgs: any = {};
-                    try {
-                      parsedArgs = JSON.parse(call.args);
-                    } catch {
-                      parsedArgs = { raw: call.args };
-                    }
-                    if (!isSyntheticVerificationTool(call.name, options.tools)) {
-                      partsReportedCount++;
-                      progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
-                    }
-                  }
-                  pendingToolCalls.clear();
-                }
-
-                if (choice.finish_reason === 'stop') {
-                  isDone = true;
-                  break;
-                }
-              } catch {}
-            }
           }
+
+          if (done) {
+            // Process any trailing lines in buffer
+            if (buffer.trim()) {
+              const remainingLines = buffer.split('\n');
+              buffer = '';
+              for (const remLine of remainingLines) {
+                processLine(remLine);
+              }
+            }
+            flushPendingToolCalls();
+            break;
+          }
+
           if (isDone) break;
         }
         const flushed = thinkParser.flush();
@@ -1123,6 +1374,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         if (
           isIdleTimeout &&
           partsReportedCount === 0 &&
+          !isReasoningActive &&
           stallAttempt < maxStallRetries &&
           !token.isCancellationRequested &&
           !abortController.signal.aborted
@@ -1149,18 +1401,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         if (!isStallRetry) {
           // Flush any remaining accumulated tool calls ONLY if stream was NOT interrupted/canceled
           if (!hasStreamError && !token.isCancellationRequested && !abortController.signal.aborted && pendingToolCalls.size > 0) {
-            for (const [, call] of pendingToolCalls) {
-              let parsedArgs: any = {};
-              try {
-                parsedArgs = JSON.parse(call.args);
-              } catch {
-                parsedArgs = { raw: call.args };
-              }
-              if (!isSyntheticVerificationTool(call.name, options.tools)) {
-                progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
-              }
-            }
-            pendingToolCalls.clear();
+            flushPendingToolCalls();
           }
           if (!hasStreamError && !token.isCancellationRequested && !abortController.signal.aborted) {
             this.log(`Stream completed for model=${model.id}`);

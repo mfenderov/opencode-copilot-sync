@@ -239,7 +239,10 @@ test('Provider Chaos [Thinking Streaming on Responses API (Muse)]: emits Languag
   const textParts = progress.parts.filter((p) => p instanceof vscode.LanguageModelTextPart);
 
   assert.ok(thinkingParts.length >= 1, 'Expected at least 1 LanguageModelThinkingPart for Muse');
-  assert.equal(thinkingParts[0].value, 'Muse deep thinking: step 1 theorem proof.');
+  assert.ok(
+    thinkingParts.some((p) => p.value === 'Muse deep thinking: step 1 theorem proof.'),
+    'Expected reasoning text delta in thinking parts'
+  );
   assert.ok(textParts.length >= 1, 'Expected at least 1 LanguageModelTextPart');
   assert.equal(textParts[0].value, 'The proof concludes here.');
 });
@@ -316,3 +319,81 @@ test('Provider Chaos [Thinking Effort: "none" or "off"]: omits reasoning fields'
   assert.strictEqual(reqs[0].body.reasoning, undefined);
   assert.strictEqual(reqs[0].body.reasoning_effort, undefined);
 });
+
+test('Provider Chaos [Reasoning Lifecycle on Responses API (Muse)]: emits LanguageModelThinkingPart on response.output_item.added reasoning even without text deltas', async () => {
+  mockServer.clearRequests();
+  mockServer.setScenario({
+    mode: 'standard',
+    chunks: [
+      { type: 'response.created', response: { id: 'resp_muse_1', status: 'in_progress' } },
+      { type: 'response.in_progress', response: { id: 'resp_muse_1', status: 'in_progress' } },
+      { type: 'response.output_item.added', output_index: 0, item: { id: 'reason_1', type: 'reasoning' } },
+      // Silence while Meta computes reasoning - no reasoning text deltas
+      { type: 'response.output_item.done', output_index: 0, item: { id: 'reason_1', type: 'reasoning' } },
+      { type: 'response.output_item.added', output_index: 1, item: { id: 'msg_1', type: 'message' } },
+      { type: 'response.output_text.delta', output_index: 1, delta: 'Hello from Muse!' },
+      { type: 'response.completed', response: { id: 'resp_muse_1', status: 'completed' } },
+    ],
+  });
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+  const token = createMockToken();
+
+  await provider.provideLanguageModelChatResponse(
+    MUSE_RESPONSES_MODEL,
+    [createMockMessage('hello muse with reasoning')],
+    { modelConfiguration: { reasoningEffort: 'high' } },
+    progress,
+    token
+  );
+
+  const thinkingParts = progress.parts.filter((p) => p instanceof vscode.LanguageModelThinkingPart);
+  const textParts = progress.parts.filter((p) => p instanceof vscode.LanguageModelTextPart);
+
+  assert.ok(thinkingParts.length >= 1, 'Expected at least 1 LanguageModelThinkingPart emitted when reasoning starts');
+  assert.equal(textParts.length, 1);
+  assert.equal(textParts[0].value, 'Hello from Muse!');
+});
+
+test('Provider Chaos [Reasoning Lifecycle on Responses API (Muse)]: does not trigger false stall retry during reasoning silence', async () => {
+  mockServer.clearRequests();
+  mockServer.setScenario({
+    mode: 'stall',
+    chunks: [
+      { type: 'response.created', response: { id: 'resp_muse_stall', status: 'in_progress' } },
+      { type: 'response.output_item.added', output_index: 0, item: { id: 'reason_1', type: 'reasoning' } },
+    ],
+  });
+
+  const prevTimeout = process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS;
+  process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS = '100'; // short timeout for testing
+
+  try {
+    const context = createMockContext();
+    const provider = new OpenCodeChatProvider(context);
+    const progress = createMockProgress();
+    const token = createMockToken();
+
+    await provider.provideLanguageModelChatResponse(
+      MUSE_RESPONSES_MODEL,
+      [createMockMessage('prove theorem with long thinking')],
+      { modelConfiguration: { reasoningEffort: 'high' } },
+      progress,
+      token
+    );
+
+    const reqs = mockServer.getRequests();
+    // Must NOT trigger auto-recovery retry (false stall) because reasoning was active and thinking part was emitted!
+    assert.equal(reqs.length, 1, 'must not trigger false stall retry when reasoning was started');
+  } finally {
+    if (prevTimeout !== undefined) {
+      process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS = prevTimeout;
+    } else {
+      delete process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS;
+    }
+  }
+});
+
+

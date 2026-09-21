@@ -29038,7 +29038,77 @@ function extractErrorMessage(rawJson) {
 function isStaleReasoningInput(item) {
   if (typeof item !== "object" || item === null) return false;
   const rec = item;
-  return rec.type === "reasoning" || typeof rec.encrypted_content === "string";
+  if (rec.type === "reasoning" || rec.type === "thought" || rec.type === "thinking" || typeof rec.encrypted_content === "string") {
+    return true;
+  }
+  if (Array.isArray(rec.content)) {
+    return rec.content.some((part) => {
+      if (typeof part !== "object" || part === null) return false;
+      const p = part;
+      return p.type === "reasoning" || p.type === "thought" || p.type === "thinking" || typeof p.encrypted_content === "string";
+    });
+  }
+  return false;
+}
+function sanitizeResponsesInput(input) {
+  const result = [];
+  for (const item of input) {
+    if (typeof item !== "object" || item === null) continue;
+    const rec = item;
+    if (rec.type === "reasoning" || rec.type === "thought" || rec.type === "thinking" || typeof rec.encrypted_content === "string") {
+      continue;
+    }
+    if (Array.isArray(rec.content)) {
+      const contentArr = rec.content;
+      const filteredParts = contentArr.filter((part) => {
+        if (typeof part !== "object" || part === null) return true;
+        const p = part;
+        return p.type !== "reasoning" && p.type !== "thought" && p.type !== "thinking" && typeof p.encrypted_content !== "string";
+      });
+      if (filteredParts.length === 0 && !rec.tool_calls) {
+        continue;
+      }
+      result.push({ ...rec, content: filteredParts });
+      continue;
+    }
+    result.push(item);
+  }
+  return result;
+}
+function buildResponsesInput(formattedMessages) {
+  const responsesInput = [];
+  for (const msg of formattedMessages) {
+    if (msg.role === "user") {
+      responsesInput.push({ role: "user", content: msg.content ?? "" });
+    } else if (msg.role === "assistant") {
+      if (msg.content) {
+        responsesInput.push({
+          role: "assistant",
+          content: [{ type: "output_text", text: msg.content }]
+        });
+      }
+      if (msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          const rawId = tc.id ?? "";
+          const callId = rawId.length > 0 ? rawId : `call_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          responsesInput.push({
+            type: "function_call",
+            id: callId,
+            call_id: callId,
+            name: tc.function?.name ?? "",
+            arguments: tc.function?.arguments ?? ""
+          });
+        }
+      }
+    } else if (msg.role === "tool") {
+      responsesInput.push({
+        type: "function_call_output",
+        call_id: msg.tool_call_id ?? "",
+        output: msg.content ?? ""
+      });
+    }
+  }
+  return sanitizeResponsesInput(responsesInput);
 }
 var OpenCodeChatProvider = class _OpenCodeChatProvider {
   // 4 hours
@@ -29046,7 +29116,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
     this.context = context;
     this.outputChannel = outputChannel;
     try {
-      if (this.context.globalStorageUri?.fsPath) {
+      if (this.context.globalStorageUri.fsPath) {
         const cacheFile = path3.join(this.context.globalStorageUri.fsPath, "models_cache.json");
         if (fs3.existsSync(cacheFile)) {
           const parsed = JSON.parse(fs3.readFileSync(cacheFile, "utf-8"));
@@ -29114,7 +29184,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
       this._models = models;
       this.refresh();
       try {
-        if (this.context.globalStorageUri?.fsPath) {
+        if (this.context.globalStorageUri.fsPath) {
           const cacheDir = this.context.globalStorageUri.fsPath;
           if (!fs3.existsSync(cacheDir)) {
             fs3.mkdirSync(cacheDir, { recursive: true });
@@ -29197,7 +29267,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
     });
   }
   async provideLanguageModelChatResponse(model, messages, options, progress, token) {
-    const apiKey = await this.context.secrets.get("opencode_api_key") || getStoredOpenCodeKey(this.context.globalStorageUri?.fsPath) || getStoredOpenCodeKey() || getKeyFromExistingConfig(this.context.globalStorageUri?.fsPath) || getKeyFromExistingConfig();
+    const apiKey = await this.context.secrets.get("opencode_api_key") || getStoredOpenCodeKey(this.context.globalStorageUri.fsPath) || getStoredOpenCodeKey() || getKeyFromExistingConfig(this.context.globalStorageUri.fsPath) || getKeyFromExistingConfig();
     if (!apiKey) {
       throw new Error(
         'OpenCode API key not found. Please run "OpenCode: Set API Key" command to configure your key.'
@@ -29215,6 +29285,11 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
       let textContent = "";
       const toolCalls = [];
       for (const part of msg.content) {
+        const ThinkingPart = vscode.LanguageModelThinkingPart;
+        const isThinkingPart = ThinkingPart && part instanceof ThinkingPart || part?.constructor?.name === "LanguageModelThinkingPart" || part?.type === "thinking" || part?.type === "reasoning";
+        if (isThinkingPart) {
+          continue;
+        }
         if (part instanceof vscode.LanguageModelTextPart) {
           textContent += part.value;
         } else if (part instanceof vscode.LanguageModelToolCallPart) {
@@ -29231,9 +29306,15 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
           if (typeof part.content === "string") {
             resultStr = part.content;
           } else if (Array.isArray(part.content)) {
-            resultStr = part.content.map((p) => p.value || JSON.stringify(p)).join("\n");
+            resultStr = part.content.map((p) => {
+              if (typeof p === "string") return p;
+              if (p && typeof p.value === "string") return p.value;
+              return JSON.stringify(p ?? "") ?? "";
+            }).join("\n");
+          } else if (part.content !== void 0 && part.content !== null) {
+            resultStr = JSON.stringify(part.content) ?? "";
           } else {
-            resultStr = JSON.stringify(part.content);
+            resultStr = "";
           }
           formattedMessages.push({
             role: "tool",
@@ -29277,35 +29358,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
     if (isFreeOrZen) {
       toolsPayload = injectOpenCodeVerificationTools(toolsPayload, isResponses);
     }
-    const responsesInput = [];
-    if (isResponses) {
-      for (const msg of formattedMessages) {
-        if (msg.role === "user") {
-          responsesInput.push({ role: "user", content: msg.content });
-        } else if (msg.role === "assistant") {
-          if (msg.content) {
-            responsesInput.push({ role: "assistant", content: [{ type: "output_text", text: msg.content }] });
-          }
-          if (msg.tool_calls) {
-            for (const tc of msg.tool_calls) {
-              responsesInput.push({
-                type: "function_call",
-                id: tc.id?.startsWith("fc_") ? tc.id : `fc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-                call_id: tc.id,
-                name: tc.function?.name || "",
-                arguments: tc.function?.arguments || ""
-              });
-            }
-          }
-        } else if (msg.role === "tool") {
-          responsesInput.push({
-            type: "function_call_output",
-            call_id: msg.tool_call_id,
-            output: msg.content
-          });
-        }
-      }
-    }
+    const responsesInput = isResponses ? buildResponsesInput(formattedMessages) : [];
     const abortController = new AbortController();
     const cancelListener = token.onCancellationRequested(() => {
       abortController.abort();
@@ -29336,11 +29389,12 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
     const isFreeOrZen = isFreeOrZenModel(model.id, meta);
     const baseUrl = isFreeOrZen ? "https://opencode.ai/zen/v1" : "https://opencode.ai/zen/go/v1";
     const url = isResponses ? `${baseUrl}/responses` : `${baseUrl}/chat/completions`;
-    const reasoningEffort = options?.modelConfiguration?.reasoningEffort || options?.configuration?.reasoningEffort || options?.reasoningEffort;
+    const reasoningEffort = options?.modelConfiguration?.reasoningEffort || options?.modelConfiguration?.thinkingLevel || options?.configuration?.reasoningEffort || options?.configuration?.thinkingLevel || options?.reasoningEffort || options?.thinkingLevel;
     const reasoningPayload = normalizeReasoningEffort(reasoningEffort, isResponses);
+    const sanitizedInput = sanitizeResponsesInput(responsesInput);
     const requestBody = isResponses ? {
       model: model.id,
-      input: responsesInput.length > 0 ? responsesInput : formattedMessages,
+      input: sanitizedInput.length > 0 ? sanitizedInput : formattedMessages.filter((m) => !isStaleReasoningInput(m)),
       tools: toolsPayload,
       stream: true,
       ...reasoningPayload
@@ -29405,10 +29459,10 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
         this.log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`);
         if (res.status === 400 && isResponses && userDetail.includes("encrypted_content")) {
           this.log(`Detected reasoning echo error for model=${model.id}, retrying without stale reasoning...`);
-          const sanitizedInput = responsesInput.filter((item) => !isStaleReasoningInput(item));
+          const resanitized = sanitizeResponsesInput(responsesInput).filter((item) => !isStaleReasoningInput(item));
           const retryBody = {
             ...requestBody,
-            input: sanitizedInput.length > 0 ? sanitizedInput : formattedMessages
+            input: resanitized.length > 0 ? resanitized : formattedMessages.filter((m) => !isStaleReasoningInput(m))
           };
           try {
             const retryRes = await fetchWithRetry(
@@ -29469,31 +29523,229 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
       const decoder = new TextDecoder();
       let buffer = "";
       const pendingToolCalls = /* @__PURE__ */ new Map();
+      const emittedToolCallIds = /* @__PURE__ */ new Set();
       const thinkingId = `thinking-${Date.now()}`;
+      let currentThinkingId = thinkingId;
       const thinkParser = new ThinkTagStreamParser();
       let hasStreamError = false;
       let lastReadAt = Date.now();
       let partsReportedCount = 0;
+      let isReasoningActive = false;
+      let reasoningDeltasEmitted = false;
       let isStallRetry = false;
       const emitThinking = (thinking) => {
         if (!thinking) return;
         partsReportedCount++;
         const ThinkingPart = vscode.LanguageModelThinkingPart;
         if (ThinkingPart) {
-          progress.report(new ThinkingPart(thinking, thinkingId));
+          progress.report(new ThinkingPart(thinking, currentThinkingId));
         } else {
           progress.report(new vscode.LanguageModelTextPart(thinking));
         }
       };
+      const flushPendingToolCalls = () => {
+        if (pendingToolCalls.size === 0) return;
+        for (const [, call] of pendingToolCalls) {
+          if (emittedToolCallIds.has(call.id)) continue;
+          let parsedArgs = {};
+          try {
+            parsedArgs = JSON.parse(call.args);
+          } catch {
+            parsedArgs = { raw: call.args };
+          }
+          if (!isSyntheticVerificationTool(call.name, options.tools)) {
+            partsReportedCount++;
+            emittedToolCallIds.add(call.id);
+            progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+          }
+        }
+        pendingToolCalls.clear();
+      };
+      const processLine = (line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith(":")) return false;
+        if (trimmed === "data: [DONE]") {
+          return true;
+        }
+        if (trimmed.startsWith("data: ")) {
+          try {
+            const data = JSON.parse(trimmed.slice(6));
+            if (data.type === "response.completed") {
+              isReasoningActive = false;
+              if (Array.isArray(data.response?.output)) {
+                for (const item of data.response.output) {
+                  if (item?.type === "function_call") {
+                    const callId = item.call_id || item.id || `call_${Date.now()}`;
+                    const idx = typeof item.output_index === "number" ? item.output_index : pendingToolCalls.size;
+                    const existing = pendingToolCalls.get(idx) || { id: callId, name: item.name || "", args: "" };
+                    if (item.arguments) {
+                      existing.args = typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments);
+                    }
+                    pendingToolCalls.set(idx, existing);
+                  }
+                }
+              }
+              return true;
+            }
+            if (data.type === "response.output_text.delta") {
+              const delta = typeof data.delta === "string" ? data.delta : data.delta?.text || data.delta?.value || "";
+              if (delta) {
+                partsReportedCount++;
+                progress.report(new vscode.LanguageModelTextPart(delta));
+              }
+              return false;
+            }
+            if (data.type === "response.output_item.added") {
+              if (data.item?.type === "reasoning") {
+                isReasoningActive = true;
+                if (data.item.id) {
+                  currentThinkingId = data.item.id;
+                }
+                partsReportedCount++;
+                const ThinkingPart = vscode.LanguageModelThinkingPart;
+                if (ThinkingPart) {
+                  progress.report(new ThinkingPart(data.item.text || "", currentThinkingId));
+                }
+                return false;
+              }
+              if (data.item?.type === "function_call") {
+                const idx = typeof data.output_index === "number" ? data.output_index : 0;
+                pendingToolCalls.set(idx, {
+                  id: data.item.call_id || data.item.id || `call_${Date.now()}`,
+                  name: data.item.name || "",
+                  args: data.item.arguments || ""
+                });
+                return false;
+              }
+            }
+            if (data.type === "response.reasoning_text.delta") {
+              const delta = typeof data.delta === "string" ? data.delta : data.delta?.text || data.delta?.value || "";
+              if (delta && delta.length > 0) {
+                reasoningDeltasEmitted = true;
+                partsReportedCount++;
+                const ThinkingPart = vscode.LanguageModelThinkingPart;
+                if (ThinkingPart) {
+                  progress.report(new ThinkingPart(delta, currentThinkingId));
+                }
+              }
+              return false;
+            }
+            if (data.type === "response.function_call_arguments.delta") {
+              const idx = typeof data.output_index === "number" ? data.output_index : 0;
+              const current = pendingToolCalls.get(idx) || { id: "", name: "", args: "" };
+              const delta = typeof data.delta === "string" ? data.delta : data.delta?.arguments || "";
+              current.args += delta;
+              pendingToolCalls.set(idx, current);
+              return false;
+            }
+            if (data.type === "response.output_item.done") {
+              if (data.item?.type === "reasoning") {
+                isReasoningActive = false;
+                if (!reasoningDeltasEmitted && typeof data.item.text === "string" && data.item.text.length > 0) {
+                  partsReportedCount++;
+                  const ThinkingPart = vscode.LanguageModelThinkingPart;
+                  if (ThinkingPart) {
+                    progress.report(new ThinkingPart(data.item.text, currentThinkingId));
+                  }
+                }
+                return false;
+              }
+              if (data.item?.type === "function_call") {
+                const idx = typeof data.output_index === "number" ? data.output_index : 0;
+                const call = pendingToolCalls.get(idx) || {
+                  id: data.item.call_id || data.item.id || `call_${Date.now()}`,
+                  name: data.item.name || "",
+                  args: ""
+                };
+                if (data.item.name && !call.name) call.name = data.item.name;
+                if (data.item.call_id && !call.id) call.id = data.item.call_id;
+                const itemArgsRaw = data.item.arguments;
+                if (itemArgsRaw !== void 0 && itemArgsRaw !== null) {
+                  const itemArgsStr = typeof itemArgsRaw === "string" ? itemArgsRaw : JSON.stringify(itemArgsRaw);
+                  if (!call.args || !call.args.trim()) {
+                    call.args = itemArgsStr;
+                  } else {
+                    let callValid = false;
+                    let parsedCallArgs = null;
+                    try {
+                      parsedCallArgs = JSON.parse(call.args);
+                      callValid = true;
+                    } catch {
+                    }
+                    if (!callValid) {
+                      call.args = itemArgsStr;
+                    } else {
+                      try {
+                        const parsedItemArgs = typeof itemArgsRaw === "object" ? itemArgsRaw : JSON.parse(itemArgsStr);
+                        if (parsedItemArgs && typeof parsedItemArgs === "object" && !Array.isArray(parsedItemArgs) && parsedCallArgs && typeof parsedCallArgs === "object" && !Array.isArray(parsedCallArgs)) {
+                          call.args = JSON.stringify({ ...parsedCallArgs, ...parsedItemArgs });
+                        }
+                      } catch {
+                      }
+                    }
+                  }
+                }
+                let parsedArgs = {};
+                try {
+                  parsedArgs = JSON.parse(call.args);
+                } catch {
+                  parsedArgs = { raw: call.args };
+                }
+                if (!emittedToolCallIds.has(call.id) && !isSyntheticVerificationTool(call.name, options.tools)) {
+                  partsReportedCount++;
+                  emittedToolCallIds.add(call.id);
+                  progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+                }
+                pendingToolCalls.delete(idx);
+                return false;
+              }
+            }
+            const choice = data.choices?.[0];
+            if (!choice) return false;
+            const rawReasoning = choice.delta?.reasoning_content || choice.delta?.thought || choice.delta?.reasoning || (Array.isArray(choice.delta?.reasoning_details) ? choice.delta.reasoning_details.map((d) => d.text || "").join("") : void 0);
+            if (rawReasoning && rawReasoning.length > 0) {
+              emitThinking(rawReasoning);
+            }
+            const content = choice.delta?.content;
+            if (content) {
+              const { text, thinking } = thinkParser.feed(content);
+              emitThinking(thinking);
+              if (text) {
+                partsReportedCount++;
+                progress.report(new vscode.LanguageModelTextPart(text));
+              }
+            }
+            if (choice.delta?.tool_calls) {
+              choice.delta.tool_calls.forEach((tc, i) => {
+                const idx = tc.index ?? i;
+                const current = pendingToolCalls.get(idx) || { id: "", name: "", args: "" };
+                if (tc.id) current.id = tc.id;
+                if (tc.function?.name) current.name += tc.function.name;
+                if (tc.function?.arguments) current.args += tc.function.arguments;
+                pendingToolCalls.set(idx, current);
+              });
+            }
+            if (choice.finish_reason === "tool_calls" || choice.finish_reason === "stop" && pendingToolCalls.size > 0) {
+              flushPendingToolCalls();
+            }
+            if (choice.finish_reason === "stop") {
+              return true;
+            }
+          } catch {
+          }
+        }
+        return false;
+      };
       try {
         while (true) {
           if (token.isCancellationRequested) break;
-          const idleMs = idleTimeoutMs - (Date.now() - lastReadAt);
+          const effectiveIdleTimeoutMs = isReasoningActive ? idleTimeoutMs * 2 : idleTimeoutMs;
+          const idleMs = effectiveIdleTimeoutMs - (Date.now() - lastReadAt);
           let idleTimer;
           const idleTimeout = new Promise((_, reject) => {
             idleTimer = setTimeout(
               () => {
-                reject(new Error(`Stream idle for over ${Math.round(idleTimeoutMs / 1e3)}s; no data received from OpenCode upstream.`));
+                reject(new Error(`Stream idle for over ${Math.round(effectiveIdleTimeoutMs / 1e3)}s; no data received from OpenCode upstream.`));
               },
               Math.max(0, idleMs)
             );
@@ -29505,126 +29757,41 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
             clearTimeout(idleTimer);
           }
           lastReadAt = Date.now();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
+          if (value) {
+            buffer += decoder.decode(value, { stream: !done });
+          }
           const lines = buffer.split("\n");
           buffer = lines.pop() ?? "";
           let isDone = false;
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || trimmed.startsWith(":")) continue;
-            if (trimmed === "data: [DONE]") {
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const finished = processLine(line);
+            if (finished) {
+              for (let j = i + 1; j < lines.length; j++) {
+                processLine(lines[j]);
+              }
+              if (buffer.trim()) {
+                const remainingLines = buffer.split("\n");
+                buffer = "";
+                for (const remLine of remainingLines) {
+                  processLine(remLine);
+                }
+              }
+              flushPendingToolCalls();
               isDone = true;
               break;
             }
-            if (trimmed.startsWith("data: ")) {
-              try {
-                const data = JSON.parse(trimmed.slice(6));
-                if (data.type === "response.completed") {
-                  isDone = true;
-                  break;
-                }
-                if (data.type === "response.output_text.delta") {
-                  const delta = typeof data.delta === "string" ? data.delta : data.delta?.text || data.delta?.value || "";
-                  if (delta) {
-                    partsReportedCount++;
-                    progress.report(new vscode.LanguageModelTextPart(delta));
-                  }
-                  continue;
-                }
-                if (data.type === "response.reasoning_text.delta") {
-                  const delta = typeof data.delta === "string" ? data.delta : data.delta?.text || data.delta?.value || "";
-                  if (delta && delta.length > 0) {
-                    partsReportedCount++;
-                    const ThinkingPart = vscode.LanguageModelThinkingPart;
-                    if (ThinkingPart) {
-                      progress.report(new ThinkingPart(delta, thinkingId));
-                    }
-                  }
-                  continue;
-                }
-                if (data.type === "response.output_item.added" && data.item?.type === "function_call") {
-                  const idx = typeof data.output_index === "number" ? data.output_index : 0;
-                  pendingToolCalls.set(idx, {
-                    id: data.item.call_id || data.item.id || `call_${Date.now()}`,
-                    name: data.item.name || "",
-                    args: data.item.arguments || ""
-                  });
-                  continue;
-                }
-                if (data.type === "response.function_call_arguments.delta") {
-                  const idx = typeof data.output_index === "number" ? data.output_index : 0;
-                  const current = pendingToolCalls.get(idx) || { id: "", name: "", args: "" };
-                  const delta = typeof data.delta === "string" ? data.delta : data.delta?.arguments || "";
-                  current.args += delta;
-                  pendingToolCalls.set(idx, current);
-                  continue;
-                }
-                if (data.type === "response.output_item.done" && data.item?.type === "function_call") {
-                  const idx = typeof data.output_index === "number" ? data.output_index : 0;
-                  const call = pendingToolCalls.get(idx);
-                  if (call) {
-                    let parsedArgs = {};
-                    try {
-                      parsedArgs = JSON.parse(call.args);
-                    } catch {
-                      parsedArgs = { raw: call.args };
-                    }
-                    if (!isSyntheticVerificationTool(call.name, options.tools)) {
-                      partsReportedCount++;
-                      progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
-                    }
-                    pendingToolCalls.delete(idx);
-                  }
-                  continue;
-                }
-                const choice = data.choices?.[0];
-                if (!choice) continue;
-                const rawReasoning = choice.delta?.reasoning_content || choice.delta?.thought || choice.delta?.reasoning || (Array.isArray(choice.delta?.reasoning_details) ? choice.delta.reasoning_details.map((d) => d.text || "").join("") : void 0);
-                if (rawReasoning && rawReasoning.length > 0) {
-                  emitThinking(rawReasoning);
-                }
-                const content = choice.delta?.content;
-                if (content) {
-                  const { text, thinking } = thinkParser.feed(content);
-                  emitThinking(thinking);
-                  if (text) {
-                    partsReportedCount++;
-                    progress.report(new vscode.LanguageModelTextPart(text));
-                  }
-                }
-                if (choice.delta?.tool_calls) {
-                  choice.delta.tool_calls.forEach((tc, i) => {
-                    const idx = tc.index ?? i;
-                    const current = pendingToolCalls.get(idx) || { id: "", name: "", args: "" };
-                    if (tc.id) current.id = tc.id;
-                    if (tc.function?.name) current.name += tc.function.name;
-                    if (tc.function?.arguments) current.args += tc.function.arguments;
-                    pendingToolCalls.set(idx, current);
-                  });
-                }
-                if (choice.finish_reason === "tool_calls" || choice.finish_reason === "stop" && pendingToolCalls.size > 0) {
-                  for (const [, call] of pendingToolCalls) {
-                    let parsedArgs = {};
-                    try {
-                      parsedArgs = JSON.parse(call.args);
-                    } catch {
-                      parsedArgs = { raw: call.args };
-                    }
-                    if (!isSyntheticVerificationTool(call.name, options.tools)) {
-                      partsReportedCount++;
-                      progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
-                    }
-                  }
-                  pendingToolCalls.clear();
-                }
-                if (choice.finish_reason === "stop") {
-                  isDone = true;
-                  break;
-                }
-              } catch {
+          }
+          if (done) {
+            if (buffer.trim()) {
+              const remainingLines = buffer.split("\n");
+              buffer = "";
+              for (const remLine of remainingLines) {
+                processLine(remLine);
               }
             }
+            flushPendingToolCalls();
+            break;
           }
           if (isDone) break;
         }
@@ -29639,7 +29806,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
         });
         const errMsg = streamErr instanceof Error ? streamErr.message : String(streamErr);
         const isIdleTimeout = errMsg.includes("Stream idle for over");
-        if (isIdleTimeout && partsReportedCount === 0 && stallAttempt < maxStallRetries && !token.isCancellationRequested && !abortController.signal.aborted) {
+        if (isIdleTimeout && partsReportedCount === 0 && !isReasoningActive && stallAttempt < maxStallRetries && !token.isCancellationRequested && !abortController.signal.aborted) {
           isStallRetry = true;
           this.log(
             `Stream stalled with 0 bytes received for model=${model.id}; initiating automatic recovery retry (${stallAttempt + 1}/${maxStallRetries})...`
@@ -29663,18 +29830,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
       } finally {
         if (!isStallRetry) {
           if (!hasStreamError && !token.isCancellationRequested && !abortController.signal.aborted && pendingToolCalls.size > 0) {
-            for (const [, call] of pendingToolCalls) {
-              let parsedArgs = {};
-              try {
-                parsedArgs = JSON.parse(call.args);
-              } catch {
-                parsedArgs = { raw: call.args };
-              }
-              if (!isSyntheticVerificationTool(call.name, options.tools)) {
-                progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
-              }
-            }
-            pendingToolCalls.clear();
+            flushPendingToolCalls();
           }
           if (!hasStreamError && !token.isCancellationRequested && !abortController.signal.aborted) {
             this.log(`Stream completed for model=${model.id}`);

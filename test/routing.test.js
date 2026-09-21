@@ -1,7 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { enrichModel } from '../out/enricher.js';
-import { isResponsesModel, isFreeOrZenModel } from '../out/provider.js';
+import {
+  isResponsesModel,
+  isFreeOrZenModel,
+  normalizeReasoningEffort,
+  isStaleReasoningInput,
+  sanitizeResponsesInput,
+  buildResponsesInput,
+} from '../out/provider.js';
 
 test('muse-* models MUST have apiType === "responses" and url ending with /zen/go/v1 or /zen/v1', () => {
   const museModels = [
@@ -320,4 +327,192 @@ test('isFreeOrZenModel correctly separates Go models from Zen/Free models', () =
   assert.equal(grokFree.isFree, true);
   assert.ok(grokFree.name.includes('(OpenCode Free)'));
 });
+
+test('normalizeReasoningEffort correctly normalizes "max" to "high" and handles all valid efforts', () => {
+  // Responses API (Muse, GPT, Grok) format: { reasoning: { effort: '...' } }
+  assert.deepEqual(normalizeReasoningEffort('max', true), { reasoning: { effort: 'high' } });
+  assert.deepEqual(normalizeReasoningEffort('MAX', true), { reasoning: { effort: 'high' } });
+  assert.deepEqual(normalizeReasoningEffort('high', true), { reasoning: { effort: 'high' } });
+  assert.deepEqual(normalizeReasoningEffort('medium', true), { reasoning: { effort: 'medium' } });
+  assert.deepEqual(normalizeReasoningEffort('low', true), { reasoning: { effort: 'low' } });
+  assert.deepEqual(normalizeReasoningEffort('minimal', true), { reasoning: { effort: 'minimal' } });
+  assert.deepEqual(normalizeReasoningEffort('xhigh', true), { reasoning: { effort: 'xhigh' } });
+
+  // Chat Completions format: { reasoning_effort: '...' }
+  assert.deepEqual(normalizeReasoningEffort('max', false), { reasoning_effort: 'high' });
+  assert.deepEqual(normalizeReasoningEffort('high', false), { reasoning_effort: 'high' });
+
+  // Discard none, off, undefined, or unrecognized garbage values
+  assert.deepEqual(normalizeReasoningEffort('none', true), {});
+  assert.deepEqual(normalizeReasoningEffort('off', true), {});
+  assert.deepEqual(normalizeReasoningEffort(undefined, true), {});
+  assert.deepEqual(normalizeReasoningEffort('ultra', true), {});
+  assert.deepEqual(normalizeReasoningEffort('extreme', true), {});
+});
+
+test('isStaleReasoningInput correctly identifies stale reasoning and encrypted content', () => {
+  // Stale reasoning items
+  assert.equal(isStaleReasoningInput({ type: 'reasoning', id: 'r_1' }), true);
+  assert.equal(isStaleReasoningInput({ type: 'thought', text: 'thinking...' }), true);
+  assert.equal(isStaleReasoningInput({ type: 'thinking', text: 'thinking...' }), true);
+  assert.equal(isStaleReasoningInput({ encrypted_content: 'opaque_token_123' }), true);
+  assert.equal(
+    isStaleReasoningInput({
+      role: 'assistant',
+      content: [{ type: 'reasoning', text: 'internal plan' }],
+    }),
+    true
+  );
+  assert.equal(
+    isStaleReasoningInput({
+      role: 'assistant',
+      content: [{ encrypted_content: 'opaque_token_456' }],
+    }),
+    true
+  );
+
+  // Valid user and assistant messages
+  assert.equal(isStaleReasoningInput({ role: 'user', content: 'hello' }), false);
+  assert.equal(
+    isStaleReasoningInput({
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'Here is the answer' }],
+    }),
+    false
+  );
+  assert.equal(
+    isStaleReasoningInput({
+      type: 'function_call',
+      id: 'call_1',
+      call_id: 'call_1',
+      name: 'read_file',
+      arguments: '{}',
+    }),
+    false
+  );
+  assert.equal(
+    isStaleReasoningInput({
+      type: 'function_call_output',
+      call_id: 'call_1',
+      output: 'file contents',
+    }),
+    false
+  );
+  assert.equal(isStaleReasoningInput(null), false);
+  assert.equal(isStaleReasoningInput('string'), false);
+});
+
+test('sanitizeResponsesInput purges stale reasoning and retains clean content parts', () => {
+  const dirtyInput = [
+    { role: 'user', content: 'What is in file.txt?' },
+    { type: 'reasoning', id: 'r_stale_1', text: 'secret thoughts' },
+    { encrypted_content: 'caller_unissued_token' },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'reasoning', text: 'intermediate thinking' },
+        { type: 'output_text', text: 'Let me read that file for you.' },
+      ],
+    },
+    {
+      type: 'function_call',
+      id: 'call_1',
+      call_id: 'call_1',
+      name: 'read',
+      arguments: '{"path":"file.txt"}',
+    },
+    {
+      type: 'function_call_output',
+      call_id: 'call_1',
+      output: 'file content here',
+    },
+  ];
+
+  const cleaned = sanitizeResponsesInput(dirtyInput);
+  assert.equal(cleaned.length, 4);
+  assert.equal(cleaned[0].role, 'user');
+  assert.equal(cleaned[1].role, 'assistant');
+  // Content array in assistant message must retain output_text and have dropped reasoning part
+  assert.deepEqual(cleaned[1].content, [{ type: 'output_text', text: 'Let me read that file for you.' }]);
+  assert.equal(cleaned[2].type, 'function_call');
+  assert.equal(cleaned[3].type, 'function_call_output');
+});
+
+test('buildResponsesInput pairs function_call and function_call_output properly with matching IDs and string outputs', () => {
+  const formattedMessages = [
+    { role: 'user', content: 'Run calculations' },
+    {
+      role: 'assistant',
+      content: 'I will calculate 2+2 and format the result.',
+      tool_calls: [
+        {
+          id: 'call_calc_99',
+          type: 'function',
+          function: { name: 'calculator', arguments: '{"expr":"2+2"}' },
+        },
+      ],
+    },
+    // Tool result as an object that was stringified
+    {
+      role: 'tool',
+      tool_call_id: 'call_calc_99',
+      content: '{"result":4}',
+    },
+    // Another tool result where content might have been non-string
+    {
+      role: 'tool',
+      tool_call_id: 'call_calc_100',
+      content: undefined,
+    },
+    {
+      role: 'assistant',
+      content: 'The calculation result is 4.',
+    },
+    {
+      role: 'user',
+      content: 'Great, thanks!',
+    },
+  ];
+
+  const responsesInput = buildResponsesInput(formattedMessages);
+
+  // User turn 0
+  assert.deepEqual(responsesInput[0], { role: 'user', content: 'Run calculations' });
+
+  // Assistant turn 1 (text + function_call)
+  assert.deepEqual(responsesInput[1], {
+    role: 'assistant',
+    content: [{ type: 'output_text', text: 'I will calculate 2+2 and format the result.' }],
+  });
+  const fnCall = responsesInput[2];
+  assert.equal(fnCall.type, 'function_call');
+  assert.equal(fnCall.id, 'call_calc_99');
+  assert.equal(fnCall.call_id, 'call_calc_99');
+  assert.equal(fnCall.name, 'calculator');
+  assert.equal(fnCall.arguments, '{"expr":"2+2"}');
+
+  // Tool output turn 2
+  const fnOutput1 = responsesInput[3];
+  assert.equal(fnOutput1.type, 'function_call_output');
+  assert.equal(fnOutput1.call_id, 'call_calc_99');
+  assert.equal(typeof fnOutput1.output, 'string');
+  assert.equal(fnOutput1.output, '{"result":4}');
+
+  // Tool output turn 3 with undefined content -> must be string ""
+  const fnOutput2 = responsesInput[4];
+  assert.equal(fnOutput2.type, 'function_call_output');
+  assert.equal(fnOutput2.call_id, 'call_calc_100');
+  assert.equal(typeof fnOutput2.output, 'string');
+  assert.equal(fnOutput2.output, '');
+
+  // Assistant turn 4
+  assert.deepEqual(responsesInput[5], {
+    role: 'assistant',
+    content: [{ type: 'output_text', text: 'The calculation result is 4.' }],
+  });
+
+  // User turn 5
+  assert.deepEqual(responsesInput[6], { role: 'user', content: 'Great, thanks!' });
+});
+
 
