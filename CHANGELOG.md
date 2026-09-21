@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.17.4 - 2026-09-21
+#### Bug Fixes
+- (**provider**) harden Muse Responses API streaming and multi-turn tool calling - (c728456) - Mark Fenderov
+
+- - -
+
 ## v0.17.3 - 2026-09-21
 #### Bug Fixes
 - (**routing,provider**) robust metadata-driven free tier detection and clean error alerts - (36a211d) - Mark Fenderov
