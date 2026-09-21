@@ -27420,242 +27420,6 @@ var path = __toESM(require("node:path"), 1);
 var os = __toESM(require("node:os"), 1);
 var cp = __toESM(require("node:child_process"), 1);
 
-// src/enricher.ts
-function formatModelName(id, suffix = "(OpenCode)") {
-  const normalized = id.replace(/-(\d+)-(\d+)(?=-|$)/g, "-$1.$2");
-  const parts = normalized.split(/[-_]/);
-  const title = parts.map((p) => {
-    const lower = p.toLowerCase();
-    if (lower === "glm") return "GLM";
-    if (lower === "gpt") return "GPT";
-    if (lower === "mimo") return "MiMo";
-    if (lower === "qwen") return "Qwen";
-    if (lower === "kimi") return "Kimi";
-    if (lower === "minimax") return "MiniMax";
-    if (lower === "deepseek") return "DeepSeek";
-    if (lower === "gemini") return "Gemini";
-    if (lower === "claude") return "Claude";
-    if (lower === "grok") return "Grok";
-    if (lower === "nemotron") return "Nemotron";
-    if (lower === "muse") return "Muse";
-    if (lower === "spark") return "Spark";
-    if (lower === "contributor") return "Contributor";
-    if (lower === "free") return "Free";
-    if (/^v\d+/i.test(p)) return p.toUpperCase();
-    return p.charAt(0).toUpperCase() + p.slice(1);
-  }).join(" ");
-  return `${title} ${suffix}`;
-}
-function enrichModel(modelId, options = {}) {
-  const isGo = options.isGo ?? true;
-  const isFree = options.isFree ?? false;
-  const devMeta = options.modelsDevData;
-  const lower = modelId.toLowerCase();
-  const isResponses = devMeta?.provider?.npm === "@ai-sdk/openai" || lower.includes("muse") || lower.includes("gpt-") || lower.includes("grok-");
-  const isMessages = devMeta?.provider?.npm === "@ai-sdk/anthropic" || lower.includes("claude");
-  let apiType = "chat-completions";
-  let modelUrl;
-  if (isMessages) {
-    apiType = "messages";
-    modelUrl = isGo ? "https://opencode.ai/zen/go/v1" : "https://opencode.ai/zen/v1";
-  } else if (isResponses) {
-    apiType = "responses";
-    modelUrl = isGo ? "https://opencode.ai/zen/go/v1" : "https://opencode.ai/zen/v1";
-  } else {
-    apiType = "chat-completions";
-    modelUrl = isGo ? "https://opencode.ai/zen/go/v1/chat/completions" : "https://opencode.ai/zen/v1/chat/completions";
-  }
-  const defaultSuffix = isGo ? "(OpenCode Go)" : isFree ? "(OpenCode Free)" : "(OpenCode Zen)";
-  const suffix = options.suffix || defaultSuffix;
-  const name = formatModelName(modelId, suffix);
-  let contextWindow = devMeta?.limit?.context || 1048576;
-  let maxOutputTokens = devMeta?.limit?.output || 65536;
-  let vision = devMeta?.modalities?.input?.includes("image") ?? false;
-  let thinking = devMeta?.reasoning !== void 0 ? devMeta.reasoning : true;
-  if (!devMeta) {
-    if (lower.includes("deepseek")) {
-      contextWindow = 1048576;
-      maxOutputTokens = 131072;
-      vision = lower.includes("vision");
-    } else if (lower.includes("glm")) {
-      contextWindow = 1048576;
-      maxOutputTokens = 131072;
-      vision = true;
-    } else if (lower.includes("kimi")) {
-      contextWindow = 1048576;
-      maxOutputTokens = 65536;
-      vision = true;
-    } else if (lower.includes("qwen")) {
-      contextWindow = 1e6;
-      maxOutputTokens = 131072;
-      vision = true;
-      thinking = false;
-    } else if (lower.includes("minimax")) {
-      contextWindow = 1048576;
-      maxOutputTokens = 131072;
-      vision = false;
-      thinking = false;
-    } else if (lower.includes("claude")) {
-      if (lower.includes("haiku")) {
-        contextWindow = 2e5;
-        maxOutputTokens = 64e3;
-        thinking = false;
-      } else {
-        contextWindow = 1e6;
-        maxOutputTokens = 128e3;
-        thinking = true;
-      }
-      vision = true;
-    } else if (lower.includes("gpt")) {
-      if (lower.includes("mini") || lower.includes("nano")) {
-        contextWindow = 128e3;
-        maxOutputTokens = 16384;
-      } else {
-        contextWindow = 1e6;
-        maxOutputTokens = 128e3;
-      }
-      vision = true;
-      thinking = true;
-    } else if (lower.includes("gemini")) {
-      contextWindow = 1e6;
-      maxOutputTokens = 65536;
-      vision = true;
-      thinking = lower.includes("thinking");
-    } else if (lower.includes("grok")) {
-      contextWindow = 1e6;
-      maxOutputTokens = 65536;
-      vision = true;
-      thinking = true;
-    } else if (lower.includes("mimo")) {
-      contextWindow = 1048576;
-      maxOutputTokens = 65536;
-      vision = lower.includes("omni");
-      thinking = true;
-    } else if (lower.includes("nemotron")) {
-      contextWindow = 1e6;
-      maxOutputTokens = 128e3;
-      vision = false;
-      thinking = true;
-    } else if (lower.includes("muse")) {
-      contextWindow = 1e6;
-      maxOutputTokens = 65536;
-      vision = false;
-      thinking = true;
-    } else if (lower.includes("longcat")) {
-      contextWindow = 1048576;
-      maxOutputTokens = 65536;
-      vision = false;
-      thinking = false;
-    } else if (lower.includes("omen") || lower.includes("hy4")) {
-      contextWindow = 1048576;
-      maxOutputTokens = 65536;
-      vision = false;
-      thinking = true;
-    }
-  }
-  const maxInputTokens = contextWindow - maxOutputTokens;
-  let supportsReasoningEffort = void 0;
-  if (thinking) {
-    const devEffortOpt = devMeta?.reasoning_options?.find((o) => o.type === "effort");
-    if (devEffortOpt && Array.isArray(devEffortOpt.values)) {
-      const filtered = devEffortOpt.values.filter((v) => v !== "none");
-      if (filtered.length > 0) {
-        supportsReasoningEffort = filtered;
-      }
-    } else if (!devMeta) {
-      if (isResponses) {
-        supportsReasoningEffort = ["minimal", "low", "medium", "high", "xhigh"];
-      } else if (lower.includes("deepseek") || lower.includes("kimi-k3") || lower.includes("glm")) {
-        supportsReasoningEffort = ["low", "medium", "high", "max"];
-      }
-    }
-  }
-  const model = {
-    id: modelId,
-    name,
-    family: "gpt-5-5",
-    url: modelUrl,
-    apiType,
-    toolCalling: true,
-    vision,
-    contextWindow,
-    maxInputTokens,
-    maxOutputTokens,
-    thinking,
-    supportsReasoningEffort,
-    reasoningEffortFormat: apiType,
-    modelOptions: {
-      temperature: null,
-      top_p: null
-    },
-    isFree
-  };
-  if (isGo || isFree) {
-    model.requestHeaders = {
-      "x-opencode-session": "vscode-copilot"
-    };
-  }
-  return model;
-}
-
-// src/config.ts
-function isOpenCodeLegacyOrCustomEntry(entry) {
-  if (!entry || entry.vendor !== "customendpoint") {
-    return false;
-  }
-  const name = typeof entry.name === "string" ? entry.name.trim() : "";
-  if (name === "OpenCode Go" || name === "OpenCode Zen Free") {
-    return true;
-  }
-  const hasOpenCodeModels = Array.isArray(entry.models) && entry.models.some((m) => typeof m?.url === "string" && m.url.includes("opencode.ai"));
-  if (hasOpenCodeModels) {
-    return true;
-  }
-  if (/^(customprovider|custom endpoint|customendpoint)$/i.test(name)) {
-    if (typeof entry.apiKey === "string" && entry.apiKey.trim().startsWith("sk-")) {
-      return true;
-    }
-  }
-  return false;
-}
-function purgeOpenCodeFromChatLanguageModels(existingConfig) {
-  if (!Array.isArray(existingConfig)) return [];
-  return existingConfig.filter((entry) => {
-    if (!entry) return false;
-    return !isOpenCodeLegacyOrCustomEntry(entry) && entry.name !== "OpenCode";
-  });
-}
-function mergeChatLanguageModels(existingConfig, newProviders) {
-  const addingUnifiedOpenCode = newProviders.some((p) => p.name === "OpenCode");
-  const result = existingConfig.filter((entry) => {
-    if (addingUnifiedOpenCode && isOpenCodeLegacyOrCustomEntry(entry) && entry?.name !== "OpenCode") {
-      return false;
-    }
-    return true;
-  });
-  for (const newProvider of newProviders) {
-    const idx = result.findIndex(
-      (entry) => entry && entry.name === newProvider.name && entry.vendor === newProvider.vendor
-    );
-    if (idx >= 0) {
-      const existingModels = result[idx].models || [];
-      const incomingModels = newProvider.models || [];
-      const modelsToKeep = incomingModels.length > 0 ? incomingModels : existingModels;
-      const existingApiKey = result[idx].apiKey;
-      const apiKey = typeof existingApiKey === "string" && existingApiKey.startsWith("${input:") ? existingApiKey : newProvider.apiKey;
-      result[idx] = {
-        ...result[idx],
-        ...newProvider,
-        apiKey,
-        models: modelsToKeep
-      };
-    } else {
-      result.push(newProvider);
-    }
-  }
-  return result;
-}
-
 // src/network.ts
 var proxyAgentCtor;
 var proxyAgentLoadAttempted = false;
@@ -27876,9 +27640,7 @@ async function fetchModelsDevMetadata() {
       for (const providerData of Object.values(data)) {
         if (providerData?.models) {
           for (const [mId, mData] of Object.entries(providerData.models)) {
-            if (!result[mId]) {
-              result[mId] = mData;
-            }
+            result[mId] ??= mData;
           }
         }
       }
@@ -27893,10 +27655,256 @@ async function fetchModelsDevMetadata() {
   }
   return {};
 }
-function filterFreeModels(modelIds) {
-  return modelIds.filter(
-    (id) => id.includes("free") || id.includes("contributor") || id.includes("community") || id === "big-pickle"
-  );
+function isFreeTierModel(modelId, devMeta) {
+  if (devMeta?.cost) {
+    if (devMeta.cost.input === 0 && devMeta.cost.output === 0) {
+      return true;
+    }
+    if (typeof devMeta.cost.input === "number" && devMeta.cost.input > 0 || typeof devMeta.cost.output === "number" && devMeta.cost.output > 0) {
+      return false;
+    }
+  }
+  const lower = modelId.toLowerCase();
+  return lower.includes("free") || lower.includes("community") || lower === "big-pickle";
+}
+function filterFreeModels(modelIds, modelsDevMap) {
+  return modelIds.filter((id) => isFreeTierModel(id, modelsDevMap?.[id]));
+}
+
+// src/enricher.ts
+function formatModelName(id, suffix = "(OpenCode)") {
+  const normalized = id.replace(/-(\d+)-(\d+)(?=-|$)/g, "-$1.$2");
+  const parts = normalized.split(/[-_]/);
+  const title = parts.map((p) => {
+    const lower = p.toLowerCase();
+    if (lower === "glm") return "GLM";
+    if (lower === "gpt") return "GPT";
+    if (lower === "mimo") return "MiMo";
+    if (lower === "qwen") return "Qwen";
+    if (lower === "kimi") return "Kimi";
+    if (lower === "minimax") return "MiniMax";
+    if (lower === "deepseek") return "DeepSeek";
+    if (lower === "gemini") return "Gemini";
+    if (lower === "claude") return "Claude";
+    if (lower === "grok") return "Grok";
+    if (lower === "nemotron") return "Nemotron";
+    if (lower === "muse") return "Muse";
+    if (lower === "spark") return "Spark";
+    if (lower === "contributor") return "Contributor";
+    if (lower === "free") return "Free";
+    if (/^v\d+/i.test(p)) return p.toUpperCase();
+    return p.charAt(0).toUpperCase() + p.slice(1);
+  }).join(" ");
+  return `${title} ${suffix}`;
+}
+function enrichModel(modelId, options = {}) {
+  const isGo = options.isGo ?? true;
+  const devMeta = options.modelsDevData;
+  const isFree = options.isFree ?? (isGo ? false : isFreeTierModel(modelId, devMeta));
+  const lower = modelId.toLowerCase();
+  const isResponses = devMeta?.provider?.npm === "@ai-sdk/openai" || lower.includes("muse") || lower.includes("gpt-") || lower.includes("grok-");
+  const isMessages = devMeta?.provider?.npm === "@ai-sdk/anthropic" || lower.includes("claude");
+  let apiType = "chat-completions";
+  let modelUrl;
+  if (isMessages) {
+    apiType = "messages";
+    modelUrl = isGo ? "https://opencode.ai/zen/go/v1" : "https://opencode.ai/zen/v1";
+  } else if (isResponses) {
+    apiType = "responses";
+    modelUrl = isGo ? "https://opencode.ai/zen/go/v1" : "https://opencode.ai/zen/v1";
+  } else {
+    apiType = "chat-completions";
+    modelUrl = isGo ? "https://opencode.ai/zen/go/v1/chat/completions" : "https://opencode.ai/zen/v1/chat/completions";
+  }
+  const defaultSuffix = isGo ? "(OpenCode Go)" : isFree ? "(OpenCode Free)" : "(OpenCode Zen)";
+  const suffix = options.suffix ?? defaultSuffix;
+  const name = formatModelName(modelId, suffix);
+  let contextWindow = devMeta?.limit?.context ?? 1048576;
+  let maxOutputTokens = devMeta?.limit?.output ?? 65536;
+  let vision = devMeta?.modalities?.input?.includes("image") ?? false;
+  let thinking = devMeta?.reasoning ?? true;
+  if (!devMeta) {
+    if (lower.includes("deepseek")) {
+      contextWindow = 1048576;
+      maxOutputTokens = 131072;
+      vision = lower.includes("vision");
+    } else if (lower.includes("glm")) {
+      contextWindow = 1048576;
+      maxOutputTokens = 131072;
+      vision = true;
+    } else if (lower.includes("kimi")) {
+      contextWindow = 1048576;
+      maxOutputTokens = 65536;
+      vision = true;
+    } else if (lower.includes("qwen")) {
+      contextWindow = 1e6;
+      maxOutputTokens = 131072;
+      vision = true;
+      thinking = false;
+    } else if (lower.includes("minimax")) {
+      contextWindow = 1048576;
+      maxOutputTokens = 131072;
+      vision = false;
+      thinking = false;
+    } else if (lower.includes("claude")) {
+      if (lower.includes("haiku")) {
+        contextWindow = 2e5;
+        maxOutputTokens = 64e3;
+        thinking = false;
+      } else {
+        contextWindow = 1e6;
+        maxOutputTokens = 128e3;
+        thinking = true;
+      }
+      vision = true;
+    } else if (lower.includes("gpt")) {
+      if (lower.includes("mini") || lower.includes("nano")) {
+        contextWindow = 128e3;
+        maxOutputTokens = 16384;
+      } else {
+        contextWindow = 1e6;
+        maxOutputTokens = 128e3;
+      }
+      vision = true;
+      thinking = true;
+    } else if (lower.includes("gemini")) {
+      contextWindow = 1e6;
+      maxOutputTokens = 65536;
+      vision = true;
+      thinking = lower.includes("thinking");
+    } else if (lower.includes("grok")) {
+      contextWindow = 1e6;
+      maxOutputTokens = 65536;
+      vision = true;
+      thinking = true;
+    } else if (lower.includes("mimo")) {
+      contextWindow = 1048576;
+      maxOutputTokens = 65536;
+      vision = lower.includes("omni");
+      thinking = true;
+    } else if (lower.includes("nemotron")) {
+      contextWindow = 1e6;
+      maxOutputTokens = 128e3;
+      vision = false;
+      thinking = true;
+    } else if (lower.includes("muse")) {
+      contextWindow = 1e6;
+      maxOutputTokens = 65536;
+      vision = false;
+      thinking = true;
+    } else if (lower.includes("longcat")) {
+      contextWindow = 1048576;
+      maxOutputTokens = 65536;
+      vision = false;
+      thinking = false;
+    } else if (lower.includes("omen") || lower.includes("hy4")) {
+      contextWindow = 1048576;
+      maxOutputTokens = 65536;
+      vision = false;
+      thinking = true;
+    }
+  }
+  const maxInputTokens = contextWindow - maxOutputTokens;
+  let supportsReasoningEffort = void 0;
+  if (thinking) {
+    const devEffortOpt = devMeta?.reasoning_options?.find((o) => o.type === "effort");
+    if (devEffortOpt && Array.isArray(devEffortOpt.values)) {
+      const filtered = devEffortOpt.values.filter((v) => v !== "none");
+      if (filtered.length > 0) {
+        supportsReasoningEffort = filtered;
+      }
+    } else if (!devMeta) {
+      if (isResponses) {
+        supportsReasoningEffort = ["minimal", "low", "medium", "high", "xhigh"];
+      } else if (lower.includes("deepseek") || lower.includes("kimi-k3") || lower.includes("glm")) {
+        supportsReasoningEffort = ["low", "medium", "high", "max"];
+      }
+    }
+  }
+  const model = {
+    id: modelId,
+    name,
+    family: "gpt-5-5",
+    url: modelUrl,
+    apiType,
+    toolCalling: true,
+    vision,
+    contextWindow,
+    maxInputTokens,
+    maxOutputTokens,
+    thinking,
+    supportsReasoningEffort,
+    reasoningEffortFormat: apiType,
+    modelOptions: {
+      temperature: null,
+      top_p: null
+    },
+    isFree
+  };
+  if (isGo || isFree) {
+    model.requestHeaders = {
+      "x-opencode-session": "vscode-copilot"
+    };
+  }
+  return model;
+}
+
+// src/config.ts
+function isOpenCodeLegacyOrCustomEntry(entry) {
+  if (!entry || entry.vendor !== "customendpoint") {
+    return false;
+  }
+  const name = typeof entry.name === "string" ? entry.name.trim() : "";
+  if (name === "OpenCode Go" || name === "OpenCode Zen Free") {
+    return true;
+  }
+  const hasOpenCodeModels = Array.isArray(entry.models) && entry.models.some((m) => typeof m?.url === "string" && m.url.includes("opencode.ai"));
+  if (hasOpenCodeModels) {
+    return true;
+  }
+  if (/^(customprovider|custom endpoint|customendpoint)$/i.test(name)) {
+    if (typeof entry.apiKey === "string" && entry.apiKey.trim().startsWith("sk-")) {
+      return true;
+    }
+  }
+  return false;
+}
+function purgeOpenCodeFromChatLanguageModels(existingConfig) {
+  if (!Array.isArray(existingConfig)) return [];
+  return existingConfig.filter((entry) => {
+    if (!entry) return false;
+    return !isOpenCodeLegacyOrCustomEntry(entry) && entry.name !== "OpenCode";
+  });
+}
+function mergeChatLanguageModels(existingConfig, newProviders) {
+  const addingUnifiedOpenCode = newProviders.some((p) => p.name === "OpenCode");
+  const result = existingConfig.filter((entry) => {
+    if (addingUnifiedOpenCode && isOpenCodeLegacyOrCustomEntry(entry) && entry?.name !== "OpenCode") {
+      return false;
+    }
+    return true;
+  });
+  for (const newProvider of newProviders) {
+    const idx = result.findIndex(
+      (entry) => entry && entry.name === newProvider.name && entry.vendor === newProvider.vendor
+    );
+    if (idx >= 0) {
+      const existingModels = result[idx].models || [];
+      const incomingModels = newProvider.models || [];
+      const modelsToKeep = incomingModels.length > 0 ? incomingModels : existingModels;
+      const existingApiKey = result[idx].apiKey;
+      const apiKey = typeof existingApiKey === "string" && existingApiKey.startsWith("${input:") ? existingApiKey : newProvider.apiKey;
+      result[idx] = {
+        ...result[idx],
+        ...newProvider,
+        apiKey,
+        models: modelsToKeep
+      };
+    } else {
+      result.push(newProvider);
+    }
+  }
+  return result;
 }
 
 // src/syncer.ts
@@ -28444,7 +28452,7 @@ async function syncOpenCodeModels(apiKey, options = {}) {
   let zenCount = 0;
   for (const id of zenModelIds) {
     if (!goSet.has(id)) {
-      const isFree = filterFreeModels([id]).length > 0;
+      const isFree = filterFreeModels([id], modelsDevMap).length > 0;
       const suffix = isFree ? "(OpenCode Free)" : "(OpenCode Zen)";
       const devData = modelsDevMap[id] || modelsDevMap[id.replace(/-contributor-free$/, "")] || modelsDevMap[id.replace(/-free$/, "")];
       models.push(enrichModel(id, { isGo: false, isFree, suffix, modelsDevData: devData }));
@@ -28797,12 +28805,14 @@ function isResponsesModel(modelId, apiType) {
   const lower = modelId.toLowerCase();
   return lower.includes("muse") || lower.includes("gpt-") || lower.includes("grok-");
 }
-var FREE_OR_ZEN_PATTERNS = /(?:free|contributor|community|big-pickle)/i;
 function isFreeOrZenModel(modelId, meta) {
   if (meta?.catalog === "zen" || meta?.isFree) {
     return true;
   }
-  return FREE_OR_ZEN_PATTERNS.test(modelId);
+  if (meta?.catalog === "go") {
+    return false;
+  }
+  return isFreeTierModel(modelId);
 }
 var OPENCODE_CLIENT_VERIFICATION_TOOLS_RESPONSES = [
   {
@@ -29241,7 +29251,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
       }
     }
     const lowerId = model.id.toLowerCase();
-    const meta = this._models.find((m) => m.id === model.id);
+    const meta = this._models.find((m) => m.id === model.id || model.id.endsWith("/" + m.id));
     const isResponses = isResponsesModel(model.id, meta?.apiType);
     const isFreeOrZen = isFreeOrZenModel(model.id, meta);
     let toolsPayload = void 0;
@@ -29446,12 +29456,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
             `>`,
             `> Unable to reach **${model.name}** (\`${model.id}\`): ${isFreeTierError ? "upstream free-tier policy error" : "upstream server error"}.`,
             `>`,
-            `> **Upstream detail:** \`${userDetail.slice(0, 300) || "Internal server error"}\``,
-            `>`,
-            `> **Suggestions:**`,
-            `> - If using an experimental/free tier model, try switching to active models like \`mimo-v2.5-free\` or \`big-pickle\`.`,
-            `> - For maximum reliability, use flat-rate OpenCode Go models (e.g. \`deepseek-v4-pro\`, \`qwen3.7-max\`, \`kimi-k3\`).`,
-            `> - Retry your request in a few moments if this is a temporary provider outage.`
+            `> **Upstream detail:** \`${userDetail.slice(0, 300) || "Internal server error"}\``
           ].join("\n");
           progress.report(new vscode.LanguageModelTextPart(alertNotice));
           return;

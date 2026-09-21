@@ -1,4 +1,14 @@
 {
+  "src/provider.ts:730:streamResponse": {
+    "crap": 19740,
+    "complexity": 140,
+    "coverage": 0
+  },
+  "src/provider.ts:559:provideLanguageModelChatResponse": {
+    "crap": 1560,
+    "complexity": 39,
+    "coverage": 0
+  },
   "src/syncer.ts:234:getAllChatLanguageModelsPaths": {
     "crap": 1433.48,
     "complexity": 49,
@@ -24,12 +34,7 @@
     "complexity": 19,
     "coverage": 0.012
   },
-  "src/provider.ts:728:streamResponse": {
-    "crap": 150.75,
-    "complexity": 140,
-    "coverage": 0.918
-  },
-  "src/fetcher.ts:33:fetchModelsDevMetadata": {
+  "src/fetcher.ts:56:fetchModelsDevMetadata": {
     "crap": 144.33,
     "complexity": 12,
     "coverage": 0.028
@@ -39,22 +44,67 @@
     "complexity": 11,
     "coverage": 0
   },
+  "src/fetcher.ts:97:isFreeTierModel": {
+    "crap": 132,
+    "complexity": 11,
+    "coverage": 0
+  },
   "src/auth.ts:178:resolveApiKey": {
     "crap": 124.59,
     "complexity": 11,
     "coverage": 0.021
   },
-  "src/provider.ts:557:provideLanguageModelChatResponse": {
-    "crap": 93.37,
-    "complexity": 39,
-    "coverage": 0.671
+  "src/provider.ts:419:getConversationSessionId": {
+    "crap": 90,
+    "complexity": 9,
+    "coverage": 0
   },
-  "src/enricher.ts:59:enrichModel": {
-    "crap": 67.82,
-    "complexity": 64,
+  "src/provider.ts:355:extractErrorMessage": {
+    "crap": 72,
+    "complexity": 8,
+    "coverage": 0
+  },
+  "src/enricher.ts:61:enrichModel": {
+    "crap": 68.94,
+    "complexity": 65,
     "coverage": 0.902
   },
+  "src/provider.ts:81:isFreeOrZenModel": {
+    "crap": 56,
+    "complexity": 7,
+    "coverage": 0
+  },
+  "src/provider.ts:184:normalizeReasoningEffort": {
+    "crap": 56,
+    "complexity": 7,
+    "coverage": 0
+  },
+  "src/provider.ts:281:getStreamIdleTimeoutMs": {
+    "crap": 56,
+    "complexity": 7,
+    "coverage": 0
+  },
+  "src/provider.ts:312:fingerprintMessage": {
+    "crap": 56,
+    "complexity": 7,
+    "coverage": 0
+  },
+  "src/provider.ts:392:<anonymous>": {
+    "crap": 56,
+    "complexity": 7,
+    "coverage": 0
+  },
+  "src/provider.ts:458:updateModels": {
+    "crap": 56,
+    "complexity": 7,
+    "coverage": 0
+  },
   "src/extension.ts:82:updateUsageMeter": {
+    "crap": 42,
+    "complexity": 6,
+    "coverage": 0
+  },
+  "src/fetcher.ts:145:checkZenBalance": {
     "crap": 42,
     "complexity": 6,
     "coverage": 0
@@ -64,17 +114,27 @@
     "complexity": 13,
     "coverage": 0.467
   },
-  "src/fetcher.ts:100:checkZenBalance": {
-    "crap": 38.52,
-    "complexity": 6,
-    "coverage": 0.033
-  },
   "src/fetcher.ts:3:fetchOpenCodeModels": {
     "crap": 38.4,
     "complexity": 6,
     "coverage": 0.034
   },
   "src/extension.ts:9:activate": {
+    "crap": 30,
+    "complexity": 5,
+    "coverage": 0
+  },
+  "src/provider.ts:146:injectOpenCodeVerificationTools": {
+    "crap": 30,
+    "complexity": 5,
+    "coverage": 0
+  },
+  "src/provider.ts:169:isSyntheticVerificationTool": {
+    "crap": 30,
+    "complexity": 5,
+    "coverage": 0
+  },
+  "src/provider.ts:235:feed": {
     "crap": 30,
     "complexity": 5,
     "coverage": 0
@@ -94,6 +154,11 @@
     "complexity": 4,
     "coverage": 0
   },
+  "src/provider.ts:374:isStaleReasoningInput": {
+    "crap": 20,
+    "complexity": 4,
+    "coverage": 0
+  },
   "src/auth.ts:206:validateInput": {
     "crap": 19.02,
     "complexity": 4,
@@ -109,12 +174,12 @@
     "complexity": 17,
     "coverage": 0.875
   },
-  "src/enricher.ts:35:<anonymous>": {
+  "src/enricher.ts:37:<anonymous>": {
     "crap": 17,
     "complexity": 17,
     "coverage": 1
   },
-  "src/provider.ts:476:<anonymous>": {
+  "src/provider.ts:478:<anonymous>": {
     "crap": 12.02,
     "complexity": 12,
     "coverage": 0.952
@@ -125,6 +190,11 @@
     "coverage": 0
   },
   "src/extension.ts:211:<anonymous>": {
+    "crap": 12,
+    "complexity": 3,
+    "coverage": 0
+  },
+  "src/provider.ts:225:trailingPartialMatch": {
     "crap": 12,
     "complexity": 3,
     "coverage": 0

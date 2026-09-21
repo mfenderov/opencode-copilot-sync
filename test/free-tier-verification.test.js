@@ -225,4 +225,5 @@ test('Free Tier Verification [403 FreeTierError]: streams alert card and does NO
   const alertText = progress.parts[0].value;
   assert.match(alertText, /⚠️ \*\*OpenCode Model Alert \(403/);
   assert.match(alertText, /free tier can only be used from within OpenCode/);
+  assert.doesNotMatch(alertText, /Suggestions:/);
 });

@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { getStoredOpenCodeKey, getKeyFromExistingConfig } from './auth.js';
+import { isFreeTierModel } from './fetcher.js';
 import { fetchWithRetry } from './network.js';
 
 export interface OpenCodeModelMeta {
@@ -71,8 +72,6 @@ export function isResponsesModel(modelId: string, apiType?: string): boolean {
   return lower.includes('muse') || lower.includes('gpt-') || lower.includes('grok-');
 }
 
-const FREE_OR_ZEN_PATTERNS = /(?:free|contributor|community|big-pickle)/i;
-
 export type WireToolDefinition = Record<string, unknown>;
 
 /**
@@ -83,7 +82,10 @@ export function isFreeOrZenModel(modelId: string, meta?: OpenCodeModelMeta): boo
   if (meta?.catalog === 'zen' || meta?.isFree) {
     return true;
   }
-  return FREE_OR_ZEN_PATTERNS.test(modelId);
+  if (meta?.catalog === 'go') {
+    return false;
+  }
+  return isFreeTierModel(modelId);
 }
 
 /**
@@ -636,7 +638,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     }
 
     const lowerId = model.id.toLowerCase();
-    const meta = this._models.find((m) => m.id === model.id);
+    const meta = this._models.find((m) => m.id === model.id || model.id.endsWith('/' + m.id));
     const isResponses = isResponsesModel(model.id, meta?.apiType);
     const isFreeOrZen = isFreeOrZenModel(model.id, meta);
 
@@ -901,11 +903,6 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
             `> Unable to reach **${model.name}** (\`${model.id}\`): ${isFreeTierError ? 'upstream free-tier policy error' : 'upstream server error'}.`,
             `>`,
             `> **Upstream detail:** \`${userDetail.slice(0, 300) || 'Internal server error'}\``,
-            `>`,
-            `> **Suggestions:**`,
-            `> - If using an experimental/free tier model, try switching to active models like \`mimo-v2.5-free\` or \`big-pickle\`.`,
-            `> - For maximum reliability, use flat-rate OpenCode Go models (e.g. \`deepseek-v4-pro\`, \`qwen3.7-max\`, \`kimi-k3\`).`,
-            `> - Retry your request in a few moments if this is a temporary provider outage.`,
           ].join('\n');
 
           progress.report(new vscode.LanguageModelTextPart(alertNotice));

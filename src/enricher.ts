@@ -1,8 +1,10 @@
+import { isFreeTierModel, type ModelDevMetadata } from './fetcher.js';
+
 export interface EnrichOptions {
   isGo?: boolean;
   isFree?: boolean;
   suffix?: string;
-  modelsDevData?: Record<string, any>;
+  modelsDevData?: ModelDevMetadata;
 }
 
 export interface CustomEndpointModel {
@@ -58,8 +60,8 @@ export function formatModelName(id: string, suffix = '(OpenCode)'): string {
 
 export function enrichModel(modelId: string, options: EnrichOptions = {}): CustomEndpointModel {
   const isGo = options.isGo ?? true;
-  const isFree = options.isFree ?? false;
   const devMeta = options.modelsDevData;
+  const isFree = options.isFree ?? (isGo ? false : isFreeTierModel(modelId, devMeta));
   const lower = modelId.toLowerCase();
 
   // 1. Determine transport dynamically: check provider hint from models.dev first
@@ -90,14 +92,14 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
   }
 
   const defaultSuffix = isGo ? '(OpenCode Go)' : isFree ? '(OpenCode Free)' : '(OpenCode Zen)';
-  const suffix = options.suffix || defaultSuffix;
+  const suffix = options.suffix ?? defaultSuffix;
   const name = formatModelName(modelId, suffix);
 
   // 2. Derive limits and capabilities dynamically from models.dev if available
-  let contextWindow = devMeta?.limit?.context || 1048576;
-  let maxOutputTokens = devMeta?.limit?.output || 65536;
+  let contextWindow = devMeta?.limit?.context ?? 1048576;
+  let maxOutputTokens = devMeta?.limit?.output ?? 65536;
   let vision = devMeta?.modalities?.input?.includes('image') ?? false;
-  let thinking = devMeta?.reasoning !== undefined ? devMeta.reasoning : true;
+  let thinking = devMeta?.reasoning ?? true;
 
   if (!devMeta) {
     if (lower.includes('deepseek')) {
@@ -185,7 +187,7 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
   let supportsReasoningEffort: string[] | undefined = undefined;
 
   if (thinking) {
-    const devEffortOpt = devMeta?.reasoning_options?.find((o: any) => o.type === 'effort');
+    const devEffortOpt = devMeta?.reasoning_options?.find((o) => o.type === 'effort');
     if (devEffortOpt && Array.isArray(devEffortOpt.values)) {
       const filtered = devEffortOpt.values.filter((v: string) => v !== 'none');
       if (filtered.length > 0) {

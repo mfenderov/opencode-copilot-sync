@@ -153,7 +153,8 @@ test('Provider Chaos [500 Fault]: does NOT throw and emits OpenCode Model Alert 
   assert.match(alertText, /Unable to reach \*\*DeepSeek V4 Pro \(OpenCode Go\)\*\*/);
   assert.match(alertText, /upstream server error/);
   assert.match(alertText, /Internal Server Error: OpenCode upstream cluster failed/);
-  assert.match(alertText, /Suggestions:/);
+  assert.match(alertText, /\*\*Upstream detail:\*\*/);
+  assert.doesNotMatch(alertText, /Suggestions:/);
 });
 
 test('Provider Chaos [502 Bad Gateway Fault]: does NOT throw and emits OpenCode Model Alert', async () => {

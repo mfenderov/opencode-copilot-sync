@@ -30,7 +30,30 @@ export async function fetchOpenCodeModels(
   return json.data.map((m) => m.id).filter(Boolean);
 }
 
-export async function fetchModelsDevMetadata(): Promise<Record<string, any>> {
+export interface ModelCostMetadata {
+  input?: number;
+  output?: number;
+  cache_read?: number;
+  cache_write?: number;
+}
+
+export interface ModelReasoningOption {
+  type?: string;
+  values?: string[];
+  [key: string]: unknown;
+}
+
+export interface ModelDevMetadata {
+  cost?: ModelCostMetadata;
+  limit?: { context?: number; output?: number };
+  modalities?: { input?: string[]; output?: string[] };
+  reasoning?: boolean;
+  reasoning_options?: ModelReasoningOption[];
+  provider?: { npm?: string };
+  [key: string]: unknown;
+}
+
+export async function fetchModelsDevMetadata(): Promise<Record<string, ModelDevMetadata>> {
   const urls = ['https://models.opencode.ai/api.json', 'https://models.dev/api.json'];
   for (const url of urls) {
     try {
@@ -40,16 +63,14 @@ export async function fetchModelsDevMetadata(): Promise<Record<string, any>> {
         { retries: 1, baseDelayMs: 200 }
       );
       if (!res.ok) continue;
-      const data = (await res.json()) as any;
-      const result: Record<string, any> = {};
+      const data = (await res.json()) as Record<string, { models?: Record<string, ModelDevMetadata> } | undefined>;
+      const result: Record<string, ModelDevMetadata> = {};
 
       // 1. Gather all models across all providers as fallback
       for (const providerData of Object.values(data)) {
-        if ((providerData as any)?.models) {
-          for (const [mId, mData] of Object.entries((providerData as any).models)) {
-            if (!result[mId]) {
-              result[mId] = mData;
-            }
+        if (providerData?.models) {
+          for (const [mId, mData] of Object.entries(providerData.models)) {
+            result[mId] ??= mData;
           }
         }
       }
@@ -67,14 +88,38 @@ export async function fetchModelsDevMetadata(): Promise<Record<string, any>> {
   return {};
 }
 
-export function filterFreeModels(modelIds: string[]): string[] {
-  return modelIds.filter(
-    (id) =>
-      id.includes('free') ||
-      id.includes('contributor') ||
-      id.includes('community') ||
-      id === 'big-pickle'
+/**
+ * Determines whether a model belongs to OpenCode's free tier.
+ * Prioritizes authoritative cost metadata from models.dev / models.opencode.ai
+ * (where free models have input: 0 and output: 0), falling back to name
+ * heuristics when metadata is not provided or cost is undefined.
+ */
+export function isFreeTierModel(modelId: string, devMeta?: ModelDevMetadata): boolean {
+  if (devMeta?.cost) {
+    if (devMeta.cost.input === 0 && devMeta.cost.output === 0) {
+      return true;
+    }
+    if (
+      (typeof devMeta.cost.input === 'number' && devMeta.cost.input > 0) ||
+      (typeof devMeta.cost.output === 'number' && devMeta.cost.output > 0)
+    ) {
+      return false;
+    }
+  }
+
+  const lower = modelId.toLowerCase();
+  return (
+    lower.includes('free') ||
+    lower.includes('community') ||
+    lower === 'big-pickle'
   );
+}
+
+export function filterFreeModels(
+  modelIds: string[],
+  modelsDevMap?: Record<string, ModelDevMetadata>
+): string[] {
+  return modelIds.filter((id) => isFreeTierModel(id, modelsDevMap?.[id]));
 }
 
 export const KNOWN_UNAVAILABLE_MODELS = new Set([

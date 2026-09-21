@@ -51,23 +51,6 @@
       "count": 2
     }
   },
-  "src/enricher.ts": {
-    "@typescript-eslint/no-explicit-any": {
-      "count": 2
-    },
-    "@typescript-eslint/no-unsafe-assignment": {
-      "count": 11
-    },
-    "@typescript-eslint/no-unsafe-call": {
-      "count": 3
-    },
-    "@typescript-eslint/no-unsafe-member-access": {
-      "count": 10
-    },
-    "@typescript-eslint/prefer-nullish-coalescing": {
-      "count": 3
-    }
-  },
   "src/extension.ts": {
     "@typescript-eslint/no-empty-function": {
       "count": 1
@@ -83,23 +66,6 @@
     },
     "@typescript-eslint/prefer-nullish-coalescing": {
       "count": 4
-    }
-  },
-  "src/fetcher.ts": {
-    "@typescript-eslint/no-explicit-any": {
-      "count": 5
-    },
-    "@typescript-eslint/no-unsafe-argument": {
-      "count": 3
-    },
-    "@typescript-eslint/no-unsafe-assignment": {
-      "count": 1
-    },
-    "@typescript-eslint/no-unsafe-member-access": {
-      "count": 4
-    },
-    "@typescript-eslint/prefer-nullish-coalescing": {
-      "count": 1
     }
   },
   "src/network.ts": {

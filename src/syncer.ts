@@ -668,7 +668,7 @@ export async function syncOpenCodeModels(
   let zenCount = 0;
   for (const id of zenModelIds) {
     if (!goSet.has(id)) {
-      const isFree = filterFreeModels([id]).length > 0;
+      const isFree = filterFreeModels([id], modelsDevMap).length > 0;
       const suffix = isFree ? '(OpenCode Free)' : '(OpenCode Zen)';
       const devData = modelsDevMap[id] || modelsDevMap[id.replace(/-contributor-free$/, '')] || modelsDevMap[id.replace(/-free$/, '')];
       models.push(enrichModel(id, { isGo: false, isFree, suffix, modelsDevData: devData }));

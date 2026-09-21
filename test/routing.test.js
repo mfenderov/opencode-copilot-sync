@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { enrichModel } from '../out/enricher.js';
-import { isResponsesModel } from '../out/provider.js';
+import { isResponsesModel, isFreeOrZenModel } from '../out/provider.js';
 
 test('muse-* models MUST have apiType === "responses" and url ending with /zen/go/v1 or /zen/v1', () => {
   const museModels = [
@@ -300,3 +300,24 @@ test('VERIFIED_OPENCODE_MODELS static fallback includes all Muse models with thi
   }
   assert.equal(isResponsesModel('big-pickle'), false);
 });
+
+test('isFreeOrZenModel correctly separates Go models from Zen/Free models', () => {
+  // Go catalog models must NOT be treated as Free/Zen even if name contains contributor
+  assert.equal(isFreeOrZenModel('muse-spark-1.3-contributor', { catalog: 'go' }), false);
+  assert.equal(isFreeOrZenModel('muse-spark-1.3-contributor'), false);
+  assert.equal(isFreeOrZenModel('deepseek-v4-pro', { catalog: 'go' }), false);
+  assert.equal(isFreeOrZenModel('qwen3.7-max', { catalog: 'go' }), false);
+
+  // Free/Zen models
+  assert.equal(isFreeOrZenModel('muse-spark-1.3-contributor-free', { catalog: 'zen', isFree: true }), true);
+  assert.equal(isFreeOrZenModel('muse-spark-1.3-contributor-free'), true);
+  assert.equal(isFreeOrZenModel('mimo-v2.5-free'), true);
+  assert.equal(isFreeOrZenModel('big-pickle'), true);
+  assert.equal(isFreeOrZenModel('claude-sonnet-4-6', { catalog: 'zen' }), true);
+
+  // Zero-cost model from Zen correctly identified by enrichModel
+  const grokFree = enrichModel('grok-code', { isGo: false, modelsDevData: { cost: { input: 0, output: 0 } } });
+  assert.equal(grokFree.isFree, true);
+  assert.ok(grokFree.name.includes('(OpenCode Free)'));
+});
+
