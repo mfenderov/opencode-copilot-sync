@@ -1,131 +1,183 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { getStoredOpenCodeKey, getKeyFromExistingConfig } from '../out/auth.js';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
+import { resolveApiKey, promptAndSetApiKey, SECRET_KEY } from '../out/auth.js';
+import * as vscode from 'vscode';
 
-test('getStoredOpenCodeKey finds key in opencode auth file if it exists', () => {
-  const authPath = path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json');
-  if (fs.existsSync(authPath)) {
-    const key = getStoredOpenCodeKey();
-    assert.ok(typeof key === 'string');
-    assert.ok(key.startsWith('sk-'));
+function createMockSecretStorage(initialKey = '') {
+  const store = new Map();
+  if (initialKey) {
+    store.set(SECRET_KEY, initialKey);
+  }
+  return {
+    get: async (key) => store.get(key),
+    store: async (key, val) => {
+      store.set(key, val);
+    },
+    delete: async (key) => {
+      store.delete(key);
+    },
+    raw: store,
+  };
+}
+
+test('resolveApiKey returns stored key from SecretStorage without disk scanning', async () => {
+  const secrets = createMockSecretStorage('sk-stored-vault-key-12345');
+  const key = await resolveApiKey(secrets, false);
+  assert.equal(key, 'sk-stored-vault-key-12345');
+});
+
+test('resolveApiKey returns and persists process.env.OPENCODE_API_KEY when SecretStorage is empty', async () => {
+  const secrets = createMockSecretStorage('');
+  const prevEnv = process.env.OPENCODE_API_KEY;
+  process.env.OPENCODE_API_KEY = 'sk-env-var-key-67890';
+  try {
+    const key = await resolveApiKey(secrets, false);
+    assert.equal(key, 'sk-env-var-key-67890');
+    assert.equal(await secrets.get(SECRET_KEY), 'sk-env-var-key-67890');
+  } finally {
+    if (prevEnv === undefined) delete process.env.OPENCODE_API_KEY;
+    else process.env.OPENCODE_API_KEY = prevEnv;
   }
 });
 
-test('getStoredOpenCodeKey returns null if file does not exist', () => {
-  const key = getStoredOpenCodeKey('/non/existent/path/auth.json');
-  assert.equal(key, null);
-});
-
-test('getKeyFromExistingConfig extracts valid OpenCode API key from chatLanguageModels.json', () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-auth-test-'));
-  const testFile = path.join(tmpDir, 'chatLanguageModels.json');
-  const dummy = [
-    {
-      name: 'OpenCode',
-      vendor: 'customendpoint',
-      apiKey: 'sk-test-extracted-key-12345',
-      models: []
-    }
-  ];
-  fs.writeFileSync(testFile, JSON.stringify(dummy), 'utf-8');
-
-  const key = getKeyFromExistingConfig(testFile);
-  assert.equal(key, 'sk-test-extracted-key-12345');
-
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-});
-
-test('getKeyFromExistingConfig extracts key from Customprovider or Custom Endpoint entry', () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-auth-test-custom-'));
-  const testFile = path.join(tmpDir, 'chatLanguageModels.json');
-  const dummy = [
-    {
-      name: 'Customprovider',
-      vendor: 'customendpoint',
-      apiKey: 'sk-custom-provider-key-999',
-      models: [{ id: 'deepseek-v4-flash', url: 'https://opencode.ai/zen/go/v1/chat/completions' }]
-    }
-  ];
-  fs.writeFileSync(testFile, JSON.stringify(dummy), 'utf-8');
-
-  const key = getKeyFromExistingConfig(testFile);
-  assert.equal(key, 'sk-custom-provider-key-999');
-
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-});
-
-test('getKeyFromExistingConfig returns null if file has no matching provider or key', () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-auth-test-empty-'));
-  const testFile = path.join(tmpDir, 'chatLanguageModels.json');
-  fs.writeFileSync(testFile, JSON.stringify([{ name: 'Other', apiKey: 'sk-other' }]), 'utf-8');
-
-  const key = getKeyFromExistingConfig(testFile);
-  assert.equal(key, null);
-
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-});
-
-test('getStoredOpenCodeKey respects XDG_DATA_HOME when scanning default candidate paths', () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-xdg-data-test-'));
-  const authDir = path.join(tmpDir, 'opencode');
-  fs.mkdirSync(authDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(authDir, 'auth.json'),
-    JSON.stringify({ 'opencode-go': { key: 'sk-xdg-data-home-key' } }),
-    'utf-8'
-  );
-
-  const savedApiKeyEnv = process.env.OPENCODE_API_KEY;
-  const savedXdgData = process.env.XDG_DATA_HOME;
+test('resolveApiKey returns undefined without prompting when promptIfMissing is false', async () => {
+  const secrets = createMockSecretStorage('');
+  const prevEnv = process.env.OPENCODE_API_KEY;
   delete process.env.OPENCODE_API_KEY;
-  process.env.XDG_DATA_HOME = tmpDir;
+  try {
+    const key = await resolveApiKey(secrets, false);
+    assert.strictEqual(key, undefined);
+  } finally {
+    if (prevEnv !== undefined) process.env.OPENCODE_API_KEY = prevEnv;
+  }
+});
+
+test('promptAndSetApiKey with showInputBox: validates input and stores valid key', async () => {
+  const secrets = createMockSecretStorage('');
+  let validatorFn;
+  const mockWindow = {
+    showInputBox: async (options) => {
+      validatorFn = options.validateInput;
+      return '  sk-user-entered-key-abcde  ';
+    },
+  };
+
+  const key = await promptAndSetApiKey(secrets, mockWindow);
+  assert.equal(key, 'sk-user-entered-key-abcde');
+  assert.equal(await secrets.get(SECRET_KEY), 'sk-user-entered-key-abcde');
+
+  assert.ok(validatorFn);
+  assert.equal(validatorFn(''), 'API Key cannot be empty');
+  assert.equal(validatorFn('   '), 'API Key cannot be empty');
+  assert.equal(validatorFn('invalid-prefix-key'), 'OpenCode API keys typically start with sk-');
+  assert.equal(validatorFn('sk-valid-key'), null);
+});
+
+test('promptAndSetApiKey with showInputBox: returns undefined on cancel', async () => {
+  const secrets = createMockSecretStorage('');
+  const mockWindow = {
+    showInputBox: async () => undefined,
+  };
+
+  const key = await promptAndSetApiKey(secrets, mockWindow);
+  assert.strictEqual(key, undefined);
+  assert.strictEqual(await secrets.get(SECRET_KEY), undefined);
+});
+
+test('promptAndSetApiKey with createInputBox: triggers openExternal on button click and accepts key', async () => {
+  const secrets = createMockSecretStorage('');
+  let externalUrlOpened = null;
+  const origOpenExternal = vscode.env.openExternal;
+  vscode.env.openExternal = async (uri) => {
+    externalUrlOpened = uri.toString();
+    return true;
+  };
 
   try {
-    const key = getStoredOpenCodeKey();
-    assert.equal(key, 'sk-xdg-data-home-key');
+    let acceptHandler;
+    let hideHandler;
+    let buttonHandler;
+    let valueChangeHandler;
+
+    const mockInputBox = {
+      title: '',
+      prompt: '',
+      placeholder: '',
+      value: '',
+      password: false,
+      ignoreFocusOut: false,
+      buttons: [],
+      validationMessage: undefined,
+      onDidTriggerButton: (fn) => { buttonHandler = fn; },
+      onDidChangeValue: (fn) => { valueChangeHandler = fn; },
+      onDidAccept: (fn) => { acceptHandler = fn; },
+      onDidHide: (fn) => { hideHandler = fn; },
+      show: () => {},
+      hide: () => {},
+      dispose: () => {},
+    };
+
+    const mockWindow = {
+      createInputBox: () => mockInputBox,
+    };
+
+    const promptPromise = promptAndSetApiKey(secrets, mockWindow);
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Verify title bar button
+    assert.ok(Array.isArray(mockInputBox.buttons));
+    assert.equal(mockInputBox.buttons.length, 1);
+    assert.equal(mockInputBox.buttons[0].tooltip, 'Get API Key at opencode.ai');
+
+    // Trigger button -> opens opencode.ai
+    await buttonHandler(mockInputBox.buttons[0]);
+    assert.equal(externalUrlOpened, 'https://opencode.ai');
+
+    // Test live validation
+    valueChangeHandler('');
+    assert.equal(mockInputBox.validationMessage, 'API Key cannot be empty');
+    valueChangeHandler('no-sk-prefix');
+    assert.equal(mockInputBox.validationMessage, 'OpenCode API keys typically start with sk-');
+    valueChangeHandler('sk-fresh-key-123');
+    assert.strictEqual(mockInputBox.validationMessage, undefined);
+
+    // Accept input
+    mockInputBox.value = 'sk-fresh-key-123';
+    await acceptHandler();
+
+    const result = await promptPromise;
+    assert.equal(result, 'sk-fresh-key-123');
+    assert.equal(await secrets.get(SECRET_KEY), 'sk-fresh-key-123');
   } finally {
-    if (savedApiKeyEnv === undefined) delete process.env.OPENCODE_API_KEY;
-    else process.env.OPENCODE_API_KEY = savedApiKeyEnv;
-    if (savedXdgData === undefined) delete process.env.XDG_DATA_HOME;
-    else process.env.XDG_DATA_HOME = savedXdgData;
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    vscode.env.openExternal = origOpenExternal;
   }
 });
 
-test('getStoredOpenCodeKey respects XDG_CONFIG_HOME when scanning default candidate paths', () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-xdg-config-test-'));
-  const authDir = path.join(tmpDir, 'opencode');
-  fs.mkdirSync(authDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(authDir, 'auth.json'),
-    JSON.stringify({ opencode: { key: 'sk-xdg-config-home-key' } }),
-    'utf-8'
-  );
+test('promptAndSetApiKey with createInputBox: resolves undefined when hidden/dismissed', async () => {
+  const secrets = createMockSecretStorage('');
+  let hideHandler;
+  const mockInputBox = {
+    title: '',
+    prompt: '',
+    buttons: [],
+    onDidTriggerButton: () => {},
+    onDidChangeValue: () => {},
+    onDidAccept: () => {},
+    onDidHide: (fn) => { hideHandler = fn; },
+    show: () => {},
+    hide: () => {},
+    dispose: () => {},
+  };
 
-  const savedApiKeyEnv = process.env.OPENCODE_API_KEY;
-  const savedXdgData = process.env.XDG_DATA_HOME;
-  const savedXdgConfig = process.env.XDG_CONFIG_HOME;
-  delete process.env.OPENCODE_API_KEY;
-  // Point XDG_DATA_HOME somewhere empty so only the XDG_CONFIG_HOME candidate can match.
-  const emptyDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-xdg-empty-data-'));
-  process.env.XDG_DATA_HOME = emptyDataDir;
-  process.env.XDG_CONFIG_HOME = tmpDir;
+  const mockWindow = {
+    createInputBox: () => mockInputBox,
+  };
 
-  try {
-    const key = getStoredOpenCodeKey();
-    assert.equal(key, 'sk-xdg-config-home-key');
-  } finally {
-    if (savedApiKeyEnv === undefined) delete process.env.OPENCODE_API_KEY;
-    else process.env.OPENCODE_API_KEY = savedApiKeyEnv;
-    if (savedXdgData === undefined) delete process.env.XDG_DATA_HOME;
-    else process.env.XDG_DATA_HOME = savedXdgData;
-    if (savedXdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
-    else process.env.XDG_CONFIG_HOME = savedXdgConfig;
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-    fs.rmSync(emptyDataDir, { recursive: true, force: true });
-  }
+  const promptPromise = promptAndSetApiKey(secrets, mockWindow);
+  await new Promise((r) => setTimeout(r, 10));
+  hideHandler();
+  const result = await promptPromise;
+  assert.strictEqual(result, undefined);
 });
+
 

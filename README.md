@@ -22,7 +22,7 @@ A lightweight (7 KB, zero runtime dependencies) VS Code extension that automatic
   - Any model covered by the **OpenCode Go flat subscription** (e.g. DeepSeek V4, GLM-5.3, Kimi K3, Qwen 3.8, MiniMax M3) routes to `/zen/go/v1/chat/completions` ($0 per-token).
   - Free-tier models (`deepseek-v4-flash-free`, `mimo-v2.5-free`, `nemotron-3-ultra-free`, `big-pickle`) and Zen-exclusive models (Claude, GPT, etc.) route to `/zen/v1/chat/completions`.
   - In cases of overlap, Go flat-rate takes priority—protecting you from paying per-token charges for models already included in your Go plan.
-- **🔑 Zero Key-Entry Friction**: Auto-imports your existing credentials from `~/.local/share/opencode/auth.json`. If missing, prompts securely and stores the token in VS Code's credential vault.
+- **🔑 Secure Credential Storage**: Stores your API key safely in VS Code's encrypted OS credential vault (`context.secrets`) without scanning arbitrary files on disk. If missing, prompts securely with direct links to [opencode.ai](https://opencode.ai).
 - **⚡ Enriched Capabilities**: Configures each model with token limits, vision flags, tool calling, and thinking/reasoning effort levels (`low`, `medium`, `high`, `xhigh`, `max`).
 - **🛡️ Router Compliance**: Injects the required `x-opencode-session` header on every request to ensure OpenCode's routing and prompt caching function correctly without `MissingSessionID` errors. Live chat requests get a stable ID reused for the whole conversation (not regenerated per turn), so prompt caching actually kicks in.
 - **🔒 Safe & Non-Destructive**: Merges into `chatLanguageModels.json` while preserving your other custom endpoints (like internal gateways or LiteLLM) and creating rolling timestamped backups.

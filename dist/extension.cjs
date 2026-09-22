@@ -1139,14 +1139,14 @@ var require_util = __commonJS({
         }
         const port = url.port != null ? url.port : url.protocol === "https:" ? 443 : 80;
         let origin = url.origin != null ? url.origin : `${url.protocol || ""}//${url.hostname || ""}:${port}`;
-        let path4 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
+        let path3 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
         if (origin[origin.length - 1] === "/") {
           origin = origin.slice(0, origin.length - 1);
         }
-        if (path4 && path4[0] !== "/") {
-          path4 = `/${path4}`;
+        if (path3 && path3[0] !== "/") {
+          path3 = `/${path3}`;
         }
-        return new URL(`${origin}${path4}`);
+        return new URL(`${origin}${path3}`);
       }
       if (!isHttpOrHttpsPrefixed(url.origin || url.protocol)) {
         throw new InvalidArgumentError("Invalid URL protocol: the URL must start with `http:` or `https:`.");
@@ -2017,9 +2017,9 @@ var require_diagnostics = __commonJS({
         "undici:client:sendHeaders",
         (evt) => {
           const {
-            request: { method, path: path4, origin }
+            request: { method, path: path3, origin }
           } = evt;
-          debugLog("sending request to %s %s%s", method, origin, path4);
+          debugLog("sending request to %s %s%s", method, origin, path3);
         }
       );
     }
@@ -2037,14 +2037,14 @@ var require_diagnostics = __commonJS({
         "undici:request:headers",
         (evt) => {
           const {
-            request: { method, path: path4, origin },
+            request: { method, path: path3, origin },
             response: { statusCode }
           } = evt;
           debugLog(
             "received response to %s %s%s - HTTP %d",
             method,
             origin,
-            path4,
+            path3,
             statusCode
           );
         }
@@ -2053,23 +2053,23 @@ var require_diagnostics = __commonJS({
         "undici:request:trailers",
         (evt) => {
           const {
-            request: { method, path: path4, origin }
+            request: { method, path: path3, origin }
           } = evt;
-          debugLog("trailers received from %s %s%s", method, origin, path4);
+          debugLog("trailers received from %s %s%s", method, origin, path3);
         }
       );
       diagnosticsChannel.subscribe(
         "undici:request:error",
         (evt) => {
           const {
-            request: { method, path: path4, origin },
+            request: { method, path: path3, origin },
             error
           } = evt;
           debugLog(
             "request to %s %s%s errored - %s",
             method,
             origin,
-            path4,
+            path3,
             error.message
           );
         }
@@ -2224,7 +2224,7 @@ var require_request = __commonJS({
     };
     var Request = class {
       constructor(origin, {
-        path: path4,
+        path: path3,
         method,
         body,
         headers,
@@ -2241,11 +2241,11 @@ var require_request = __commonJS({
         maxRedirections,
         typeOfService
       }, handler) {
-        if (typeof path4 !== "string") {
+        if (typeof path3 !== "string") {
           throw new InvalidArgumentError("path must be a string");
-        } else if (path4[0] !== "/" && !(path4.startsWith("http://") || path4.startsWith("https://")) && method !== "CONNECT") {
+        } else if (path3[0] !== "/" && !(path3.startsWith("http://") || path3.startsWith("https://")) && method !== "CONNECT") {
           throw new InvalidArgumentError("path must be an absolute URL or start with a slash");
-        } else if (invalidPathRegex.test(path4)) {
+        } else if (invalidPathRegex.test(path3)) {
           throw new InvalidArgumentError("invalid request path");
         }
         if (typeof method !== "string") {
@@ -2320,7 +2320,7 @@ var require_request = __commonJS({
         this.completed = false;
         this.aborted = false;
         this.upgrade = upgrade || null;
-        this.path = query ? serializePathWithQuery(path4, query) : path4;
+        this.path = query ? serializePathWithQuery(path3, query) : path3;
         this.origin = origin;
         this.protocol = getProtocolFromUrlString(origin);
         this.idempotent = idempotent == null ? method === "HEAD" || method === "GET" || method === "QUERY" : idempotent;
@@ -7429,7 +7429,7 @@ var require_client_h1 = __commonJS({
       }
     }
     function writeH1(client, request) {
-      const { method, path: path4, host, upgrade, blocking, reset } = request;
+      const { method, path: path3, host, upgrade, blocking, reset } = request;
       let { body, headers, contentLength } = request;
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH" || method === "QUERY" || method === "PROPFIND" || method === "PROPPATCH";
       if (util.isFormDataLike(body)) {
@@ -7505,7 +7505,7 @@ var require_client_h1 = __commonJS({
         socket[kBlocking] = true;
       }
       setTypeOfService(socket, request);
-      let header = `${method} ${path4} HTTP/1.1\r
+      let header = `${method} ${path3} HTTP/1.1\r
 `;
       if (typeof host === "string") {
         header += `host: ${host}\r
@@ -8588,7 +8588,7 @@ var require_client_h2 = __commonJS({
       const headersTimeout = request.headersTimeout ?? client[kHeadersTimeout];
       const bodyTimeout = request.bodyTimeout ?? client[kBodyTimeout];
       const session = client[kHTTP2Session];
-      const { method, path: path4, host, upgrade, expectContinue, signal, protocol, headers: reqHeaders } = request;
+      const { method, path: path3, host, upgrade, expectContinue, signal, protocol, headers: reqHeaders } = request;
       if (upgrade != null && upgrade !== "websocket") {
         util.errorRequest(client, request, new InvalidArgumentError(`Custom upgrade "${upgrade}" not supported over HTTP/2`));
         return false;
@@ -8653,7 +8653,7 @@ var require_client_h2 = __commonJS({
           }
           headers[HTTP2_HEADER_METHOD] = "CONNECT";
           headers[HTTP2_HEADER_PROTOCOL] = "websocket";
-          headers[HTTP2_HEADER_PATH] = path4;
+          headers[HTTP2_HEADER_PATH] = path3;
           if (protocol === "ws:" || protocol === "wss:") {
             headers[HTTP2_HEADER_SCHEME] = protocol === "ws:" ? "http" : "https";
           } else {
@@ -8675,7 +8675,7 @@ var require_client_h2 = __commonJS({
         setupUpgradeStream(stream, state);
         return true;
       }
-      headers[HTTP2_HEADER_PATH] = path4;
+      headers[HTTP2_HEADER_PATH] = path3;
       headers[HTTP2_HEADER_SCHEME] = protocol === "http:" ? "http" : "https";
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH" || method === "QUERY" || method === "PROPFIND" || method === "PROPPATCH";
       let body = state.body;
@@ -11431,10 +11431,10 @@ var require_proxy_agent = __commonJS({
         };
         const {
           origin,
-          path: path4 = "/",
+          path: path3 = "/",
           headers = {}
         } = opts;
-        opts.path = origin + path4;
+        opts.path = origin + path3;
         if (!("host" in headers) && !("Host" in headers)) {
           const { host } = new URL(origin);
           headers.host = host;
@@ -13787,20 +13787,20 @@ var require_mock_utils = __commonJS({
       }
       return normalizedQp;
     }
-    function safeUrl(path4) {
-      if (typeof path4 !== "string") {
-        return path4;
+    function safeUrl(path3) {
+      if (typeof path3 !== "string") {
+        return path3;
       }
-      const pathSegments = path4.split("?", 3);
+      const pathSegments = path3.split("?", 3);
       if (pathSegments.length !== 2) {
-        return path4;
+        return path3;
       }
       const qp = new URLSearchParams(pathSegments.pop());
       qp.sort();
       return [...pathSegments, qp.toString()].join("?");
     }
-    function matchKey(mockDispatch2, { path: path4, method, body, headers }) {
-      const pathMatch = matchValue(mockDispatch2.path, path4);
+    function matchKey(mockDispatch2, { path: path3, method, body, headers }) {
+      const pathMatch = matchValue(mockDispatch2.path, path3);
       const methodMatch = matchValue(mockDispatch2.method, method);
       const bodyMatch = typeof mockDispatch2.body !== "undefined" ? matchValue(mockDispatch2.body, body) : true;
       const headersMatch = matchHeaders(mockDispatch2, headers);
@@ -13827,8 +13827,8 @@ var require_mock_utils = __commonJS({
       const basePath = key.query ? serializePathWithQuery(key.path, key.query) : key.path;
       const resolvedPath = typeof basePath === "string" ? safeUrl(basePath) : basePath;
       const resolvedPathWithoutTrailingSlash = removeTrailingSlash(resolvedPath);
-      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path4, ignoreTrailingSlash }) => {
-        return ignoreTrailingSlash ? matchValue(removeTrailingSlash(safeUrl(path4)), resolvedPathWithoutTrailingSlash) : matchValue(safeUrl(path4), resolvedPath);
+      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path3, ignoreTrailingSlash }) => {
+        return ignoreTrailingSlash ? matchValue(removeTrailingSlash(safeUrl(path3)), resolvedPathWithoutTrailingSlash) : matchValue(safeUrl(path3), resolvedPath);
       });
       if (matchedMockDispatches.length === 0) {
         throw new MockNotMatchedError(`Mock dispatch not matched for path '${resolvedPath}'`);
@@ -13867,22 +13867,22 @@ var require_mock_utils = __commonJS({
         mockDispatches.splice(index, 1);
       }
     }
-    function removeTrailingSlash(path4) {
-      if (typeof path4 !== "string") {
-        return path4;
+    function removeTrailingSlash(path3) {
+      if (typeof path3 !== "string") {
+        return path3;
       }
-      while (path4.endsWith("/")) {
-        path4 = path4.slice(0, -1);
+      while (path3.endsWith("/")) {
+        path3 = path3.slice(0, -1);
       }
-      if (path4.length === 0) {
-        path4 = "/";
+      if (path3.length === 0) {
+        path3 = "/";
       }
-      return path4;
+      return path3;
     }
     function buildKey(opts) {
-      const { path: path4, method, body, headers, query } = opts;
+      const { path: path3, method, body, headers, query } = opts;
       return {
-        path: path4,
+        path: path3,
         method,
         body,
         headers,
@@ -14751,10 +14751,10 @@ var require_pending_interceptors_formatter = __commonJS({
       }
       format(pendingInterceptors) {
         const withPrettyHeaders = pendingInterceptors.map(
-          ({ method, path: path4, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
+          ({ method, path: path3, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
             Method: method,
             Origin: origin,
-            Path: path4,
+            Path: path3,
             "Status code": statusCode,
             Persistent: persist ? PERSISTENT : NOT_PERSISTENT,
             Invocations: timesInvoked,
@@ -14844,9 +14844,9 @@ var require_mock_agent = __commonJS({
           }
         }
         if (acceptNonStandardSearchParameters && dispatchOpts.path) {
-          const [path4, searchParams] = dispatchOpts.path.split("?");
+          const [path3, searchParams] = dispatchOpts.path.split("?");
           const normalizedSearchParams = normalizeSearchParams(searchParams, acceptNonStandardSearchParameters);
-          dispatchOpts.path = `${path4}?${normalizedSearchParams}`;
+          dispatchOpts.path = `${path3}?${normalizedSearchParams}`;
         }
         return this[kAgent].dispatch(dispatchOpts, handler);
       }
@@ -15262,12 +15262,12 @@ var require_snapshot_recorder = __commonJS({
        * @return {Promise<void>} - Resolves when snapshots are loaded
        */
       async loadSnapshots(filePath) {
-        const path4 = filePath || this.#snapshotPath;
-        if (!path4) {
+        const path3 = filePath || this.#snapshotPath;
+        if (!path3) {
           throw new InvalidArgumentError("Snapshot path is required");
         }
         try {
-          const data = await readFile(resolve2(path4), "utf8");
+          const data = await readFile(resolve2(path3), "utf8");
           const parsed = JSON.parse(data);
           if (Array.isArray(parsed)) {
             this.#snapshots.clear();
@@ -15281,7 +15281,7 @@ var require_snapshot_recorder = __commonJS({
           if (error.code === "ENOENT") {
             this.#snapshots.clear();
           } else {
-            throw new UndiciError(`Failed to load snapshots from ${path4}`, { cause: error });
+            throw new UndiciError(`Failed to load snapshots from ${path3}`, { cause: error });
           }
         }
       }
@@ -15292,11 +15292,11 @@ var require_snapshot_recorder = __commonJS({
        * @returns {Promise<void>} - Resolves when snapshots are saved
        */
       async saveSnapshots(filePath) {
-        const path4 = filePath || this.#snapshotPath;
-        if (!path4) {
+        const path3 = filePath || this.#snapshotPath;
+        if (!path3) {
           throw new InvalidArgumentError("Snapshot path is required");
         }
-        const resolvedPath = resolve2(path4);
+        const resolvedPath = resolve2(path3);
         await mkdir(dirname2(resolvedPath), { recursive: true });
         const data = Array.from(this.#snapshots.entries()).map(([hash, snapshot]) => ({
           hash,
@@ -15946,15 +15946,15 @@ var require_redirect_handler = __commonJS({
         }
         const baseUrl = requestOrigin ? new URL(this.opts.path, requestOrigin) : void 0;
         const { origin, pathname, search } = util.parseURL(new URL(this.location, baseUrl));
-        const path4 = search ? `${pathname}${search}` : pathname;
-        const redirectUrlString = `${origin}${path4}`;
+        const path3 = search ? `${pathname}${search}` : pathname;
+        const redirectUrlString = `${origin}${path3}`;
         for (const historyUrl of this.history) {
           if (historyUrl.toString() === redirectUrlString) {
             throw new InvalidArgumentError(`Redirect loop detected. Cannot redirect to ${origin}. This typically happens when using a Client or Pool with cross-origin redirects. Use an Agent for cross-origin redirects.`);
           }
         }
         this.opts.headers = cleanRequestHeaders(this.opts.headers, removeContentHeaders, requestOrigin !== origin, this.stripHeadersOnRedirect, this.stripHeadersOnCrossOriginRedirect);
-        this.opts.path = path4;
+        this.opts.path = path3;
         this.opts.origin = origin;
         this.opts[kRequestOrigin] = origin;
         this.opts.query = null;
@@ -17805,10 +17805,10 @@ var require_cache_handler = __commonJS({
       }
       return locationUrl.pathname + locationUrl.search;
     }
-    function deleteCachedUri(store, cacheKey, path4) {
+    function deleteCachedUri(store, cacheKey, path3) {
       deleteCachedValue(store, {
         ...cacheKey,
-        path: path4
+        path: path3
       });
       for (let i = 0; i < util.safeHTTPMethods.length; i++) {
         const method = util.safeHTTPMethods[i];
@@ -17816,7 +17816,7 @@ var require_cache_handler = __commonJS({
           deleteCachedValue(store, {
             ...cacheKey,
             method,
-            path: path4
+            path: path3
           });
         }
       }
@@ -17827,9 +17827,9 @@ var require_cache_handler = __commonJS({
       }
       const values = Array.isArray(headerValue) ? headerValue : [headerValue];
       for (let i = 0; i < values.length; i++) {
-        const path4 = getSameOriginPath(cacheKey, values[i]);
-        if (path4 !== void 0) {
-          deleteCachedUri(store, cacheKey, path4);
+        const path3 = getSameOriginPath(cacheKey, values[i]);
+        if (path3 !== void 0) {
+          deleteCachedUri(store, cacheKey, path3);
         }
       }
     }
@@ -22956,13 +22956,13 @@ var require_fetch = __commonJS({
       function dispatch({ body }) {
         const url = requestCurrentURL(request);
         const agent = fetchParams.controller.dispatcher;
-        const path4 = url.pathname + url.search;
+        const path3 = url.pathname + url.search;
         const hasTrailingQuestionMark = url.search.length === 0 && url.href[url.href.length - url.hash.length - 1] === "?";
         return dispatchWithProtocolPreference(body);
         function dispatchWithProtocolPreference(body2, allowH2) {
           return new Promise((resolve2, reject) => agent.dispatch(
             {
-              path: hasTrailingQuestionMark ? `${path4}?` : path4,
+              path: hasTrailingQuestionMark ? `${path3}?` : path3,
               origin: url.origin,
               method: request.method,
               body: agent.isMockActive ? request.body && (request.body.source || request.body.stream) : body2,
@@ -23877,9 +23877,9 @@ var require_util4 = __commonJS({
         }
       }
     }
-    function validateCookiePath(path4) {
-      for (let i = 0; i < path4.length; ++i) {
-        const code = path4.charCodeAt(i);
+    function validateCookiePath(path3) {
+      for (let i = 0; i < path3.length; ++i) {
+        const code = path3.charCodeAt(i);
         if (code < 32 || // exclude CTLs (0-31)
         code > 126 || // exclude non-ascii and DEL
         code === 59) {
@@ -27287,11 +27287,11 @@ var require_undici = __commonJS({
           if (typeof opts.path !== "string") {
             throw new InvalidArgumentError("invalid opts.path");
           }
-          let path4 = opts.path;
+          let path3 = opts.path;
           if (!opts.path.startsWith("/")) {
-            path4 = `/${path4}`;
+            path3 = `/${path3}`;
           }
-          url = new URL(util.parseOrigin(url).origin + path4);
+          url = new URL(util.parseOrigin(url).origin + path3);
         } else {
           if (!opts) {
             opts = typeof url === "object" ? url : {};
@@ -27407,12 +27407,101 @@ __export(extension_exports, {
   deactivate: () => deactivate
 });
 module.exports = __toCommonJS(extension_exports);
-var vscode3 = __toESM(require("vscode"), 1);
+var vscode4 = __toESM(require("vscode"), 1);
 
 // src/auth.ts
-var fs2 = __toESM(require("node:fs"), 1);
-var path2 = __toESM(require("node:path"), 1);
-var os2 = __toESM(require("node:os"), 1);
+var vscode = __toESM(require("vscode"), 1);
+var SECRET_KEY = "opencode_api_key";
+async function resolveApiKey(secrets, promptIfMissing = true, vscodeWindow) {
+  const stored = await secrets.get(SECRET_KEY);
+  if (stored && stored.trim().length > 0) {
+    return stored.trim();
+  }
+  const envKey = process.env.OPENCODE_API_KEY;
+  if (envKey && envKey.trim().length > 0) {
+    const cleanKey = envKey.trim();
+    await secrets.store(SECRET_KEY, cleanKey);
+    return cleanKey;
+  }
+  if (promptIfMissing && vscodeWindow && !process.env.CI) {
+    return promptAndSetApiKey(secrets, vscodeWindow);
+  }
+  return void 0;
+}
+async function promptAndSetApiKey(secrets, vscodeWindow) {
+  const currentKey = await secrets.get(SECRET_KEY);
+  if (typeof vscodeWindow.createInputBox === "function") {
+    return new Promise((resolve2) => {
+      const input = vscodeWindow.createInputBox();
+      input.title = "OpenCode API Key";
+      input.prompt = "Enter your OpenCode API Key (starts with sk-). Don't have one? Click the globe icon or visit opencode.ai";
+      input.placeholder = "sk-...";
+      input.value = currentKey ?? "";
+      input.password = true;
+      input.ignoreFocusOut = true;
+      input.buttons = [
+        {
+          iconPath: new vscode.ThemeIcon("globe"),
+          tooltip: "Get API Key at opencode.ai"
+        }
+      ];
+      input.onDidTriggerButton(async () => {
+        try {
+          await vscode.env.openExternal(vscode.Uri.parse("https://opencode.ai"));
+        } catch {
+        }
+      });
+      input.onDidChangeValue((val) => {
+        if (!val || val.trim().length === 0) {
+          input.validationMessage = "API Key cannot be empty";
+        } else if (!val.trim().startsWith("sk-")) {
+          input.validationMessage = "OpenCode API keys typically start with sk-";
+        } else {
+          input.validationMessage = void 0;
+        }
+      });
+      input.onDidAccept(async () => {
+        const val = input.value.trim();
+        if (!val) {
+          input.validationMessage = "API Key cannot be empty";
+          return;
+        }
+        input.hide();
+        await secrets.store(SECRET_KEY, val);
+        input.dispose();
+        resolve2(val);
+      });
+      input.onDidHide(() => {
+        input.dispose();
+        resolve2(void 0);
+      });
+      input.show();
+    });
+  }
+  const entered = await vscodeWindow.showInputBox({
+    title: "OpenCode API Key",
+    prompt: "Enter your OpenCode API Key (starts with sk-). Don't have one? Get it at https://opencode.ai",
+    placeHolder: "sk-...",
+    value: currentKey ?? "",
+    password: true,
+    ignoreFocusOut: true,
+    validateInput: (value) => {
+      if (!value || value.trim().length === 0) {
+        return "API Key cannot be empty";
+      }
+      if (!value.trim().startsWith("sk-")) {
+        return "OpenCode API keys typically start with sk-";
+      }
+      return null;
+    }
+  });
+  if (entered && entered.trim().length > 0) {
+    const cleanKey = entered.trim();
+    await secrets.store(SECRET_KEY, cleanKey);
+    return cleanKey;
+  }
+  return void 0;
+}
 
 // src/syncer.ts
 var import_node_fs = __toESM(require("node:fs"), 1);
@@ -28484,216 +28573,6 @@ async function syncOpenCodeModels(apiKey, options = {}) {
   };
 }
 
-// src/auth.ts
-var SECRET_KEY = "opencode_api_key";
-function getStoredOpenCodeKey(customPath) {
-  if (process.env.OPENCODE_API_KEY && process.env.OPENCODE_API_KEY.trim().length > 0) {
-    return process.env.OPENCODE_API_KEY.trim();
-  }
-  if (customPath) {
-    try {
-      if (fs2.existsSync(customPath)) {
-        const raw = fs2.readFileSync(customPath, "utf-8");
-        const data = JSON.parse(raw);
-        const key = data["opencode-go"]?.key || data.opencode?.key;
-        if (typeof key === "string" && key.trim().length > 0) {
-          return key.trim();
-        }
-      }
-    } catch {
-    }
-    return null;
-  }
-  const candidatePaths = [];
-  const home = os2.homedir();
-  const xdgDataHome = process.env.XDG_DATA_HOME;
-  const xdgConfigHome = process.env.XDG_CONFIG_HOME;
-  candidatePaths.push(path2.join(xdgDataHome || path2.join(home, ".local", "share"), "opencode", "auth.json"));
-  candidatePaths.push(path2.join(xdgConfigHome || path2.join(home, ".config"), "opencode", "auth.json"));
-  if (xdgDataHome) {
-    candidatePaths.push(path2.join(home, ".local", "share", "opencode", "auth.json"));
-  }
-  if (xdgConfigHome) {
-    candidatePaths.push(path2.join(home, ".config", "opencode", "auth.json"));
-  }
-  if (process.env.LOCALAPPDATA) {
-    candidatePaths.push(path2.join(process.env.LOCALAPPDATA, "opencode", "auth.json"));
-  }
-  if (process.env.APPDATA) {
-    candidatePaths.push(path2.join(process.env.APPDATA, "opencode", "auth.json"));
-  }
-  if (process.env.USERPROFILE) {
-    candidatePaths.push(path2.join(process.env.USERPROFILE, ".local", "share", "opencode", "auth.json"));
-    candidatePaths.push(path2.join(process.env.USERPROFILE, ".config", "opencode", "auth.json"));
-  }
-  if (process.platform === "win32") {
-    for (const prefix of ["\\\\wsl.localhost", "\\\\wsl$"]) {
-      try {
-        if (fs2.existsSync(prefix)) {
-          let distros = [];
-          try {
-            distros = fs2.readdirSync(prefix);
-          } catch {
-          }
-          for (const distro of distros) {
-            const homeDir = path2.join(prefix, distro, "home");
-            if (fs2.existsSync(homeDir)) {
-              let users = [];
-              try {
-                users = fs2.readdirSync(homeDir);
-              } catch {
-              }
-              for (const u of users) {
-                candidatePaths.push(path2.join(homeDir, u, ".local", "share", "opencode", "auth.json"));
-                candidatePaths.push(path2.join(homeDir, u, ".config", "opencode", "auth.json"));
-              }
-            }
-            const rootDir = path2.join(prefix, distro, "root");
-            if (fs2.existsSync(rootDir)) {
-              candidatePaths.push(path2.join(rootDir, ".local", "share", "opencode", "auth.json"));
-              candidatePaths.push(path2.join(rootDir, ".config", "opencode", "auth.json"));
-            }
-          }
-        }
-      } catch {
-      }
-    }
-  }
-  if (process.platform === "linux") {
-    const userRoots = ["/mnt/c/Users", "/mnt/d/Users", "/mnt/e/Users", "/c/Users", "/d/Users"];
-    for (const root of userRoots) {
-      if (fs2.existsSync(root)) {
-        let users = [];
-        try {
-          users = fs2.readdirSync(root);
-        } catch {
-        }
-        for (const u of users) {
-          if (["Public", "Default", "Default User", "All Users"].includes(u) || u.startsWith(".")) continue;
-          candidatePaths.push(path2.join(root, u, "AppData", "Local", "opencode", "auth.json"));
-          candidatePaths.push(path2.join(root, u, "AppData", "Roaming", "opencode", "auth.json"));
-          candidatePaths.push(path2.join(root, u, ".local", "share", "opencode", "auth.json"));
-          candidatePaths.push(path2.join(root, u, ".config", "opencode", "auth.json"));
-        }
-      }
-    }
-  }
-  for (const authPath of candidatePaths) {
-    try {
-      if (fs2.existsSync(authPath)) {
-        const raw = fs2.readFileSync(authPath, "utf-8");
-        const data = JSON.parse(raw);
-        const key = data["opencode-go"]?.key || data.opencode?.key;
-        if (typeof key === "string" && key.trim().length > 0) {
-          return key.trim();
-        }
-      }
-    } catch {
-    }
-  }
-  return null;
-}
-function getKeyFromExistingConfig(customPath) {
-  const pathsToCheck = [];
-  if (customPath) {
-    try {
-      if (fs2.existsSync(customPath) && fs2.statSync(customPath).isDirectory()) {
-        pathsToCheck.push(getChatLanguageModelsPath(customPath));
-      } else {
-        pathsToCheck.push(customPath);
-      }
-    } catch {
-      pathsToCheck.push(customPath);
-    }
-  } else {
-    try {
-      pathsToCheck.push(...getAllChatLanguageModelsPaths());
-    } catch {
-      const fallback = process.platform === "darwin" ? path2.join(os2.homedir(), "Library", "Application Support", "Code", "User", "chatLanguageModels.json") : process.platform === "win32" ? path2.join(process.env.APPDATA || path2.join(os2.homedir(), "AppData", "Roaming"), "Code", "User", "chatLanguageModels.json") : path2.join(os2.homedir(), ".config", "Code", "User", "chatLanguageModels.json");
-      pathsToCheck.push(fallback);
-    }
-  }
-  for (const configPath of pathsToCheck) {
-    try {
-      if (fs2.existsSync(configPath)) {
-        const raw = fs2.readFileSync(configPath, "utf-8");
-        const data = JSON.parse(raw);
-        if (Array.isArray(data)) {
-          const entry = data.find(
-            (e) => e && (e.name === "OpenCode" || e.name === "OpenCode Go" || e.name === "OpenCode Zen Free" || /^(customprovider|custom endpoint|customendpoint)$/i.test(e.name || "") || Array.isArray(e.models) && e.models.some((m) => typeof m?.url === "string" && m.url.includes("opencode.ai")))
-          );
-          if (entry?.apiKey && typeof entry.apiKey === "string" && entry.apiKey.trim().startsWith("sk-")) {
-            return entry.apiKey.trim();
-          }
-        }
-      }
-    } catch {
-    }
-  }
-  return null;
-}
-async function resolveApiKey(secrets, promptIfMissing = true, vscodeWindow) {
-  const stored = await secrets.get(SECRET_KEY);
-  if (stored && stored.trim().length > 0) {
-    return stored.trim();
-  }
-  const autoFound = getStoredOpenCodeKey();
-  if (autoFound) {
-    await secrets.store(SECRET_KEY, autoFound);
-    return autoFound;
-  }
-  const fromExisting = getKeyFromExistingConfig();
-  if (fromExisting) {
-    await secrets.store(SECRET_KEY, fromExisting);
-    return fromExisting;
-  }
-  if (promptIfMissing && vscodeWindow && !process.env.CI) {
-    const entered = await vscodeWindow.showInputBox({
-      title: "OpenCode API Key",
-      prompt: "Enter your OpenCode API Key (starts with sk-)",
-      password: true,
-      ignoreFocusOut: true,
-      validateInput: (value) => {
-        if (!value || value.trim().length === 0) {
-          return "API Key cannot be empty";
-        }
-        if (!value.trim().startsWith("sk-")) {
-          return "OpenCode API keys typically start with sk-";
-        }
-        return null;
-      }
-    });
-    if (entered && entered.trim().length > 0) {
-      const cleanKey = entered.trim();
-      await secrets.store(SECRET_KEY, cleanKey);
-      return cleanKey;
-    }
-  }
-  return void 0;
-}
-async function promptAndSetApiKey(secrets, vscodeWindow) {
-  const currentKey = await secrets.get(SECRET_KEY);
-  const entered = await vscodeWindow.showInputBox({
-    title: "OpenCode API Key",
-    prompt: "Enter your OpenCode API Key (starts with sk-)",
-    value: currentKey || "",
-    password: true,
-    ignoreFocusOut: true,
-    validateInput: (value) => {
-      if (!value || value.trim().length === 0) {
-        return "API Key cannot be empty";
-      }
-      return null;
-    }
-  });
-  if (entered && entered.trim().length > 0) {
-    const cleanKey = entered.trim();
-    await secrets.store(SECRET_KEY, cleanKey);
-    return cleanKey;
-  }
-  return void 0;
-}
-
 // src/usage.ts
 var OPENCODE_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
 async function fetchOpenCodeUsage(apiKey, fetchFn = fetch) {
@@ -28759,9 +28638,9 @@ function formatUsageTooltip(usage) {
 }
 
 // src/provider.ts
-var fs3 = __toESM(require("node:fs"), 1);
-var path3 = __toESM(require("node:path"), 1);
-var vscode = __toESM(require("vscode"), 1);
+var fs2 = __toESM(require("node:fs"), 1);
+var path2 = __toESM(require("node:path"), 1);
+var vscode2 = __toESM(require("vscode"), 1);
 var VERIFIED_OPENCODE_MODELS = [
   { id: "minimax-m3", name: "MiniMax M3 (OpenCode Go)", family: "minimax-m3", catalog: "go", contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: false },
   { id: "minimax-m2.5", name: "MiniMax M2.5 (OpenCode Go)", family: "minimax-m2.5", catalog: "go", contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
@@ -28965,7 +28844,7 @@ function getStreamIdleTimeoutMs() {
     if (!isNaN(envVal) && envVal > 0) return envVal;
   }
   try {
-    const configSec = vscode.workspace.getConfiguration("opencode").get("streamIdleTimeoutSeconds");
+    const configSec = vscode2.workspace.getConfiguration("opencode").get("streamIdleTimeoutSeconds");
     if (typeof configSec === "number" && configSec > 0) {
       return configSec * 1e3;
     }
@@ -28988,7 +28867,7 @@ function fingerprintMessage(msg) {
   let text = "";
   try {
     for (const part of msg.content) {
-      if (part instanceof vscode.LanguageModelTextPart) {
+      if (part instanceof vscode2.LanguageModelTextPart) {
         text += part.value;
       } else if (part && typeof part === "object") {
         text += JSON.stringify(part);
@@ -29117,9 +28996,9 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
     this.outputChannel = outputChannel;
     try {
       if (this.context.globalStorageUri.fsPath) {
-        const cacheFile = path3.join(this.context.globalStorageUri.fsPath, "models_cache.json");
-        if (fs3.existsSync(cacheFile)) {
-          const parsed = JSON.parse(fs3.readFileSync(cacheFile, "utf-8"));
+        const cacheFile = path2.join(this.context.globalStorageUri.fsPath, "models_cache.json");
+        if (fs2.existsSync(cacheFile)) {
+          const parsed = JSON.parse(fs2.readFileSync(cacheFile, "utf-8"));
           if (Array.isArray(parsed) && parsed.length > 0) {
             this._models = parsed;
           }
@@ -29128,7 +29007,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
     } catch {
     }
   }
-  _onDidChange = new vscode.EventEmitter();
+  _onDidChange = new vscode2.EventEmitter();
   onDidChangeLanguageModelChatInformation = this._onDidChange.event;
   _models = [...VERIFIED_OPENCODE_MODELS];
   // Copilot resends full conversation history each turn, so a conversation's first message
@@ -29186,10 +29065,10 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
       try {
         if (this.context.globalStorageUri.fsPath) {
           const cacheDir = this.context.globalStorageUri.fsPath;
-          if (!fs3.existsSync(cacheDir)) {
-            fs3.mkdirSync(cacheDir, { recursive: true });
+          if (!fs2.existsSync(cacheDir)) {
+            fs2.mkdirSync(cacheDir, { recursive: true });
           }
-          fs3.writeFileSync(path3.join(cacheDir, "models_cache.json"), JSON.stringify(models), "utf-8");
+          fs2.writeFileSync(path2.join(cacheDir, "models_cache.json"), JSON.stringify(models), "utf-8");
         }
       } catch {
       }
@@ -29267,32 +29146,26 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
     });
   }
   async provideLanguageModelChatResponse(model, messages, options, progress, token) {
-    const apiKey = await this.context.secrets.get("opencode_api_key") || getStoredOpenCodeKey(this.context.globalStorageUri.fsPath) || getStoredOpenCodeKey() || getKeyFromExistingConfig(this.context.globalStorageUri.fsPath) || getKeyFromExistingConfig();
+    const apiKey = await this.context.secrets.get("opencode_api_key") || (process.env.OPENCODE_API_KEY && process.env.OPENCODE_API_KEY.trim().length > 0 ? process.env.OPENCODE_API_KEY.trim() : void 0);
     if (!apiKey) {
       throw new Error(
         'OpenCode API key not found. Please run "OpenCode: Set API Key" command to configure your key.'
       );
     }
-    this.context.secrets.get("opencode_api_key").then((stored) => {
-      if (!stored && apiKey) {
-        this.context.secrets.store("opencode_api_key", apiKey).then(void 0, () => {
-        });
-      }
-    });
     const formattedMessages = [];
     for (const msg of messages) {
-      const role = msg.role === vscode.LanguageModelChatMessageRole.User ? "user" : "assistant";
+      const role = msg.role === vscode2.LanguageModelChatMessageRole.User ? "user" : "assistant";
       let textContent = "";
       const toolCalls = [];
       for (const part of msg.content) {
-        const ThinkingPart = vscode.LanguageModelThinkingPart;
+        const ThinkingPart = vscode2.LanguageModelThinkingPart;
         const isThinkingPart = ThinkingPart && part instanceof ThinkingPart || part?.constructor?.name === "LanguageModelThinkingPart" || part?.type === "thinking" || part?.type === "reasoning";
         if (isThinkingPart) {
           continue;
         }
-        if (part instanceof vscode.LanguageModelTextPart) {
+        if (part instanceof vscode2.LanguageModelTextPart) {
           textContent += part.value;
-        } else if (part instanceof vscode.LanguageModelToolCallPart) {
+        } else if (part instanceof vscode2.LanguageModelToolCallPart) {
           toolCalls.push({
             id: part.callId,
             type: "function",
@@ -29301,7 +29174,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
               arguments: typeof part.input === "string" ? part.input : JSON.stringify(part.input)
             }
           });
-        } else if (part instanceof vscode.LanguageModelToolResultPart) {
+        } else if (part instanceof vscode2.LanguageModelToolResultPart) {
           let resultStr = "";
           if (typeof part.content === "string") {
             resultStr = part.content;
@@ -29490,7 +29363,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
         if (!res.ok) {
           const isFreeTierError = userDetail.includes("FreeTierError") || userDetail.toLowerCase().includes("free tier");
           if (!isFreeTierError && (res.status === 401 || res.status === 403)) {
-            const LMError = vscode.LanguageModelError;
+            const LMError = vscode2.LanguageModelError;
             const cleanDetail = userDetail.replace(/^OpenCode authentication failed:\s*/i, "").trim();
             const errMessage = cleanDetail ? `OpenCode authentication failed: ${cleanDetail}` : "OpenCode authentication failed: Invalid or expired API key.";
             if (LMError?.NoPermissions) {
@@ -29499,7 +29372,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
             throw new Error(errMessage);
           }
           if (res.status === 404) {
-            const LMError = vscode.LanguageModelError;
+            const LMError = vscode2.LanguageModelError;
             if (LMError?.NotFound) {
               throw LMError.NotFound(`OpenCode model '${model.id}' was not found in the remote catalog.`);
             }
@@ -29512,7 +29385,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
             `>`,
             `> **Upstream detail:** \`${userDetail.slice(0, 300) || "Internal server error"}\``
           ].join("\n");
-          progress.report(new vscode.LanguageModelTextPart(alertNotice));
+          progress.report(new vscode2.LanguageModelTextPart(alertNotice));
           return;
         }
       }
@@ -29536,11 +29409,11 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
       const emitThinking = (thinking) => {
         if (!thinking) return;
         partsReportedCount++;
-        const ThinkingPart = vscode.LanguageModelThinkingPart;
+        const ThinkingPart = vscode2.LanguageModelThinkingPart;
         if (ThinkingPart) {
           progress.report(new ThinkingPart(thinking, currentThinkingId));
         } else {
-          progress.report(new vscode.LanguageModelTextPart(thinking));
+          progress.report(new vscode2.LanguageModelTextPart(thinking));
         }
       };
       const flushPendingToolCalls = () => {
@@ -29556,7 +29429,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
           if (!isSyntheticVerificationTool(call.name, options.tools)) {
             partsReportedCount++;
             emittedToolCallIds.add(call.id);
-            progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+            progress.report(new vscode2.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
           }
         }
         pendingToolCalls.clear();
@@ -29591,7 +29464,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
               const delta = typeof data.delta === "string" ? data.delta : data.delta?.text || data.delta?.value || "";
               if (delta) {
                 partsReportedCount++;
-                progress.report(new vscode.LanguageModelTextPart(delta));
+                progress.report(new vscode2.LanguageModelTextPart(delta));
               }
               return false;
             }
@@ -29602,7 +29475,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
                   currentThinkingId = data.item.id;
                 }
                 partsReportedCount++;
-                const ThinkingPart = vscode.LanguageModelThinkingPart;
+                const ThinkingPart = vscode2.LanguageModelThinkingPart;
                 if (ThinkingPart) {
                   progress.report(new ThinkingPart(data.item.text || "", currentThinkingId));
                 }
@@ -29623,7 +29496,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
               if (delta && delta.length > 0) {
                 reasoningDeltasEmitted = true;
                 partsReportedCount++;
-                const ThinkingPart = vscode.LanguageModelThinkingPart;
+                const ThinkingPart = vscode2.LanguageModelThinkingPart;
                 if (ThinkingPart) {
                   progress.report(new ThinkingPart(delta, currentThinkingId));
                 }
@@ -29643,7 +29516,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
                 isReasoningActive = false;
                 if (!reasoningDeltasEmitted && typeof data.item.text === "string" && data.item.text.length > 0) {
                   partsReportedCount++;
-                  const ThinkingPart = vscode.LanguageModelThinkingPart;
+                  const ThinkingPart = vscode2.LanguageModelThinkingPart;
                   if (ThinkingPart) {
                     progress.report(new ThinkingPart(data.item.text, currentThinkingId));
                   }
@@ -29694,7 +29567,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
                 if (!emittedToolCallIds.has(call.id) && !isSyntheticVerificationTool(call.name, options.tools)) {
                   partsReportedCount++;
                   emittedToolCallIds.add(call.id);
-                  progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
+                  progress.report(new vscode2.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
                 }
                 pendingToolCalls.delete(idx);
                 return false;
@@ -29712,7 +29585,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
               emitThinking(thinking);
               if (text) {
                 partsReportedCount++;
-                progress.report(new vscode.LanguageModelTextPart(text));
+                progress.report(new vscode2.LanguageModelTextPart(text));
               }
             }
             if (choice.delta?.tool_calls) {
@@ -29799,7 +29672,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
         if (flushed.thinking) emitThinking(flushed.thinking);
         if (flushed.text) {
           partsReportedCount++;
-          progress.report(new vscode.LanguageModelTextPart(flushed.text));
+          progress.report(new vscode2.LanguageModelTextPart(flushed.text));
         }
       } catch (streamErr) {
         void reader.cancel().catch(() => {
@@ -29819,7 +29692,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
           }
           this.log(`Stream interrupted for model=${model.id}: ${errMsg}`);
           progress.report(
-            new vscode.LanguageModelTextPart(
+            new vscode2.LanguageModelTextPart(
               `
 
 *(Response stream interrupted: ${errMsg || "Connection closed by upstream OpenCode service"})*`
@@ -29850,15 +29723,15 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
 };
 
 // src/views/usageTreeProvider.ts
-var vscode2 = __toESM(require("vscode"), 1);
-var OpenCodeTreeItem = class extends vscode2.TreeItem {
-  constructor(label, collapsibleState = vscode2.TreeItemCollapsibleState.None, itemType = "status-item") {
+var vscode3 = __toESM(require("vscode"), 1);
+var OpenCodeTreeItem = class extends vscode3.TreeItem {
+  constructor(label, collapsibleState = vscode3.TreeItemCollapsibleState.None, itemType = "status-item") {
     super(label, collapsibleState);
     this.itemType = itemType;
   }
 };
 var OpenCodeUsageTreeProvider = class {
-  _onDidChangeTreeData = new vscode2.EventEmitter();
+  _onDidChangeTreeData = new vscode3.EventEmitter();
   onDidChangeTreeData = this._onDidChangeTreeData.event;
   usageData = null;
   usageError = null;
@@ -29919,29 +29792,29 @@ var OpenCodeUsageTreeProvider = class {
   getRootItems() {
     const quotaCategory = new OpenCodeTreeItem(
       "Go Subscription Quotas",
-      vscode2.TreeItemCollapsibleState.Expanded,
+      vscode3.TreeItemCollapsibleState.Expanded,
       "category"
     );
-    quotaCategory.iconPath = new vscode2.ThemeIcon("dashboard");
+    quotaCategory.iconPath = new vscode3.ThemeIcon("dashboard");
     const catalogCategory = new OpenCodeTreeItem(
       "Model Catalogs",
-      vscode2.TreeItemCollapsibleState.Expanded,
+      vscode3.TreeItemCollapsibleState.Expanded,
       "category"
     );
-    catalogCategory.iconPath = new vscode2.ThemeIcon("layers");
+    catalogCategory.iconPath = new vscode3.ThemeIcon("layers");
     const actionCategory = new OpenCodeTreeItem(
       "Quick Actions",
-      vscode2.TreeItemCollapsibleState.Expanded,
+      vscode3.TreeItemCollapsibleState.Expanded,
       "category"
     );
-    actionCategory.iconPath = new vscode2.ThemeIcon("zap");
+    actionCategory.iconPath = new vscode3.ThemeIcon("zap");
     return [quotaCategory, catalogCategory, actionCategory];
   }
   getCategoryChildren(element) {
     if (element.label === "Go Subscription Quotas") {
       if (this.usageError) {
-        const errItem = new OpenCodeTreeItem(this.usageError, vscode2.TreeItemCollapsibleState.None, "status-item");
-        errItem.iconPath = new vscode2.ThemeIcon("info");
+        const errItem = new OpenCodeTreeItem(this.usageError, vscode3.TreeItemCollapsibleState.None, "status-item");
+        errItem.iconPath = new vscode3.ThemeIcon("info");
         if (this.usageError.includes("API key")) {
           errItem.command = {
             command: "opencode-copilot-sync.setApiKey",
@@ -29951,8 +29824,8 @@ var OpenCodeUsageTreeProvider = class {
         return [errItem];
       }
       if (!this.usageData) {
-        const loadingItem = new OpenCodeTreeItem("Loading usage data...", vscode2.TreeItemCollapsibleState.None, "status-item");
-        loadingItem.iconPath = new vscode2.ThemeIcon("loading~spin");
+        const loadingItem = new OpenCodeTreeItem("Loading usage data...", vscode3.TreeItemCollapsibleState.None, "status-item");
+        loadingItem.iconPath = new vscode3.ThemeIcon("loading~spin");
         return [loadingItem];
       }
       const { rolling, weekly, monthly } = this.usageData;
@@ -29960,13 +29833,13 @@ var OpenCodeUsageTreeProvider = class {
         const resetsIn = formatRelativeTime(period.resetsAt);
         const item = new OpenCodeTreeItem(
           `${name}: ${period.percent}% (resets ${resetsIn})`,
-          vscode2.TreeItemCollapsibleState.None,
+          vscode3.TreeItemCollapsibleState.None,
           "quota-item"
         );
         const isLimited = period.status === "rate-limited";
-        item.iconPath = new vscode2.ThemeIcon(
+        item.iconPath = new vscode3.ThemeIcon(
           isLimited ? "warning" : "pass",
-          isLimited ? new vscode2.ThemeColor("charts.red") : new vscode2.ThemeColor("charts.green")
+          isLimited ? new vscode3.ThemeColor("charts.red") : new vscode3.ThemeColor("charts.green")
         );
         item.tooltip = `${name} limit: ${period.percent}% used. Status: ${period.status}. Resets at ${period.resetsAt}`;
         return item;
@@ -29980,47 +29853,47 @@ var OpenCodeUsageTreeProvider = class {
     if (element.label === "Model Catalogs") {
       const goItem = new OpenCodeTreeItem(
         `OpenCode Go: ${this.goModelCount} models`,
-        vscode2.TreeItemCollapsibleState.None,
+        vscode3.TreeItemCollapsibleState.None,
         "catalog-item"
       );
       goItem.description = "Flat-rate ($0/token)";
-      goItem.iconPath = new vscode2.ThemeIcon("package");
+      goItem.iconPath = new vscode3.ThemeIcon("package");
       const zenItem = new OpenCodeTreeItem(
         `Zen & Free Tier: ${this.zenModelCount} models`,
-        vscode2.TreeItemCollapsibleState.None,
+        vscode3.TreeItemCollapsibleState.None,
         "catalog-item"
       );
       zenItem.description = "Free & pay-as-you-go";
-      zenItem.iconPath = new vscode2.ThemeIcon("gift");
+      zenItem.iconPath = new vscode3.ThemeIcon("gift");
       return [goItem, zenItem];
     }
     if (element.label === "Quick Actions") {
       const syncItem = new OpenCodeTreeItem(
         "Sync Models to Copilot",
-        vscode2.TreeItemCollapsibleState.None,
+        vscode3.TreeItemCollapsibleState.None,
         "action-item"
       );
-      syncItem.iconPath = new vscode2.ThemeIcon("sync");
+      syncItem.iconPath = new vscode3.ThemeIcon("sync");
       syncItem.command = {
         command: "opencode-copilot-sync.sync",
         title: "Sync Models to Copilot"
       };
       const keyItem = new OpenCodeTreeItem(
         "Set API Key",
-        vscode2.TreeItemCollapsibleState.None,
+        vscode3.TreeItemCollapsibleState.None,
         "action-item"
       );
-      keyItem.iconPath = new vscode2.ThemeIcon("key");
+      keyItem.iconPath = new vscode3.ThemeIcon("key");
       keyItem.command = {
         command: "opencode-copilot-sync.setApiKey",
         title: "Set API Key"
       };
       const cfgItem = new OpenCodeTreeItem(
         "Open Models Config",
-        vscode2.TreeItemCollapsibleState.None,
+        vscode3.TreeItemCollapsibleState.None,
         "action-item"
       );
-      cfgItem.iconPath = new vscode2.ThemeIcon("settings-gear");
+      cfgItem.iconPath = new vscode3.ThemeIcon("settings-gear");
       cfgItem.command = {
         command: "opencode-copilot-sync.openConfig",
         title: "Open Models Config"
@@ -30033,18 +29906,18 @@ var OpenCodeUsageTreeProvider = class {
 
 // src/extension.ts
 async function activate(context) {
-  const outputChannel = vscode3.window.createOutputChannel("OpenCode Copilot Sync");
+  const outputChannel = vscode4.window.createOutputChannel("OpenCode Copilot Sync");
   context.subscriptions.push(outputChannel);
   outputChannel.appendLine(
-    `[Platform] OS: ${process.platform} (${process.arch}), Remote: ${vscode3.env.remoteName || "local"}, App: ${vscode3.env.appName}`
+    `[Platform] OS: ${process.platform} (${process.arch}), Remote: ${vscode4.env.remoteName || "local"}, App: ${vscode4.env.appName}`
   );
   const applyProxySetting = () => {
-    const proxyUrl = vscode3.workspace.getConfiguration("http").get("proxy");
+    const proxyUrl = vscode4.workspace.getConfiguration("http").get("proxy");
     setVSCodeProxyUrl(proxyUrl || void 0);
   };
   applyProxySetting();
   context.subscriptions.push(
-    vscode3.workspace.onDidChangeConfiguration((e) => {
+    vscode4.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("http.proxy")) {
         applyProxySetting();
       }
@@ -30052,32 +29925,19 @@ async function activate(context) {
   );
   const chatProvider = new OpenCodeChatProvider(context, outputChannel);
   context.subscriptions.push(
-    vscode3.lm.registerLanguageModelChatProvider("opencode", chatProvider)
+    vscode4.lm.registerLanguageModelChatProvider("opencode", chatProvider)
   );
   outputChannel.appendLine("Registered native OpenCode LanguageModelChatProvider with VS Code.");
-  void (async () => {
-    try {
-      const storedSecret = await context.secrets.get("opencode_api_key");
-      if (!storedSecret) {
-        const discoveredKey = await resolveApiKey(context.secrets, false);
-        if (discoveredKey) {
-          await context.secrets.store("opencode_api_key", discoveredKey);
-          outputChannel.appendLine("Seeded OpenCode API key into SecretStorage.");
-        }
-      }
-    } catch {
-    }
-  })();
   try {
-    const agentHostCfg = vscode3.workspace.getConfiguration("chat.agentHost");
+    const agentHostCfg = vscode4.workspace.getConfiguration("chat.agentHost");
     if (!agentHostCfg.get("byokModels.enabled", false)) {
-      await agentHostCfg.update("byokModels.enabled", true, vscode3.ConfigurationTarget.Global);
+      await agentHostCfg.update("byokModels.enabled", true, vscode4.ConfigurationTarget.Global);
       outputChannel.appendLine("Enabled chat.agentHost.byokModels.enabled for Agent Mode support.");
     }
   } catch (err) {
     outputChannel.appendLine(`Note: Could not set chat.agentHost.byokModels.enabled: ${err.message}`);
   }
-  const statusBarItem = vscode3.window.createStatusBarItem(vscode3.StatusBarAlignment.Right, 99);
+  const statusBarItem = vscode4.window.createStatusBarItem(vscode4.StatusBarAlignment.Right, 99);
   statusBarItem.text = "$(hubot) OpenCode";
   statusBarItem.tooltip = "Click to sync OpenCode models & refresh usage";
   statusBarItem.command = "opencode-copilot-sync.sync";
@@ -30085,7 +29945,7 @@ async function activate(context) {
   context.subscriptions.push(statusBarItem);
   const usageTreeProvider = new OpenCodeUsageTreeProvider(async () => resolveApiKey(context.secrets, false));
   context.subscriptions.push(
-    vscode3.window.registerTreeDataProvider("opencode-usage-view", usageTreeProvider)
+    vscode4.window.registerTreeDataProvider("opencode-usage-view", usageTreeProvider)
   );
   async function updateUsageMeter(apiKey) {
     try {
@@ -30097,7 +29957,7 @@ async function activate(context) {
       const res = await fetchOpenCodeUsage(key);
       if (res.ok) {
         statusBarItem.text = formatStatusBarText(res.usage);
-        const md = new vscode3.MarkdownString(formatUsageTooltip(res.usage));
+        const md = new vscode4.MarkdownString(formatUsageTooltip(res.usage));
         md.isTrusted = true;
         statusBarItem.tooltip = md;
         usageTreeProvider.setUsage(res.usage);
@@ -30114,21 +29974,28 @@ async function activate(context) {
   }
   async function performSync(interactive) {
     try {
-      const config2 = vscode3.workspace.getConfiguration("opencode");
+      const config2 = vscode4.workspace.getConfiguration("opencode");
       const includeGo = config2.get("includeGoModels", true);
       const includeZen = config2.get("includeZenModels", true);
       const shouldPrompt = interactive && !process.env.CI;
-      const apiKey = await resolveApiKey(context.secrets, shouldPrompt, shouldPrompt ? vscode3.window : void 0);
+      const apiKey = await resolveApiKey(context.secrets, shouldPrompt, shouldPrompt ? vscode4.window : void 0);
       if (!apiKey) {
         if (interactive) {
-          vscode3.window.showWarningMessage("OpenCode sync cancelled: No API key provided.");
+          vscode4.window.showWarningMessage("OpenCode sync cancelled: No API key provided.");
         } else {
-          vscode3.window.showInformationMessage(
-            "OpenCode Copilot Sync: Set your API key to sync OpenCode models to Copilot.",
-            "Set API Key"
-          ).then((choice) => {
+          vscode4.window.showInformationMessage(
+            "OpenCode Copilot Sync: Enter your OpenCode API key to enable flat-rate Go and Zen models in Copilot.",
+            "Set API Key",
+            "Get API Key (opencode.ai)"
+          ).then(async (choice) => {
             if (choice === "Set API Key") {
-              vscode3.commands.executeCommand("opencode-copilot-sync.setApiKey");
+              await vscode4.commands.executeCommand("opencode-copilot-sync.setApiKey");
+            } else if (choice === "Get API Key (opencode.ai)") {
+              try {
+                await vscode4.env.openExternal(vscode4.Uri.parse("https://opencode.ai"));
+              } catch {
+              }
+              await vscode4.commands.executeCommand("opencode-copilot-sync.setApiKey");
             }
           });
         }
@@ -30136,12 +30003,12 @@ async function activate(context) {
       }
       statusBarItem.text = "$(sync~spin) OpenCode";
       statusBarItem.tooltip = "Syncing OpenCode models...";
-      const storagePath = context.globalStorageUri?.fsPath;
+      const storagePath = context.globalStorageUri.fsPath;
       let syncResult = null;
       if (interactive) {
-        await vscode3.window.withProgress(
+        await vscode4.window.withProgress(
           {
-            location: vscode3.ProgressLocation.Notification,
+            location: vscode4.ProgressLocation.Notification,
             title: "OpenCode: Fetching models and syncing to Copilot...",
             cancellable: false
           },
@@ -30150,7 +30017,7 @@ async function activate(context) {
             outputChannel.appendLine(
               `Synced ${syncResult.totalCount} unified OpenCode models (${syncResult.goCount} Go + ${syncResult.zenCount} Zen) to native provider.`
             );
-            vscode3.window.showInformationMessage(
+            vscode4.window.showInformationMessage(
               `Synced ${syncResult.totalCount} OpenCode models (${syncResult.goCount} Go flat-rate + ${syncResult.zenCount} Zen exclusive) to Copilot!`
             );
           }
@@ -30185,35 +30052,35 @@ async function activate(context) {
     } catch (err) {
       outputChannel.appendLine(`[Sync Error] ${err.message}`);
       if (interactive) {
-        vscode3.window.showErrorMessage(`OpenCode sync failed: ${err.message}`);
+        vscode4.window.showErrorMessage(`OpenCode sync failed: ${err.message}`);
       }
       statusBarItem.text = "$(hubot) OpenCode";
       statusBarItem.tooltip = "OpenCode models synced with Copilot (click to re-sync)";
     }
   }
   context.subscriptions.push(
-    vscode3.commands.registerCommand("opencode-copilot-sync.sync", () => performSync(true)),
-    vscode3.commands.registerCommand("opencode-copilot-sync.refreshUsage", async () => {
+    vscode4.commands.registerCommand("opencode-copilot-sync.sync", () => performSync(true)),
+    vscode4.commands.registerCommand("opencode-copilot-sync.refreshUsage", async () => {
       await Promise.all([updateUsageMeter(), usageTreeProvider.refresh()]);
     }),
-    vscode3.commands.registerCommand("opencode-copilot-sync.setApiKey", async () => {
-      const key = await promptAndSetApiKey(context.secrets, vscode3.window);
+    vscode4.commands.registerCommand("opencode-copilot-sync.setApiKey", async () => {
+      const key = await promptAndSetApiKey(context.secrets, vscode4.window);
       if (key) {
-        vscode3.window.showInformationMessage("OpenCode API Key updated! Syncing models now...");
+        vscode4.window.showInformationMessage("OpenCode API Key saved! Syncing models to Copilot...");
         await performSync(true);
       }
     }),
-    vscode3.commands.registerCommand("opencode-copilot-sync.openConfig", async () => {
-      const p = getChatLanguageModelsPath(context.globalStorageUri?.fsPath);
+    vscode4.commands.registerCommand("opencode-copilot-sync.openConfig", async () => {
+      const p = getChatLanguageModelsPath(context.globalStorageUri.fsPath);
       try {
-        const doc = await vscode3.workspace.openTextDocument(p);
-        await vscode3.window.showTextDocument(doc);
+        const doc = await vscode4.workspace.openTextDocument(p);
+        await vscode4.window.showTextDocument(doc);
       } catch (err) {
-        vscode3.window.showErrorMessage(`Unable to open config: ${err.message}`);
+        vscode4.window.showErrorMessage(`Unable to open config: ${err.message}`);
       }
     })
   );
-  const config = vscode3.workspace.getConfiguration("opencode");
+  const config = vscode4.workspace.getConfiguration("opencode");
   const autoSync = config.get("autoSyncOnStartup", true);
   if (autoSync) {
     setTimeout(() => {

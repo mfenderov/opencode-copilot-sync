@@ -36,24 +36,6 @@ export async function activate(context: vscode.ExtensionContext) {
   );
   outputChannel.appendLine('Registered native OpenCode LanguageModelChatProvider with VS Code.');
 
-  // Automatically discover and seed API key into SecretStorage if not already set.
-  // Fire-and-forget: this walks multiple candidate paths (and WSL share enumeration on
-  // Windows) which can be slow on network/remote filesystems, so it must never block
-  // extension activation. provideLanguageModelChatResponse() re-resolves the key itself
-  // on first use, so a request arriving before this completes still works correctly.
-  void (async () => {
-    try {
-      const storedSecret = await context.secrets.get('opencode_api_key');
-      if (!storedSecret) {
-        const discoveredKey = await resolveApiKey(context.secrets, false);
-        if (discoveredKey) {
-          await context.secrets.store('opencode_api_key', discoveredKey);
-          outputChannel.appendLine('Seeded OpenCode API key into SecretStorage.');
-        }
-      }
-    } catch {}
-  })();
-
   // Auto-enable VS Code's experimental Agent Host BYOK bridge so custom models appear in Agent Mode
   try {
     const agentHostCfg = vscode.workspace.getConfiguration('chat.agentHost');
@@ -120,12 +102,18 @@ export async function activate(context: vscode.ExtensionContext) {
         } else {
           vscode.window
             .showInformationMessage(
-              'OpenCode Copilot Sync: Set your API key to sync OpenCode models to Copilot.',
-              'Set API Key'
+              'OpenCode Copilot Sync: Enter your OpenCode API key to enable flat-rate Go and Zen models in Copilot.',
+              'Set API Key',
+              'Get API Key (opencode.ai)'
             )
-            .then((choice) => {
+            .then(async (choice) => {
               if (choice === 'Set API Key') {
-                vscode.commands.executeCommand('opencode-copilot-sync.setApiKey');
+                await vscode.commands.executeCommand('opencode-copilot-sync.setApiKey');
+              } else if (choice === 'Get API Key (opencode.ai)') {
+                try {
+                  await vscode.env.openExternal(vscode.Uri.parse('https://opencode.ai'));
+                } catch {}
+                await vscode.commands.executeCommand('opencode-copilot-sync.setApiKey');
               }
             });
         }
@@ -135,7 +123,7 @@ export async function activate(context: vscode.ExtensionContext) {
       statusBarItem.text = '$(sync~spin) OpenCode';
       statusBarItem.tooltip = 'Syncing OpenCode models...';
 
-      const storagePath = context.globalStorageUri?.fsPath;
+      const storagePath = context.globalStorageUri.fsPath;
 
       let syncResult: Awaited<ReturnType<typeof syncOpenCodeModels>> | null = null;
       if (interactive) {
@@ -204,12 +192,12 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('opencode-copilot-sync.setApiKey', async () => {
       const key = await promptAndSetApiKey(context.secrets, vscode.window);
       if (key) {
-        vscode.window.showInformationMessage('OpenCode API Key updated! Syncing models now...');
+        vscode.window.showInformationMessage('OpenCode API Key saved! Syncing models to Copilot...');
         await performSync(true);
       }
     }),
     vscode.commands.registerCommand('opencode-copilot-sync.openConfig', async () => {
-      const p = getChatLanguageModelsPath(context.globalStorageUri?.fsPath);
+      const p = getChatLanguageModelsPath(context.globalStorageUri.fsPath);
       try {
         const doc = await vscode.workspace.openTextDocument(p);
         await vscode.window.showTextDocument(doc);

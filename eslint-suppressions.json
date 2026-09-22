@@ -1,27 +1,4 @@
 {
-  "src/auth.ts": {
-    "@typescript-eslint/no-explicit-any": {
-      "count": 1
-    },
-    "@typescript-eslint/no-unsafe-argument": {
-      "count": 1
-    },
-    "@typescript-eslint/no-unsafe-assignment": {
-      "count": 6
-    },
-    "@typescript-eslint/no-unsafe-call": {
-      "count": 5
-    },
-    "@typescript-eslint/no-unsafe-member-access": {
-      "count": 17
-    },
-    "@typescript-eslint/no-unsafe-return": {
-      "count": 2
-    },
-    "@typescript-eslint/prefer-nullish-coalescing": {
-      "count": 7
-    }
-  },
   "src/config.ts": {
     "@typescript-eslint/no-explicit-any": {
       "count": 7
@@ -58,9 +35,6 @@
     "@typescript-eslint/no-explicit-any": {
       "count": 3
     },
-    "@typescript-eslint/no-unnecessary-condition": {
-      "count": 2
-    },
     "@typescript-eslint/no-unsafe-member-access": {
       "count": 4
     },
@@ -80,9 +54,6 @@
     }
   },
   "src/provider.ts": {
-    "@typescript-eslint/no-empty-function": {
-      "count": 1
-    },
     "@typescript-eslint/no-explicit-any": {
       "count": 34
     },
@@ -108,7 +79,7 @@
       "count": 4
     },
     "@typescript-eslint/prefer-nullish-coalescing": {
-      "count": 40
+      "count": 37
     },
     "@typescript-eslint/prefer-optional-chain": {
       "count": 1

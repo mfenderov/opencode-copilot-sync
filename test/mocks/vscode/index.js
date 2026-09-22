@@ -67,3 +67,18 @@ export class TreeItem {
   }
 }
 
+export const env = {
+  openExternal: async () => true,
+  remoteName: undefined,
+  appName: 'Visual Studio Code',
+};
+
+export const Uri = {
+  parse: (str) => ({
+    toString: () => str,
+    path: str,
+    scheme: str.split(':')[0],
+  }),
+};
+
+

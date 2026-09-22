@@ -7,7 +7,6 @@ import os from 'node:os';
 import { syncOpenCodeModels } from '../out/syncer.js';
 import { readChatLanguageModels, writeProvidersToConfig } from '../out/syncer.js';
 import { mergeChatLanguageModels } from '../out/config.js';
-import { getKeyFromExistingConfig } from '../out/auth.js';
 
 test('E2E Integration: syncOpenCodeModels protects config on empty/failed API responses', async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-e2e-'));
@@ -59,10 +58,6 @@ test('E2E Integration: syncOpenCodeModels protects config on empty/failed API re
   const current = JSON.parse(fs.readFileSync(testConfigFile, 'utf-8'));
   assert.equal(current[0].models.length, 1);
   assert.equal(current[0].models[0].id, 'deepseek-v4-flash');
-
-  // Verify key recovery from config
-  const recoveredKey = getKeyFromExistingConfig(testConfigFile);
-  assert.equal(recoveredKey, 'sk-existing-secret-key-999');
 
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });

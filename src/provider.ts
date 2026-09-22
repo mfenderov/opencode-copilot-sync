@@ -1,7 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { getStoredOpenCodeKey, getKeyFromExistingConfig } from './auth.js';
 import { isFreeTierModel } from './fetcher.js';
 import { fetchWithRetry } from './network.js';
 
@@ -700,23 +699,15 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
   ): Promise<void> {
     const apiKey =
       (await this.context.secrets.get('opencode_api_key')) ||
-      getStoredOpenCodeKey(this.context.globalStorageUri.fsPath) ||
-      getStoredOpenCodeKey() ||
-      getKeyFromExistingConfig(this.context.globalStorageUri.fsPath) ||
-      getKeyFromExistingConfig();
+      (process.env.OPENCODE_API_KEY && process.env.OPENCODE_API_KEY.trim().length > 0
+        ? process.env.OPENCODE_API_KEY.trim()
+        : undefined);
 
     if (!apiKey) {
       throw new Error(
         'OpenCode API key not found. Please run "OpenCode: Set API Key" command to configure your key.'
       );
     }
-
-    // Persist discovered key into SecretStorage for fast subsequent lookups
-    this.context.secrets.get('opencode_api_key').then((stored) => {
-      if (!stored && apiKey) {
-        this.context.secrets.store('opencode_api_key', apiKey).then(undefined, () => {});
-      }
-    });
 
     // Format messages for OpenAI Chat Completions API
     const formattedMessages: any[] = [];
