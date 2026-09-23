@@ -14,33 +14,28 @@ A lightweight VS Code extension that automatically synchronizes model catalogs f
 
 ## ✨ Features
 
-- **🔄 Automatic Background Sync**: Activates seamlessly on `onStartupFinished` when VS Code opens or window reloads.
-- **📊 Usage & Quotas Sidebar**: Live view in the Activity Bar showing real-time Go subscription limits (5-hour rolling, weekly, monthly countdowns), model catalog counts, and quick actions.
-- **🛡️ Silent Stall Auto-Recovery**: Automatically detects zero-byte stream hangs on upstream proxy connections and recovers with a fresh request ID before erroring.
-- **🎯 Single Unified Provider (`OpenCode`)**: All Go, Zen Free, and Zen-exclusive models appear together under a single clean "OpenCode" entry in Copilot's model picker with zero duplicate clutter.
-- **💰 Smart Cost-Optimized Routing**:
-  - Any model covered by the **OpenCode Go flat subscription** (e.g. DeepSeek V4, GLM-5.3, Kimi K3, Qwen 3.8, MiniMax M3) routes to `/zen/go/v1/chat/completions` ($0 per-token).
-  - Free-tier models (`deepseek-v4-flash-free`, `mimo-v2.5-free`, `nemotron-3-ultra-free`, `big-pickle`) and Zen-exclusive models (Claude, GPT, etc.) route to `/zen/v1/chat/completions`.
-  - In cases of overlap, Go flat-rate takes priority—protecting you from paying per-token charges for models already included in your Go plan.
-- **🔑 Secure Credential Storage**: Stores your API key safely in VS Code's encrypted OS credential vault (`context.secrets`) without scanning arbitrary files on disk. If missing, prompts securely with direct links to [opencode.ai](https://opencode.ai).
-- **⚡ Enriched Capabilities**: Configures each model with token limits, vision flags, tool calling, and thinking/reasoning effort levels (`low`, `medium`, `high`, `xhigh`, `max`).
-- **🛡️ Router Compliance**: Injects the required `x-opencode-session` header on every request to ensure OpenCode's routing and prompt caching function correctly without `MissingSessionID` errors. Live chat requests get a stable ID reused for the whole conversation (not regenerated per turn), so prompt caching actually kicks in.
-- **🔒 Safe & Non-Destructive**: Merges into `chatLanguageModels.json` while preserving your other custom endpoints (like internal gateways or LiteLLM) and creating rolling timestamped backups.
-- **💻 Cross-Platform**: Works on macOS, Linux, Windows, and Windows WSL (configured with `extensionKind: ["ui", "workspace"]`).
+- **Unified model catalog:** Automatically syncs OpenCode Go and Zen models under one **OpenCode** provider, preferring the Go flat subscription when a model is covered.
+- **Secure credentials:** Stores API keys in VS Code's encrypted SecretStorage and supports `OPENCODE_API_KEY` for automation.
+- **Reliable requests:** Supports tools, vision, and reasoning controls, and recovers automatically from stalled streams.
+- **Usage at a glance:** Shows Go subscription quotas and reset timers in the OpenCode sidebar.
+- **Safe mirroring:** Preserves unrelated providers and destination-local secrets when syncing VS Code profiles and the associated WSL distro.
 
 ---
 
 ## 🚀 Quick Install
 
-### Option A: Install from GitHub Release (Recommended)
-1. Download `opencode-copilot-sync-0.17.4.vsix` from the [Latest Release](https://github.com/mfenderov/opencode-copilot-sync/releases/latest).
-2. Install via terminal:
-   ```bash
-   code --install-extension opencode-copilot-sync-0.17.4.vsix
-   ```
-   Or in VS Code: Extensions view (`Ctrl+Shift+X` / `Cmd+Shift+X`) → `...` menu → **Install from VSIX...**
+### Install from the VS Code Marketplace (Recommended)
 
-### Option B: Build from Source
+Search for **OpenCode Models for Copilot** in the Extensions view, or run:
+
+```bash
+code --install-extension mfenderov.opencode-copilot-sync
+```
+
+For a manual install, download a `.vsix` from the [Latest Release](https://github.com/mfenderov/opencode-copilot-sync/releases/latest) and choose **Install from VSIX...** in the Extensions view.
+
+### Build from Source
+
 ```bash
 git clone https://github.com/mfenderov/opencode-copilot-sync.git
 cd opencode-copilot-sync
@@ -106,11 +101,7 @@ This is a confirmed upstream VS Code limitation, not a bug in this extension: un
 
 ## 🛠️ How It Works Under the Hood
 
-VS Code Copilot natively reads custom OpenAI-compatible models from `chatLanguageModels.json` under the `customendpoint` vendor. VS Code file-watches this JSON and immediately updates Copilot's model picker whenever the file changes.
-
-This extension connects to OpenCode's catalog APIs (`/zen/go/v1/models` and `/zen/v1/models`), transforms them into valid `customendpoint` specs with the proper `x-opencode-session` header, and atomically merges them into the current user's existing VS Code profiles and any explicitly associated WSL target.
-
-In addition, the extension registers a **native** `opencode` Language Model Chat Provider directly with VS Code's API (no `chatLanguageModels.json` involved) wherever it is running — this is the primary path, handled by the extension's own request/retry/error logic. Compatibility mirrors merge only the OpenCode provider into each destination and preserve unrelated providers. The local primary profile's duplicate custom endpoint is purged because the native provider already serves it. Other targets are updated only when their existing OpenCode entry contains that target's VS Code SecretStorage reference; raw API keys are never serialized or copied between profiles.
+The extension registers a native **OpenCode** chat provider for requests and maintains optional `chatLanguageModels.json` mirrors for profile compatibility. It fetches OpenCode's model catalogs, sends the required session header with chat requests, and merges only its own entries; unrelated providers are preserved, and raw API keys are never copied between profiles.
 
 ---
 
