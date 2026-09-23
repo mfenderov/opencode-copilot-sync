@@ -2,7 +2,7 @@
   "name": "opencode-copilot-sync",
   "displayName": "OpenCode Models for Copilot",
   "description": "Automatically sync OpenCode Zen & Go models to GitHub Copilot in VS Code",
-  "version": "0.18.0",
+  "version": "0.18.1",
   "type": "module",
   "publisher": "mfenderov",
   "license": "MIT",

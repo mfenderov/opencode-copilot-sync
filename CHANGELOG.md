@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.18.1 - 2026-09-23
+#### Documentation
+- (**readme**) trim overview and fix install guidance - (1f15981) - Mark Fenderov
+
+- - -
+
 ## v0.18.0 - 2026-09-23
 #### Features
 - (**auth**) require explicit API key entry and remove filesystem scanning - (6ef8bc4) - Mark Fenderov
