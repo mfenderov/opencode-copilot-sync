@@ -2,6 +2,15 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.18.0 - 2026-09-23
+#### Features
+- (**auth**) require explicit API key entry and remove filesystem scanning - (6ef8bc4) - Mark Fenderov
+#### Bug Fixes
+- (**ci**) make target tests platform-aware - (9c00164) - Mark Fenderov
+- (**sync**) secure isolated mirrors and refactor sync/provider - (ddf618a) - Mark Fenderov
+
+- - -
+
 ## v0.17.4 - 2026-09-21
 #### Bug Fixes
 - (**provider**) harden Muse Responses API streaming and multi-turn tool calling - (c728456) - Mark Fenderov
