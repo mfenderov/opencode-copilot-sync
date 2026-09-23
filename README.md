@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![GitHub Release](https://img.shields.io/github/v/release/mfenderov/opencode-copilot-sync)](https://github.com/mfenderov/opencode-copilot-sync/releases)
 
-A lightweight (7 KB, zero runtime dependencies) VS Code extension that automatically synchronizes model catalogs from **OpenCode Go** and **OpenCode Zen** into GitHub Copilot in VS Code under a **single unified provider** with **smart cost-optimized routing**.
+A lightweight VS Code extension that automatically synchronizes model catalogs from **OpenCode Go** and **OpenCode Zen** into GitHub Copilot in VS Code under a **single unified provider** with **smart cost-optimized routing**. Its HTTP client is bundled into the extension package.
 
 ---
 
@@ -33,10 +33,10 @@ A lightweight (7 KB, zero runtime dependencies) VS Code extension that automatic
 ## 🚀 Quick Install
 
 ### Option A: Install from GitHub Release (Recommended)
-1. Download `opencode-copilot-sync-0.1.2.vsix` from the [Latest Release](https://github.com/mfenderov/opencode-copilot-sync/releases/latest).
+1. Download `opencode-copilot-sync-0.17.4.vsix` from the [Latest Release](https://github.com/mfenderov/opencode-copilot-sync/releases/latest).
 2. Install via terminal:
    ```bash
-   code --install-extension opencode-copilot-sync-0.1.2.vsix
+   code --install-extension opencode-copilot-sync-0.17.4.vsix
    ```
    Or in VS Code: Extensions view (`Ctrl+Shift+X` / `Cmd+Shift+X`) → `...` menu → **Install from VSIX...**
 
@@ -44,10 +44,16 @@ A lightweight (7 KB, zero runtime dependencies) VS Code extension that automatic
 ```bash
 git clone https://github.com/mfenderov/opencode-copilot-sync.git
 cd opencode-copilot-sync
-npm install
+npm ci
 npm run package
 code --install-extension opencode-copilot-sync-*.vsix
 ```
+
+### Dependencies
+
+- Requires VS Code `1.125` or later.
+- Building, testing, and packaging from source requires Node.js and npm. `npm ci` installs the locked runtime and development dependencies, including `undici` and the build/test tools.
+- `npm run package` bundles the HTTP client into the VSIX; end users do not need to install a separate runtime package.
 
 ---
 
@@ -60,6 +66,7 @@ Customize behavior via VS Code Settings (`Cmd+,` / `Ctrl+,` search for `opencode
 | `opencode.autoSyncOnStartup` | `true` | Automatically sync models on VS Code launch or window reload. |
 | `opencode.includeGoModels` | `true` | Include models from the OpenCode Go subscription catalog. |
 | `opencode.includeZenModels` | `true` | Include Zen models (Free tier + Zen exclusive models). |
+| `opencode.additionalSyncTargets` | `[]` | Additional absolute `chatLanguageModels.json` paths to mirror to. Use this to opt in to another user profile or a sibling WSL distro. |
 | `opencode.streamIdleTimeoutSeconds` | `90` | Watchdog timeout in seconds before auto-recovering or alerting on an idle stream. |
 
 ---
@@ -81,12 +88,13 @@ Customize behavior via VS Code Settings (`Cmd+,` / `Ctrl+,` search for `opencode
 
 ## 🪟 Windows & WSL Usage
 
-- **VS Code Remote - WSL**: Because GitHub Copilot runs on the Windows UI side, the extension is registered to run on the UI host and updates Windows `%APPDATA%\Code\User\chatLanguageModels.json`.
-- If your OpenCode key is stored inside WSL, you can simply run **`OpenCode: Set API Key`** once in VS Code to save it to your Windows credential vault.
+- The active extension stores its API key in that VS Code extension host's encrypted `SecretStorage`. An explicitly supplied `OPENCODE_API_KEY` environment variable is also supported (commonly for CI); the extension and E2E tests do not scan OpenCode `auth.json` files.
+- Automatic compatibility targets are limited to the current OS user's existing VS Code profiles and the WSL distro explicitly associated with the current VS Code remote window. Other user homes and sibling distros are not discovered. Add exact absolute config-file paths to `opencode.additionalSyncTargets` to opt in to more targets.
+- A compatibility mirror never receives the extension's raw API key. VS Code resolves custom endpoint keys through a target-local SecretStorage reference such as `${input:chat.lm.secret.<id>}`. A profile without its own VS Code-generated reference is skipped and reported in the **OpenCode Copilot Sync** output channel. To enable that mirror, configure OpenCode in that profile through **Manage Language Models** and enter the key there; the next sync will preserve and reuse that profile's reference.
 
 ### Remote-SSH, Dev Containers & GitHub Codespaces
 
-The extension's `extensionKind: ["ui", "workspace"]` setting asks VS Code to activate it on the same host as Copilot Chat in every remote topology, so Remote-SSH, Dev Containers, and Codespaces are expected to work the same way as WSL. These topologies aren't part of the automated test matrix yet (only WSL is), so treat them as **best-effort**: if sync doesn't pick up your models, run **`OpenCode: Sync Models to Copilot`** manually and check the **OpenCode** output channel (`View → Output → OpenCode`) for the logged `Remote: <name>` line, which confirms which host the extension actually activated on.
+The extension's `extensionKind: ["ui", "workspace"]` setting asks VS Code to activate it on the same host as Copilot Chat in every remote topology, so Remote-SSH, Dev Containers, and Codespaces are expected to work the same way as WSL. These topologies aren't part of the automated test matrix yet (only WSL is), so treat them as **best-effort**: if sync doesn't pick up your models, run **`OpenCode: Sync Models to Copilot`** manually and check the **OpenCode Copilot Sync** output channel (`View → Output → OpenCode Copilot Sync`) for the logged `Remote: <name>` line, which confirms which host the extension actually activated on.
 
 ### Known limitation: Agents window under Remote-WSL
 
@@ -100,9 +108,9 @@ This is a confirmed upstream VS Code limitation, not a bug in this extension: un
 
 VS Code Copilot natively reads custom OpenAI-compatible models from `chatLanguageModels.json` under the `customendpoint` vendor. VS Code file-watches this JSON and immediately updates Copilot's model picker whenever the file changes.
 
-This extension connects to OpenCode's catalog APIs (`/zen/go/v1/models` and `/zen/v1/models`), transforms them into valid `customendpoint` specs with the proper `x-opencode-session` header, and atomically merges them into your User configuration.
+This extension connects to OpenCode's catalog APIs (`/zen/go/v1/models` and `/zen/v1/models`), transforms them into valid `customendpoint` specs with the proper `x-opencode-session` header, and atomically merges them into the current user's existing VS Code profiles and any explicitly associated WSL target.
 
-In addition, the extension registers a **native** `opencode` Language Model Chat Provider directly with VS Code's API (no `chatLanguageModels.json` involved) wherever it's actually running — this is the primary path, handled entirely by our own request/retry/error-handling code. The `customendpoint` mirror described above exists only to guarantee visibility on machines/profiles the extension isn't installed on (a separate Windows box, a Remote-WSL server, a Code - Insiders install, etc.). To avoid two near-identical entries for the same models on the one install where the native vendor is already active, the extension does **not** write (and actively purges) the `customendpoint` OpenCode entry from that install's own local `chatLanguageModels.json` — it keeps writing it everywhere else.
+In addition, the extension registers a **native** `opencode` Language Model Chat Provider directly with VS Code's API (no `chatLanguageModels.json` involved) wherever it is running — this is the primary path, handled by the extension's own request/retry/error logic. Compatibility mirrors merge only the OpenCode provider into each destination and preserve unrelated providers. The local primary profile's duplicate custom endpoint is purged because the native provider already serves it. Other targets are updated only when their existing OpenCode entry contains that target's VS Code SecretStorage reference; raw API keys are never serialized or copied between profiles.
 
 ---
 

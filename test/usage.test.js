@@ -1,6 +1,14 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fetchOpenCodeUsage, formatStatusBarText, formatUsageTooltip } from '../out/usage.js';
+
+const originalOfflineMode = process.env.OPENCODE_OFFLINE;
+delete process.env.OPENCODE_OFFLINE;
+
+after(() => {
+  if (originalOfflineMode === undefined) delete process.env.OPENCODE_OFFLINE;
+  else process.env.OPENCODE_OFFLINE = originalOfflineMode;
+});
 
 test('formatStatusBarText formats weekly usage percentage', () => {
   const usage = {
@@ -62,4 +70,33 @@ test('fetchOpenCodeUsage handles 403 non-subscription Zen key gracefully', async
   const res = await fetchOpenCodeUsage('sk-test', mockFetch);
   assert.equal(res.ok, false);
   assert.equal(res.reason, 'no-subscription');
+});
+
+test('fetchOpenCodeUsage does not call the API while OPENCODE_OFFLINE is enabled', async () => {
+  const previousOffline = process.env.OPENCODE_OFFLINE;
+  process.env.OPENCODE_OFFLINE = '1';
+  let calls = 0;
+
+  try {
+    const result = await fetchOpenCodeUsage('sk-test', async () => {
+      calls++;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          usage: {
+            rolling: { status: 'ok', percent: 0, resetsAt: '' },
+            weekly: { status: 'ok', percent: 0, resetsAt: '' },
+            monthly: { status: 'ok', percent: 0, resetsAt: '' },
+          },
+        }),
+      };
+    });
+
+    assert.deepEqual(result, { ok: false, reason: 'network' });
+    assert.equal(calls, 0);
+  } finally {
+    if (previousOffline === undefined) delete process.env.OPENCODE_OFFLINE;
+    else process.env.OPENCODE_OFFLINE = previousOffline;
+  }
 });

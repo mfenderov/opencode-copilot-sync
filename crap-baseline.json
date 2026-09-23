@@ -1,137 +1,87 @@
 {
-  "src/syncer.ts:234:getAllChatLanguageModelsPaths": {
-    "crap": 1433.48,
-    "complexity": 49,
-    "coverage": 0.168
-  },
-  "src/syncer.ts:66:syncWslMirror": {
-    "crap": 768.62,
-    "complexity": 29,
-    "coverage": 0.042
-  },
-  "src/syncer.ts:153:<anonymous>": {
-    "crap": 620.51,
-    "complexity": 26,
-    "coverage": 0.042
-  },
-  "src/syncer.ts:622:syncOpenCodeModels": {
-    "crap": 367.55,
-    "complexity": 19,
-    "coverage": 0.012
-  },
-  "src/provider.ts:1083:<anonymous>": {
-    "crap": 167.21,
+  "src/provider-stream.ts:72:<anonymous>": {
+    "crap": 157.86,
     "complexity": 111,
-    "coverage": 0.834
-  },
-  "src/fetcher.ts:56:fetchModelsDevMetadata": {
-    "crap": 143.66,
-    "complexity": 12,
-    "coverage": 0.029
-  },
-  "src/extension.ts:91:performSync": {
-    "crap": 110,
-    "complexity": 10,
-    "coverage": 0
-  },
-  "src/provider.ts:844:streamResponse": {
-    "crap": 104.7,
-    "complexity": 87,
-    "coverage": 0.867
+    "coverage": 0.844
   },
   "src/enricher.ts:61:enrichModel": {
     "crap": 68.94,
     "complexity": 65,
     "coverage": 0.902
   },
-  "src/extension.ts:64:updateUsageMeter": {
+  "src/provider-stream.ts:19:consumeProviderStream": {
+    "crap": 42.61,
+    "complexity": 37,
+    "coverage": 0.84
+  },
+  "src/extension.ts:71:updateUsageMeter": {
     "crap": 42,
     "complexity": 6,
     "coverage": 0
   },
-  "src/syncer.ts:9:getChatLanguageModelsPath": {
-    "crap": 38.64,
-    "complexity": 13,
-    "coverage": 0.467
-  },
   "src/fetcher.ts:145:checkZenBalance": {
-    "crap": 38.52,
-    "complexity": 6,
-    "coverage": 0.033
+    "crap": 36.43,
+    "complexity": 7,
+    "coverage": 0.156
   },
-  "src/fetcher.ts:3:fetchOpenCodeModels": {
-    "crap": 38.4,
-    "complexity": 6,
-    "coverage": 0.034
+  "src/provider.ts:412:streamResponse": {
+    "crap": 33.4,
+    "complexity": 33,
+    "coverage": 0.928
   },
-  "src/provider.ts:693:provideLanguageModelChatResponse": {
-    "crap": 36.23,
-    "complexity": 35,
-    "coverage": 0.9
-  },
-  "src/extension.ts:9:activate": {
+  "src/extension.ts:16:activate": {
     "crap": 30,
     "complexity": 5,
     "coverage": 0
   },
-  "src/syncer.ts:478:safeWriteFileSync": {
-    "crap": 21.45,
-    "complexity": 15,
-    "coverage": 0.694
+  "src/provider-protocol.ts:324:formatProviderMessages": {
+    "crap": 25.01,
+    "complexity": 25,
+    "coverage": 0.973
   },
-  "src/extension.ts:109:<anonymous>": {
-    "crap": 20,
-    "complexity": 4,
-    "coverage": 0
+  "src/usage.ts:21:fetchOpenCodeUsage": {
+    "crap": 18.48,
+    "complexity": 18,
+    "coverage": 0.886
   },
-  "src/usage.ts:19:fetchOpenCodeUsage": {
-    "crap": 17.56,
-    "complexity": 17,
-    "coverage": 0.875
+  "src/fetcher.ts:56:fetchModelsDevMetadata": {
+    "crap": 18.33,
+    "complexity": 12,
+    "coverage": 0.647
   },
   "src/enricher.ts:37:<anonymous>": {
     "crap": 17,
     "complexity": 17,
     "coverage": 1
   },
-  "src/provider.ts:478:buildResponsesInput": {
+  "src/provider-protocol.ts:463:buildResponsesInput": {
     "crap": 17,
     "complexity": 17,
     "coverage": 1
   },
-  "src/provider.ts:612:<anonymous>": {
-    "crap": 12.02,
-    "complexity": 12,
-    "coverage": 0.952
+  "src/provider-protocol.ts:203:getReasoningEffort": {
+    "crap": 16,
+    "complexity": 16,
+    "coverage": 1
   },
-  "src/extension.ts:157:<anonymous>": {
-    "crap": 12,
-    "complexity": 3,
-    "coverage": 0
-  },
-  "src/syncer.ts:550:writeProvidersToConfig": {
-    "crap": 11.07,
-    "complexity": 11,
-    "coverage": 0.915
+  "src/sync-files.ts:80:safeWriteFileSync": {
+    "crap": 15.02,
+    "complexity": 15,
+    "coverage": 0.957
   },
   "src/fetcher.ts:97:isFreeTierModel": {
     "crap": 11.02,
     "complexity": 11,
     "coverage": 0.95
   },
-  "src/provider.ts:440:sanitizeResponsesInput": {
+  "src/provider-protocol.ts:425:sanitizeResponsesInput": {
     "crap": 11.02,
     "complexity": 11,
     "coverage": 0.946
   },
-  "src/config.ts:29:isOpenCodeLegacyOrCustomEntry": {
-    "crap": 11,
+  "src/provider.ts:275:<anonymous>": {
+    "crap": 11.01,
     "complexity": 11,
-    "coverage": 1
-  },
-  "src/syncer.ts:164:<anonymous>": {
-    "crap": 10.92,
-    "complexity": 3,
-    "coverage": 0.042
+    "coverage": 0.953
   }
 }

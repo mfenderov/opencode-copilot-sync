@@ -1,3 +1,5 @@
+import { isOfflineMode } from './network.js';
+
 export interface GoUsagePeriod {
   status: 'ok' | 'rate-limited';
   percent: number;
@@ -22,6 +24,9 @@ export async function fetchOpenCodeUsage(
 ): Promise<GoUsageResult> {
   if (!apiKey?.trim()) {
     return { ok: false, reason: 'no-key' };
+  }
+  if (isOfflineMode()) {
+    return { ok: false, reason: 'network' };
   }
 
   try {

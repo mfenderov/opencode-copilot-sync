@@ -16,9 +16,11 @@ import cp from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import testRuntime from '../scripts/test-runtime.cjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, '..');
+const { getE2ERunnerArgs } = testRuntime;
 
 const DIVIDER = '='.repeat(70);
 
@@ -216,7 +218,7 @@ Options:
     console.log(cyan('>>> [Tier 4] In-Host VS Code E2E Integration Tests'));
     console.log(DIVIDER + '\n');
 
-    const t3Res = await runCommand('node', ['test/e2e/runner.js']);
+    const t3Res = await runCommand('node', getE2ERunnerArgs(forceOffline));
 
     if (t3Res.code === 0) {
       tier4Passed = true;
