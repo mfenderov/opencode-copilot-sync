@@ -12,33 +12,67 @@ async function loadSyncTargets() {
   }
 }
 
+function userConfigDir(homeDir, platform, appDataPath) {
+  if (platform === 'darwin') {
+    return path.join(homeDir, 'Library', 'Application Support', 'Code', 'User');
+  }
+  if (platform === 'win32') {
+    return path.join(appDataPath, 'Code', 'User');
+  }
+  return path.join(homeDir, '.vscode-server', 'data', 'User');
+}
+
+function makeDiscoveryContext(homeDir) {
+  const appDataPath = process.platform === 'win32'
+    ? path.join(homeDir, 'AppData', 'Roaming')
+    : undefined;
+  const userDir = userConfigDir(homeDir, process.platform, appDataPath);
+  const activeExtensionStoragePath = path.join(
+    userDir,
+    'globalStorage',
+    'mfenderov.opencode-copilot-sync'
+  );
+  return {
+    platform: process.platform,
+    homeDir,
+    appDataPath,
+    activeExtensionStoragePath,
+    userDir,
+  };
+}
+
+function wslUserConfigDir(homeDir, platform) {
+  const pathOps = platform === 'win32' ? path.win32 : path.posix;
+  return pathOps.join(homeDir, '.vscode-server', 'data', 'User');
+}
+
 test('sync target discovery stays within the current user by default', async () => {
   const { discoverSyncTargets } = await loadSyncTargets();
   assert.equal(typeof discoverSyncTargets, 'function');
 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-targets-'));
   const homeDir = path.join(root, 'home', 'current-user');
-  const userDir = path.join(homeDir, '.vscode-server', 'data', 'User');
-  const activeStoragePath = path.join(userDir, 'globalStorage', 'mfenderov.opencode-copilot-sync');
+  const { platform, appDataPath, activeExtensionStoragePath, userDir } = makeDiscoveryContext(homeDir);
   const profileDir = path.join(userDir, 'profiles', 'work');
-  const otherUserDir = path.join(root, 'home', 'other-user', '.vscode-server', 'data', 'User');
+  const otherUserHome = path.join(root, 'home', 'other-user');
+  const otherUserDir = userConfigDir(otherUserHome, platform, appDataPath);
   const siblingDistroHome = path.join(root, 'wsl', 'Debian', 'home', 'other-user');
 
   try {
-    fs.mkdirSync(activeStoragePath, { recursive: true });
+    fs.mkdirSync(activeExtensionStoragePath, { recursive: true });
     fs.mkdirSync(profileDir, { recursive: true });
     fs.mkdirSync(otherUserDir, { recursive: true });
-    fs.mkdirSync(path.join(siblingDistroHome, '.vscode-server', 'data', 'User'), { recursive: true });
 
     const paths = discoverSyncTargets({
-      platform: 'linux',
+      platform,
       homeDir,
-      activeExtensionStoragePath: activeStoragePath,
+      appDataPath,
+      activeExtensionStoragePath,
     }).map((target) => target.path);
 
     assert.ok(paths.includes(path.join(userDir, 'chatLanguageModels.json')));
     assert.ok(paths.includes(path.join(profileDir, 'chatLanguageModels.json')));
-    assert.ok(!paths.some((candidate) => candidate.startsWith(path.join(root, 'home', 'other-user'))));
+    assert.ok(!paths.some((candidate) => candidate.startsWith(otherUserHome)));
     assert.ok(!paths.some((candidate) => candidate.startsWith(path.join(root, 'wsl', 'Debian'))));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -49,22 +83,28 @@ test('sync target discovery includes only the associated WSL home and exact expl
   const { discoverSyncTargets } = await loadSyncTargets();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-targets-wsl-'));
   const homeDir = path.join(root, 'home', 'current-user');
+  const { platform, appDataPath, activeExtensionStoragePath } = makeDiscoveryContext(homeDir);
   const associatedWslHome = path.join(root, 'wsl', 'Ubuntu', 'home', 'current-user');
   const siblingWslHome = path.join(root, 'wsl', 'Debian', 'home', 'other-user');
   const explicitTargetPath = path.join(root, 'opt-in', 'chatLanguageModels.json');
+  const associatedUserDir = wslUserConfigDir(associatedWslHome, platform);
+  const siblingUserDir = wslUserConfigDir(siblingWslHome, platform);
 
   try {
-    fs.mkdirSync(path.join(associatedWslHome, '.vscode-server', 'data', 'User'), { recursive: true });
-    fs.mkdirSync(path.join(siblingWslHome, '.vscode-server', 'data', 'User'), { recursive: true });
+    fs.mkdirSync(activeExtensionStoragePath, { recursive: true });
+    fs.mkdirSync(associatedUserDir, { recursive: true });
+    fs.mkdirSync(siblingUserDir, { recursive: true });
 
     const paths = discoverSyncTargets({
-      platform: 'linux',
+      platform,
       homeDir,
+      appDataPath,
+      activeExtensionStoragePath,
       associatedWslHome,
       additionalTargetPaths: [explicitTargetPath],
     }).map((target) => target.path);
 
-    assert.ok(paths.includes(path.join(associatedWslHome, '.vscode-server', 'data', 'User', 'chatLanguageModels.json')));
+    assert.ok(paths.includes(path.join(associatedUserDir, 'chatLanguageModels.json')));
     assert.ok(paths.includes(explicitTargetPath));
     assert.ok(!paths.some((candidate) => candidate.startsWith(siblingWslHome)));
   } finally {
@@ -110,15 +150,15 @@ test('primary target identity compares Windows paths case-insensitively', async 
 
 test('default WSL path resolution uses the isolated current-user home', async () => {
   const { getChatLanguageModelsPath } = await loadSyncTargets();
-  const homeDir = path.join(os.tmpdir(), 'opencode-wsl-home-test');
+  const homeDir = '/opencode-wsl-home-test';
 
   assert.equal(
     getChatLanguageModelsPath(undefined, { platform: 'linux', homeDir, isWsl: true }),
-    path.join(homeDir, '.vscode-server', 'data', 'User', 'chatLanguageModels.json')
+    path.posix.join(homeDir, '.vscode-server', 'data', 'User', 'chatLanguageModels.json')
   );
 });
 
-test('platform path defaults stay with the current profile', async () => {
+test('Mac and Linux path defaults stay with the current profile', { skip: process.platform === 'win32' }, async () => {
   const { getChatLanguageModelsPath } = await loadSyncTargets();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-platform-paths-'));
 
@@ -147,18 +187,20 @@ test('platform path defaults stay with the current profile', async () => {
       path.join(linuxHome, '.vscode-server-insiders', 'data', 'User', 'chatLanguageModels.json')
     );
 
-    const appDataPath = path.win32.join('C:\\Users\\current-user', 'AppData', 'Roaming');
-    assert.equal(
-      getChatLanguageModelsPath(undefined, {
-        platform: 'win32',
-        homeDir: 'C:\\Users\\current-user',
-        appDataPath,
-      }),
-      path.win32.join(appDataPath, 'Code', 'User', 'chatLanguageModels.json')
-    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('Windows path defaults use the supplied current-user AppData root', async () => {
+  const { getChatLanguageModelsPath } = await loadSyncTargets();
+  const homeDir = 'C:\\Users\\current-user';
+  const appDataPath = path.win32.join(homeDir, 'AppData', 'Roaming');
+
+  assert.equal(
+    getChatLanguageModelsPath(undefined, { platform: 'win32', homeDir, appDataPath }),
+    path.win32.join(appDataPath, 'Code', 'User', 'chatLanguageModels.json')
+  );
 });
 
 test('associated WSL home resolution uses only the named distro and reports lookup failures', async () => {

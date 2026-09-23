@@ -149,6 +149,31 @@ interface UserProfileRoot {
   machineDir?: string;
 }
 
+function macProfileRoots(homeDir: string, pathOps: typeof path.posix): UserProfileRoot[] {
+  const appSupport = pathOps.join(homeDir, 'Library', 'Application Support');
+  return ['Code', 'Code - Insiders'].map((variant) => ({
+    userDir: pathOps.join(appSupport, variant, 'User'),
+  }));
+}
+
+function windowsProfileRoots(
+  appData: string,
+  pathOps: typeof path.posix
+): UserProfileRoot[] {
+  return ['Code', 'Code - Insiders'].map((variant) => ({
+    userDir: pathOps.join(appData, variant, 'User'),
+  }));
+}
+
+function linuxProfileRoots(homeDir: string, pathOps: typeof path.posix): UserProfileRoot[] {
+  return [
+    { userDir: pathOps.join(homeDir, '.vscode-server', 'data', 'User'), machineDir: pathOps.join(homeDir, '.vscode-server', 'data', 'Machine') },
+    { userDir: pathOps.join(homeDir, '.vscode-server-insiders', 'data', 'User'), machineDir: pathOps.join(homeDir, '.vscode-server-insiders', 'data', 'Machine') },
+    { userDir: pathOps.join(homeDir, '.config', 'Code', 'User') },
+    { userDir: pathOps.join(homeDir, '.config', 'Code - Insiders', 'User') },
+  ];
+}
+
 function profileRootsForHome(
   homeDir: string,
   platform: NodeJS.Platform,
@@ -157,27 +182,16 @@ function profileRootsForHome(
 ): UserProfileRoot[] {
   const pathOps = pathApi(platform);
 
-  if (platform === 'darwin' && !isWslHome) {
-    const appSupport = pathOps.join(homeDir, 'Library', 'Application Support');
-    return ['Code', 'Code - Insiders'].map((variant) => ({
-      userDir: pathOps.join(appSupport, variant, 'User'),
-    }));
-  }
-
-  if (platform === 'win32' && !isWslHome) {
-    const appData = appDataPath ?? process.env.APPDATA ?? pathOps.join(homeDir, 'AppData', 'Roaming');
-    return ['Code', 'Code - Insiders'].map((variant) => ({
-      userDir: pathOps.join(appData, variant, 'User'),
-    }));
+  if (!isWslHome) {
+    if (platform === 'darwin') return macProfileRoots(homeDir, pathOps);
+    if (platform === 'win32') {
+      const appData = appDataPath ?? process.env.APPDATA ?? pathOps.join(homeDir, 'AppData', 'Roaming');
+      return windowsProfileRoots(appData, pathOps);
+    }
   }
 
   // Associated WSL homes retain Linux profile paths when discovered on Windows.
-  return [
-    { userDir: pathOps.join(homeDir, '.vscode-server', 'data', 'User'), machineDir: pathOps.join(homeDir, '.vscode-server', 'data', 'Machine') },
-    { userDir: pathOps.join(homeDir, '.vscode-server-insiders', 'data', 'User'), machineDir: pathOps.join(homeDir, '.vscode-server-insiders', 'data', 'Machine') },
-    { userDir: pathOps.join(homeDir, '.config', 'Code', 'User') },
-    { userDir: pathOps.join(homeDir, '.config', 'Code - Insiders', 'User') },
-  ];
+  return linuxProfileRoots(homeDir, pathOps);
 }
 
 function addProfileRootTargets(

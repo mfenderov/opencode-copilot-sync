@@ -13,6 +13,27 @@ import {
 import { buildProviderEntry } from '../out/config.js';
 import * as syncerModule from '../out/syncer.js';
 import { setVSCodeProxyUrl } from '../out/network.js';
+
+function createCurrentUserSyncFixture(root) {
+  const platform = process.platform;
+  const homeDir = path.join(root, 'current-user');
+  const appDataPath =
+    platform === 'win32' ? path.join(homeDir, 'AppData', 'Roaming') : undefined;
+  let userDir;
+  if (platform === 'win32') {
+    userDir = path.join(appDataPath, 'Code', 'User');
+  } else if (platform === 'darwin') {
+    userDir = path.join(homeDir, 'Library', 'Application Support', 'Code', 'User');
+  } else {
+    userDir = path.join(homeDir, '.vscode-server', 'data', 'User');
+  }
+  return {
+    platform,
+    homeDir,
+    appDataPath,
+    storageDir: path.join(userDir, 'globalStorage', 'mfenderov.opencode-copilot-sync'),
+  };
+}
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -392,8 +413,7 @@ test('writeProvidersToConfig purges only the primary OpenCode entry and safely m
 
 test('writeProvidersToConfig reports an explicitly associated WSL target with no existing VS Code profile', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-missing-wsl-profile-'));
-  const homeDir = path.join(tmpDir, 'current-user');
-  const storageDir = path.join(homeDir, '.vscode-server', 'data', 'User', 'globalStorage', 'mfenderov.opencode-copilot-sync');
+  const { platform, homeDir, appDataPath, storageDir } = createCurrentUserSyncFixture(tmpDir);
   const associatedWslHome = path.join(tmpDir, 'wsl', 'Ubuntu', 'home', 'wsl-user');
   fs.mkdirSync(storageDir, { recursive: true });
   fs.mkdirSync(associatedWslHome, { recursive: true });
@@ -401,9 +421,10 @@ test('writeProvidersToConfig reports an explicitly associated WSL target with no
   const provider = buildProviderEntry('OpenCode', 'sk-in-memory-only', ['kimi-k3'], { isGo: true });
   const result = writeProvidersToConfig([provider], undefined, storageDir, {
     discoveryContext: {
-      platform: 'linux',
+      platform,
       homeDir,
-      isWsl: true,
+      appDataPath,
+      isWsl: platform === 'linux',
       associatedWslHome,
     },
   });
@@ -417,8 +438,7 @@ test('writeProvidersToConfig reports an explicitly associated WSL target with no
 
 test('writeProvidersToConfig recognizes an exact opt-in path under the associated WSL home', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-explicit-associated-wsl-'));
-  const homeDir = path.join(tmpDir, 'current-user');
-  const storageDir = path.join(homeDir, '.vscode-server', 'data', 'User', 'globalStorage', 'mfenderov.opencode-copilot-sync');
+  const { platform, homeDir, appDataPath, storageDir } = createCurrentUserSyncFixture(tmpDir);
   const associatedWslHome = path.join(tmpDir, 'wsl', 'Ubuntu', 'home', 'wsl-user');
   const explicitWslPath = path.join(associatedWslHome, '.vscode-server', 'data', 'User', 'chatLanguageModels.json');
   fs.mkdirSync(storageDir, { recursive: true });
@@ -434,7 +454,7 @@ test('writeProvidersToConfig recognizes an exact opt-in path under the associate
   const provider = buildProviderEntry('OpenCode', 'sk-source-only-key', ['kimi-k3'], { isGo: true });
   const result = writeProvidersToConfig([provider], undefined, storageDir, {
     additionalTargetPaths: [explicitWslPath],
-    discoveryContext: { platform: 'linux', homeDir, associatedWslHome },
+    discoveryContext: { platform, homeDir, appDataPath, associatedWslHome },
   });
 
   assert.deepEqual(result.warnings, []);
