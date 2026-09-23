@@ -123,6 +123,14 @@
           "default": true,
           "description": "Include OpenCode Zen models (Free tier + Zen exclusive models, de-duplicated against Go)."
         },
+        "opencode.additionalSyncTargets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional absolute chatLanguageModels.json paths to mirror to. Other users and sibling WSL distributions are not discovered by default."
+        },
         "opencode.streamIdleTimeoutSeconds": {
           "type": "number",
           "default": 90,

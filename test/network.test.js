@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   resolveProxyUrl,
@@ -12,6 +12,13 @@ import {
 // real shell environment (or CI runner) can't leak into assertions, and so
 // tests don't leak into each other.
 const PROXY_ENV_KEYS = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'NO_PROXY', 'no_proxy'];
+const originalOfflineMode = process.env.OPENCODE_OFFLINE;
+delete process.env.OPENCODE_OFFLINE;
+
+after(() => {
+  if (originalOfflineMode === undefined) delete process.env.OPENCODE_OFFLINE;
+  else process.env.OPENCODE_OFFLINE = originalOfflineMode;
+});
 
 function withCleanProxyEnv(fn) {
   return async () => {
@@ -148,6 +155,28 @@ test(
     }
   })
 );
+
+test('fetchWithRetry never calls fetch when OPENCODE_OFFLINE is enabled', async () => {
+  const previousOffline = process.env.OPENCODE_OFFLINE;
+  process.env.OPENCODE_OFFLINE = '1';
+  let calls = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => {
+    calls++;
+    return new Response('ok', { status: 200 });
+  };
+  try {
+    await assert.rejects(
+      fetchWithRetry('https://opencode.ai/zen/v1/models'),
+      /OPENCODE_OFFLINE/
+    );
+    assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = original;
+    if (previousOffline === undefined) delete process.env.OPENCODE_OFFLINE;
+    else process.env.OPENCODE_OFFLINE = previousOffline;
+  }
+});
 
 test('fetchWithRetry retries on a 503 and succeeds once the upstream recovers', async () => {
   let calls = 0;

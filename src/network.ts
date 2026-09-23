@@ -31,6 +31,10 @@ async function loadProxyAgentCtor(): Promise<typeof ProxyAgentType | undefined> 
 // always consulted as a fallback so the extension works in plain Node/CI too.
 let vscodeProxyUrl: string | undefined;
 
+export function isOfflineMode(): boolean {
+  return process.env.OPENCODE_OFFLINE === '1';
+}
+
 export function setVSCodeProxyUrl(url: string | undefined): void {
   vscodeProxyUrl = url || undefined;
   // Config may have changed which proxy to use; drop any cached dispatcher.
@@ -324,6 +328,10 @@ export async function fetchWithRetry(
   init: FetchInit = {},
   opts: FetchWithRetryOptions = {}
 ): Promise<Response> {
+  if (isOfflineMode()) {
+    throw new Error('Network requests are disabled while OPENCODE_OFFLINE=1.');
+  }
+
   const config = resolveRetryConfig(opts);
   // Sum, not max: each class's own budget check is what actually stops
   // retrying, so the outer bound just needs to be generous enough to cover

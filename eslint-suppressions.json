@@ -1,31 +1,7 @@
 {
   "src/config.ts": {
-    "@typescript-eslint/no-explicit-any": {
-      "count": 7
-    },
-    "@typescript-eslint/no-unnecessary-condition": {
-      "count": 1
-    },
-    "@typescript-eslint/no-unsafe-argument": {
-      "count": 1
-    },
-    "@typescript-eslint/no-unsafe-assignment": {
-      "count": 7
-    },
-    "@typescript-eslint/no-unsafe-call": {
-      "count": 5
-    },
-    "@typescript-eslint/no-unsafe-member-access": {
-      "count": 16
-    },
-    "@typescript-eslint/no-unsafe-return": {
-      "count": 1
-    },
-    "@typescript-eslint/prefer-nullish-coalescing": {
-      "count": 1
-    },
     "@typescript-eslint/prefer-optional-chain": {
-      "count": 2
+      "count": 1
     }
   },
   "src/extension.ts": {
@@ -33,10 +9,10 @@
       "count": 1
     },
     "@typescript-eslint/no-explicit-any": {
-      "count": 3
+      "count": 2
     },
     "@typescript-eslint/no-unsafe-member-access": {
-      "count": 4
+      "count": 2
     },
     "@typescript-eslint/prefer-nullish-coalescing": {
       "count": 4
@@ -53,59 +29,96 @@
       "count": 2
     }
   },
-  "src/provider.ts": {
+  "src/provider-protocol.ts": {
     "@typescript-eslint/no-explicit-any": {
-      "count": 34
+      "count": 11
     },
     "@typescript-eslint/no-unnecessary-condition": {
-      "count": 7
+      "count": 4
     },
     "@typescript-eslint/no-unnecessary-type-conversion": {
       "count": 1
     },
-    "@typescript-eslint/no-unsafe-argument": {
-      "count": 25
-    },
     "@typescript-eslint/no-unsafe-assignment": {
-      "count": 43
-    },
-    "@typescript-eslint/no-unsafe-call": {
-      "count": 9
+      "count": 2
     },
     "@typescript-eslint/no-unsafe-member-access": {
-      "count": 104
+      "count": 12
     },
     "@typescript-eslint/no-unsafe-return": {
-      "count": 4
+      "count": 2
     },
     "@typescript-eslint/prefer-nullish-coalescing": {
-      "count": 37
+      "count": 10
+    }
+  },
+  "src/provider-stream.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 9
     },
-    "@typescript-eslint/prefer-optional-chain": {
+    "@typescript-eslint/no-unnecessary-condition": {
+      "count": 3
+    },
+    "@typescript-eslint/no-unsafe-argument": {
+      "count": 23
+    },
+    "@typescript-eslint/no-unsafe-assignment": {
+      "count": 35
+    },
+    "@typescript-eslint/no-unsafe-call": {
+      "count": 7
+    },
+    "@typescript-eslint/no-unsafe-member-access": {
+      "count": 84
+    },
+    "@typescript-eslint/no-unsafe-return": {
       "count": 1
     },
-    "@typescript-eslint/require-await": {
+    "@typescript-eslint/prefer-nullish-coalescing": {
+      "count": 24
+    },
+    "@typescript-eslint/prefer-optional-chain": {
       "count": 1
     },
     "@typescript-eslint/restrict-plus-operands": {
       "count": 3
     }
   },
-  "src/syncer.ts": {
+  "src/provider.ts": {
     "@typescript-eslint/no-explicit-any": {
       "count": 7
     },
-    "@typescript-eslint/no-unnecessary-condition": {
-      "count": 1
-    },
     "@typescript-eslint/no-unsafe-assignment": {
-      "count": 5
+      "count": 4
+    },
+    "@typescript-eslint/no-unsafe-call": {
+      "count": 2
     },
     "@typescript-eslint/no-unsafe-member-access": {
-      "count": 5
+      "count": 7
+    },
+    "@typescript-eslint/no-unsafe-return": {
+      "count": 2
     },
     "@typescript-eslint/prefer-nullish-coalescing": {
-      "count": 9
+      "count": 3
+    },
+    "@typescript-eslint/require-await": {
+      "count": 1
+    }
+  },
+  "src/sync-files.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 2
+    },
+    "@typescript-eslint/no-unsafe-assignment": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unsafe-member-access": {
+      "count": 1
+    },
+    "@typescript-eslint/prefer-nullish-coalescing": {
+      "count": 1
     }
   },
   "src/usage.ts": {

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import assert from 'node:assert/strict';
+import testRuntime from './test-runtime.cjs';
 
 console.log('\n======================================================');
 console.log('>>> [WSL Reproduction Test] Simulating WSL failure modes');
@@ -10,14 +11,10 @@ console.log('======================================================\n');
 // Set up a mock environment representing Windows host + WSL guest
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wsl-repro-'));
 const winAppData = path.join(tmpRoot, 'mnt/c/Users/TestUser/AppData/Roaming/Code/User');
-const winLocalApp = path.join(tmpRoot, 'mnt/c/Users/TestUser/AppData/Local/opencode');
 const wslServerUser = path.join(tmpRoot, 'home/testuser/.vscode-server/data/User');
-const wslLocalShare = path.join(tmpRoot, 'home/testuser/.local/share/opencode');
 
 fs.mkdirSync(winAppData, { recursive: true });
-fs.mkdirSync(winLocalApp, { recursive: true });
 fs.mkdirSync(wslServerUser, { recursive: true });
-fs.mkdirSync(wslLocalShare, { recursive: true });
 
 // Case 1: Legacy customendpoint bug - config written to Windows, but missing in WSL
 console.log('--- Scenario 1: Why WSL saw 0 models with chatLanguageModels.json ---');
@@ -48,19 +45,13 @@ console.log('[Scenario 2] Current package.json extensionKind:', pkg.extensionKin
 console.log('>>> Confirmed: Setting extensionKind: ["workspace"] required manual "Install in WSL" in VS Code UI.');
 console.log('    Setting extensionKind: ["ui", "workspace"] allows the Windows install to serve the WSL window.\n');
 
-// Case 3: Key discovery in WSL
-console.log('--- Scenario 3: Cross-mount auth discovery in WSL ---');
-// User puts their key in Windows AppData
-fs.writeFileSync(
-  path.join(winLocalApp, 'auth.json'),
-  JSON.stringify({ 'opencode-go': { key: 'sk-windows-key-12345' } })
-);
-
-// In WSL without cross-mount scanning:
-const wslKeyOnly = fs.existsSync(path.join(wslLocalShare, 'auth.json'));
-console.log('[Scenario 3] Key exists in native WSL ~/.local/share/opencode:', wslKeyOnly);
-console.log('>>> Confirmed: Users on Windows who authenticate in Windows do not have auth.json in WSL ~/.local.');
-console.log('    Cross-mount scanning (/mnt/c/Users/.../AppData/Local/opencode) is REQUIRED for WSL to find the key.\n');
+// Case 3: API key resolution uses the active VS Code SecretStorage or an explicit environment variable.
+console.log('--- Scenario 3: API key resolution is host-local and explicit ---');
+const environmentKey = testRuntime.getExplicitApiKey({ OPENCODE_API_KEY: ' sk-windows-key-12345 ' });
+assert.equal(environmentKey, 'sk-windows-key-12345');
+assert.equal(testRuntime.getExplicitApiKey({}), undefined);
+console.log('[Scenario 3] Explicit OPENCODE_API_KEY is accepted for automation.');
+console.log('>>> The extension otherwise reads its own VS Code SecretStorage; it does not inspect other hosts\\' credential files.\n');
 
 // Clean up
 fs.rmSync(tmpRoot, { recursive: true, force: true });

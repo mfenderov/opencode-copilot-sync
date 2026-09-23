@@ -1,4 +1,4 @@
-import { fetchWithRetry, withProxy } from './network.js';
+import { fetchWithRetry, isOfflineMode, withProxy } from './network.js';
 
 export async function fetchOpenCodeModels(
   apiKey: string,
@@ -143,6 +143,8 @@ export function filterAvailableGoModels(modelIds: string[]): string[] {
 export const filterAvailableModels = filterAvailableGoModels;
 
 export async function checkZenBalance(apiKey: string): Promise<boolean> {
+  if (isOfflineMode()) return false;
+
   const url = 'https://opencode.ai/zen/v1/chat/completions';
   try {
     const res = await fetch(

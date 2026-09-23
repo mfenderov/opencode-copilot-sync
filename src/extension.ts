@@ -1,6 +1,13 @@
 import * as vscode from 'vscode';
 import { resolveApiKey, promptAndSetApiKey } from './auth.js';
-import { syncOpenCodeModels, getChatLanguageModelsPath } from './syncer.js';
+import {
+  syncOpenCodeModels,
+  getChatLanguageModelsPath,
+  type SyncOpenCodeOptions,
+  type SyncOpenCodeResult,
+} from './syncer.js';
+import { formatSyncFailureMessage, formatSyncFailureTooltip } from './sync-status.js';
+import { buildSyncOptions, shouldPromptForApiKey } from './sync-options.js';
 import { fetchOpenCodeUsage, formatStatusBarText, formatUsageTooltip } from './usage.js';
 import { OpenCodeChatProvider } from './provider.js';
 import { setVSCodeProxyUrl } from './network.js';
@@ -88,98 +95,154 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   }
 
-  async function performSync(interactive: boolean) {
+  async function openApiKeyPageAndSet(): Promise<void> {
     try {
-      const config = vscode.workspace.getConfiguration('opencode');
-      const includeGo = config.get<boolean>('includeGoModels', true);
-      const includeZen = config.get<boolean>('includeZenModels', true);
+      await vscode.env.openExternal(vscode.Uri.parse('https://opencode.ai'));
+    } catch {}
+    await vscode.commands.executeCommand('opencode-copilot-sync.setApiKey');
+  }
 
-      const shouldPrompt = interactive && !process.env.CI;
-      const apiKey = await resolveApiKey(context.secrets, shouldPrompt, shouldPrompt ? vscode.window : undefined);
-      if (!apiKey) {
-        if (interactive) {
-          vscode.window.showWarningMessage('OpenCode sync cancelled: No API key provided.');
-        } else {
-          vscode.window
-            .showInformationMessage(
-              'OpenCode Copilot Sync: Enter your OpenCode API key to enable flat-rate Go and Zen models in Copilot.',
-              'Set API Key',
-              'Get API Key (opencode.ai)'
-            )
-            .then(async (choice) => {
-              if (choice === 'Set API Key') {
-                await vscode.commands.executeCommand('opencode-copilot-sync.setApiKey');
-              } else if (choice === 'Get API Key (opencode.ai)') {
-                try {
-                  await vscode.env.openExternal(vscode.Uri.parse('https://opencode.ai'));
-                } catch {}
-                await vscode.commands.executeCommand('opencode-copilot-sync.setApiKey');
-              }
-            });
-        }
-        return;
-      }
+  const missingKeyActions: Partial<Record<string, () => Thenable<unknown>>> = {
+    'Set API Key': () => vscode.commands.executeCommand('opencode-copilot-sync.setApiKey'),
+    'Get API Key (opencode.ai)': openApiKeyPageAndSet,
+  };
 
-      statusBarItem.text = '$(sync~spin) OpenCode';
-      statusBarItem.tooltip = 'Syncing OpenCode models...';
+  function handleMissingApiKeyChoice(choice: string | undefined): void {
+    const action = missingKeyActions[String(choice)];
+    if (action) void action();
+  }
 
-      const storagePath = context.globalStorageUri.fsPath;
+  function showMissingApiKeyMessage(interactive: boolean): void {
+    if (interactive) {
+      vscode.window.showWarningMessage('OpenCode sync cancelled: No API key provided.');
+      return;
+    }
 
-      let syncResult: Awaited<ReturnType<typeof syncOpenCodeModels>> | null = null;
-      if (interactive) {
-        await vscode.window.withProgress(
-          {
-            location: vscode.ProgressLocation.Notification,
-            title: 'OpenCode: Fetching models and syncing to Copilot...',
-            cancellable: false,
-          },
-          async () => {
-            syncResult = await syncOpenCodeModels(apiKey, { includeGo, includeZen, storagePath });
-            outputChannel.appendLine(
-              `Synced ${syncResult.totalCount} unified OpenCode models (${syncResult.goCount} Go + ${syncResult.zenCount} Zen) to native provider.`
-            );
-            vscode.window.showInformationMessage(
-              `Synced ${syncResult.totalCount} OpenCode models (${syncResult.goCount} Go flat-rate + ${syncResult.zenCount} Zen exclusive) to Copilot!`
-            );
-          }
-        );
-      } else {
-        // Background silent sync on startup / reload
-        syncResult = await syncOpenCodeModels(apiKey, { includeGo, includeZen, storagePath });
-        outputChannel.appendLine(
-          `[Startup] Synced ${syncResult.totalCount} unified OpenCode models (${syncResult.goCount} Go + ${syncResult.zenCount} Zen) to native provider.`
-        );
-      }
+    void vscode.window
+      .showInformationMessage(
+        'OpenCode Copilot Sync: Enter your OpenCode API key to enable flat-rate Go and Zen models in Copilot.',
+        'Set API Key',
+        'Get API Key (opencode.ai)'
+      )
+      .then(handleMissingApiKeyChoice);
+  }
 
-      // Update native model provider catalog and refresh status bar usage
-      if (syncResult && syncResult.models.length > 0) {
-        chatProvider.updateModels(
-          syncResult.models.map((m) => ({
-            id: m.id,
-            name: m.name,
-            family: m.family || m.id,
-            catalog: m.url.includes('/go/') ? 'go' : 'zen',
-            isFree: !!m.isFree,
-            contextWindow: m.contextWindow,
-            maxOutputTokens: m.maxOutputTokens,
-            vision: m.vision,
-            thinking: m.thinking,
-            supportsReasoningEffort: m.supportsReasoningEffort,
-            apiType: m.apiType,
-          }))
-        );
-        usageTreeProvider.updateModelCounts(syncResult.goCount, syncResult.zenCount);
-      } else {
-        chatProvider.refresh();
-      }
-      await updateUsageMeter(apiKey);
-    } catch (err: any) {
-      outputChannel.appendLine(`[Sync Error] ${err.message}`);
-      if (interactive) {
-        vscode.window.showErrorMessage(`OpenCode sync failed: ${err.message}`);
-      }
-      statusBarItem.text = '$(hubot) OpenCode';
-      statusBarItem.tooltip = 'OpenCode models synced with Copilot (click to re-sync)';
+  async function getSyncApiKey(interactive: boolean): Promise<string | undefined> {
+    const promptIfMissing = shouldPromptForApiKey(interactive, Boolean(process.env.CI));
+    const promptWindow = promptIfMissing ? vscode.window : undefined;
+    return resolveApiKey(context.secrets, promptIfMissing, promptWindow);
+  }
+
+  async function runSyncWithProgress(
+    interactive: boolean,
+    apiKey: string,
+    syncOptions: SyncOpenCodeOptions
+  ): Promise<SyncOpenCodeResult> {
+    if (!interactive) return syncOpenCodeModels(apiKey, syncOptions);
+
+    return vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: 'OpenCode: Fetching models and syncing to Copilot...',
+        cancellable: false,
+      },
+      () => syncOpenCodeModels(apiKey, syncOptions)
+    );
+  }
+
+  function logSyncResult(syncResult: SyncOpenCodeResult, interactive: boolean): void {
+    outputChannel.appendLine(
+      `${interactive ? '' : '[Startup] '}Synced ${syncResult.totalCount} unified OpenCode models (${syncResult.goCount} Go + ${syncResult.zenCount} Zen) to native provider.`
+    );
+    syncResult.warnings.forEach((warning) => {
+      outputChannel.appendLine(`[Compatibility mirror] ${warning}`);
+    });
+  }
+
+  function reportSyncResult(syncResult: SyncOpenCodeResult, interactive: boolean): void {
+    logSyncResult(syncResult, interactive);
+    if (interactive) notifySyncResult(syncResult);
+  }
+
+  function notifySyncResult(syncResult: SyncOpenCodeResult): void {
+    if (syncResult.warnings.length > 0) {
+      vscode.window.showWarningMessage(
+        `Synced OpenCode models, but ${syncResult.warnings.length} compatibility mirror(s) were skipped. See the OpenCode Copilot Sync output channel for target-local setup instructions.`
+      );
+      return;
+    }
+
+    vscode.window.showInformationMessage(
+      `Synced ${syncResult.totalCount} OpenCode models (${syncResult.goCount} Go flat-rate + ${syncResult.zenCount} Zen exclusive) to Copilot!`
+    );
+  }
+
+  function getModelFamily(model: SyncOpenCodeResult['models'][number]): string {
+    return model.family || model.id;
+  }
+
+  function getModelCatalog(model: SyncOpenCodeResult['models'][number]): 'go' | 'zen' {
+    return model.url.includes('/go/') ? 'go' : 'zen';
+  }
+
+  function updateModelCatalog(syncResult: SyncOpenCodeResult): void {
+    if (syncResult.models.length > 0) {
+      chatProvider.updateModels(
+        syncResult.models.map((model) => ({
+          id: model.id,
+          name: model.name,
+          family: getModelFamily(model),
+          catalog: getModelCatalog(model),
+          isFree: !!model.isFree,
+          contextWindow: model.contextWindow,
+          maxOutputTokens: model.maxOutputTokens,
+          vision: model.vision,
+          thinking: model.thinking,
+          supportsReasoningEffort: model.supportsReasoningEffort,
+          apiType: model.apiType,
+        }))
+      );
+      usageTreeProvider.updateModelCounts(syncResult.goCount, syncResult.zenCount);
+      return;
+    }
+    chatProvider.refresh();
+  }
+
+  function reportSyncFailure(error: unknown, interactive: boolean): void {
+    const message = formatSyncFailureMessage(error);
+    outputChannel.appendLine(`[Sync Error] ${message}`);
+    if (interactive) {
+      vscode.window.showErrorMessage(`OpenCode sync failed: ${message}`);
+    }
+    statusBarItem.text = '$(hubot) OpenCode';
+    statusBarItem.tooltip = formatSyncFailureTooltip();
+  }
+
+  async function runSyncWorkflow(interactive: boolean): Promise<void> {
+    const syncOptions = buildSyncOptions(
+      vscode.workspace.getConfiguration('opencode'),
+      context.globalStorageUri.fsPath,
+      vscode.env.remoteName
+    );
+    const apiKey = await getSyncApiKey(interactive);
+    if (!apiKey) {
+      showMissingApiKeyMessage(interactive);
+      return;
+    }
+
+    statusBarItem.text = '$(sync~spin) OpenCode';
+    statusBarItem.tooltip = 'Syncing OpenCode models...';
+    const syncResult = await runSyncWithProgress(interactive, apiKey, syncOptions);
+    reportSyncResult(syncResult, interactive);
+    updateModelCatalog(syncResult);
+    await updateUsageMeter(apiKey);
+  }
+
+  async function performSync(interactive: boolean): Promise<void> {
+    try {
+      await runSyncWorkflow(interactive);
+    } catch (error: unknown) {
+      reportSyncFailure(error, interactive);
     }
   }
 

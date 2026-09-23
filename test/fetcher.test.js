@@ -1,6 +1,14 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { filterFreeModels, isFreeTierModel, filterAvailableGoModels, KNOWN_UNAVAILABLE_MODELS } from '../out/fetcher.js';
+import { checkZenBalance, filterFreeModels, isFreeTierModel, filterAvailableGoModels, KNOWN_UNAVAILABLE_MODELS } from '../out/fetcher.js';
+
+const originalOfflineMode = process.env.OPENCODE_OFFLINE;
+delete process.env.OPENCODE_OFFLINE;
+
+after(() => {
+  if (originalOfflineMode === undefined) delete process.env.OPENCODE_OFFLINE;
+  else process.env.OPENCODE_OFFLINE = originalOfflineMode;
+});
 
 test('isFreeTierModel uses authoritative cost metadata over string heuristic', () => {
   // Zero-cost model without "free" in name (e.g. grok-code, big-pickle)
@@ -83,3 +91,26 @@ test('filterAvailableGoModels filters out known broken/unavailable models', () =
   ]);
 });
 
+test('checkZenBalance does not call the API while OPENCODE_OFFLINE is enabled', async () => {
+  const previousOffline = process.env.OPENCODE_OFFLINE;
+  const previousNoProxy = process.env.NO_PROXY;
+  const originalFetch = globalThis.fetch;
+  process.env.OPENCODE_OFFLINE = '1';
+  process.env.NO_PROXY = '*';
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return new Response('ok', { status: 200 });
+  };
+
+  try {
+    assert.equal(await checkZenBalance('sk-test'), false);
+    assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousOffline === undefined) delete process.env.OPENCODE_OFFLINE;
+    else process.env.OPENCODE_OFFLINE = previousOffline;
+    if (previousNoProxy === undefined) delete process.env.NO_PROXY;
+    else process.env.NO_PROXY = previousNoProxy;
+  }
+});
