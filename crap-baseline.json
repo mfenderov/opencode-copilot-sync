@@ -24,7 +24,7 @@
     "complexity": 7,
     "coverage": 0.156
   },
-  "src/provider.ts:486:streamResponse": {
+  "src/provider.ts:510:streamResponse": {
     "crap": 31.22,
     "complexity": 31,
     "coverage": 0.939
@@ -74,7 +74,7 @@
     "complexity": 11,
     "coverage": 0.946
   },
-  "src/provider.ts:348:<anonymous>": {
+  "src/provider.ts:372:<anonymous>": {
     "crap": 11.01,
     "complexity": 11,
     "coverage": 0.953

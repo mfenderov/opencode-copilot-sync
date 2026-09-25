@@ -416,3 +416,253 @@ test('Request headers mirror OpenCode client fingerprint', async () => {
   );
 });
 
+test('Session ID: three same-opener chats get stable distinct sessions', async () => {
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const opener = 'shared opener for three chats';
+  const assistant = vscode.LanguageModelChatMessageRole.Assistant;
+
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage(opener)],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage(opener), createMockMessage('reply A', assistant), createMockMessage('follow-up A')],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage(opener), createMockMessage('reply B', assistant), createMockMessage('follow-up B')],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage(opener), createMockMessage('reply C', assistant), createMockMessage('follow-up C')],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+  // Continuations must stay on their own forks.
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage(opener), createMockMessage('reply B', assistant), createMockMessage('follow-up B'), createMockMessage('reply B2', assistant), createMockMessage('follow-up B2')],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+
+  const sessions = mockServer.getRequests().map(sessionHeaderOf);
+  assert.equal(sessions.length, 5, 'Expected exactly 5 upstream requests');
+  assert.equal(sessions[1], sessions[0], 'Chat A turn 2 continues the root session');
+  assert.equal(new Set(sessions.slice(0, 4)).size, 3, 'Root plus two forks must be three distinct sessions');
+  assert.notEqual(sessions[2], sessions[3], 'Forks B and C must not share one session');
+  assert.equal(sessions[4], sessions[2], 'Continuation of chat B must stay on its fork');
+});
+
+test('Session ID: divergence from a forked line forks again without bleed', async () => {
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const opener = 'opener for fork-of-fork';
+  const assistant = vscode.LanguageModelChatMessageRole.Assistant;
+
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage(opener)],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage(opener), createMockMessage('reply A', assistant), createMockMessage('follow-up A')],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage(opener), createMockMessage('reply B', assistant), createMockMessage('follow-up B')],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage(opener), createMockMessage('reply B', assistant), createMockMessage('follow-up B'), createMockMessage('reply B2', assistant), createMockMessage('follow-up B2')],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+  // Two chats diverge from the forked B line at turn 4.
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage(opener), createMockMessage('reply B', assistant), createMockMessage('follow-up B'), createMockMessage('reply B2a', assistant), createMockMessage('follow-up B2a')],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage(opener), createMockMessage('reply B', assistant), createMockMessage('follow-up B'), createMockMessage('reply B2b', assistant), createMockMessage('follow-up B2b')],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+  // Continuation of the B2a line must stay on its own session.
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage(opener), createMockMessage('reply B', assistant), createMockMessage('follow-up B'), createMockMessage('reply B2a', assistant), createMockMessage('follow-up B2a'), createMockMessage('reply B3a', assistant), createMockMessage('follow-up B3a')],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+
+  const sessions = mockServer.getRequests().map(sessionHeaderOf);
+  assert.equal(sessions.length, 7, 'Expected exactly 7 upstream requests');
+  assert.notEqual(sessions[4], sessions[5], 'Fork-of-fork lines must NOT share one session');
+  assert.equal(sessions[4], sessions[6], 'Continuation of the B2a line must stay on its session');
+  assert.notEqual(sessions[3], sessions[4], 'Fork-of-fork must not reuse the parent fork session');
+});
+
+test('Session ID: expired entries get fresh sessions after the TTL', async () => {
+  const realNow = Date.now;
+  const start = 1_700_000_000_000;
+  let now = start;
+  Date.now = () => now;
+  try {
+    const context = createMockContext();
+    const provider = new OpenCodeChatProvider(context);
+
+    await provider.provideLanguageModelChatResponse(
+      GO_CHAT_MODEL,
+      [createMockMessage('ttl opener')],
+      {},
+      createMockProgress(),
+      createMockToken()
+    );
+    const first = sessionHeaderOf(mockServer.getRequests()[0]);
+
+    now = start + 4 * 60 * 60 * 1000 + 1;
+    await provider.provideLanguageModelChatResponse(
+      GO_CHAT_MODEL,
+      [createMockMessage('ttl opener')],
+      {},
+      createMockProgress(),
+      createMockToken()
+    );
+    const second = sessionHeaderOf(mockServer.getRequests()[1]);
+
+    assert.notEqual(second, first, 'Expired session must not be reused after the TTL');
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('Session ID: expired forks are never reused', async () => {
+  const realNow = Date.now;
+  const start = 1_700_000_000_000;
+  let now = start;
+  Date.now = () => now;
+  try {
+    const context = createMockContext();
+    const provider = new OpenCodeChatProvider(context);
+    const opener = 'ttl fork opener';
+    const assistant = vscode.LanguageModelChatMessageRole.Assistant;
+
+    await provider.provideLanguageModelChatResponse(
+      GO_CHAT_MODEL,
+      [createMockMessage(opener)],
+      {},
+      createMockProgress(),
+      createMockToken()
+    );
+    await provider.provideLanguageModelChatResponse(
+      GO_CHAT_MODEL,
+      [createMockMessage(opener), createMockMessage('reply A', assistant), createMockMessage('follow-up A')],
+      {},
+      createMockProgress(),
+      createMockToken()
+    );
+    await provider.provideLanguageModelChatResponse(
+      GO_CHAT_MODEL,
+      [createMockMessage(opener), createMockMessage('reply B', assistant), createMockMessage('follow-up B')],
+      {},
+      createMockProgress(),
+      createMockToken()
+    );
+    const forkSession = sessionHeaderOf(mockServer.getRequests()[2]);
+
+    // Touch the root line so only the fork expires.
+    now = start + 4 * 60 * 60 * 1000 - 60_000;
+    await provider.provideLanguageModelChatResponse(
+      GO_CHAT_MODEL,
+      [createMockMessage(opener), createMockMessage('reply A', assistant), createMockMessage('follow-up A'), createMockMessage('reply A2', assistant), createMockMessage('follow-up A2')],
+      {},
+      createMockProgress(),
+      createMockToken()
+    );
+
+    now = start + 4 * 60 * 60 * 1000 + 1;
+    await provider.provideLanguageModelChatResponse(
+      GO_CHAT_MODEL,
+      [createMockMessage(opener), createMockMessage('reply B', assistant), createMockMessage('follow-up B')],
+      {},
+      createMockProgress(),
+      createMockToken()
+    );
+    const requests = mockServer.getRequests();
+    const freshForkSession = sessionHeaderOf(requests[requests.length - 1]);
+    assert.notEqual(freshForkSession, forkSession, 'Expired fork must not be reused');
+
+    // The fresh fork stays stable on continuation.
+    await provider.provideLanguageModelChatResponse(
+      GO_CHAT_MODEL,
+      [createMockMessage(opener), createMockMessage('reply B', assistant), createMockMessage('follow-up B'), createMockMessage('reply B2', assistant), createMockMessage('follow-up B2')],
+      {},
+      createMockProgress(),
+      createMockToken()
+    );
+    const continued = sessionHeaderOf(mockServer.getRequests()[mockServer.getRequests().length - 1]);
+    assert.equal(continued, freshForkSession, 'Continuation must stay on the fresh fork session');
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('Session ID: empty message history resolves with a session and does not crash', async () => {
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+
+  const requests = mockServer.getRequests();
+  assert.equal(requests.length, 2, 'Expected exactly 2 upstream requests');
+  assert.ok(sessionHeaderOf(requests[0]), 'Expected a session header on empty-history requests');
+  assert.equal(
+    sessionHeaderOf(requests[0]),
+    sessionHeaderOf(requests[1]),
+    'Empty histories share one root and must reuse the session'
+  );
+});
+

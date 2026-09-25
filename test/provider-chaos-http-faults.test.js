@@ -328,6 +328,7 @@ test('Provider Chaos [404 Model Fault]: resolves with ONE alert card, never thro
     (p) => p instanceof vscode.LanguageModelTextPart && /OpenCode Model Alert/.test(p.value)
   );
   assert.equal(alertCards.length, 1, 'expected exactly ONE alert card, never a retry storm');
+  assert.equal(progress.parts.length, 1, 'expected no parts besides the single alert card');
   assert.match(alertCards[0].value, /unknown-deprecated-model-xyz/);
   assert.match(alertCards[0].value, /stale model ID/);
 });

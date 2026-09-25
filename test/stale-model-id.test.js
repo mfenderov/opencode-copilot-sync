@@ -145,8 +145,15 @@ test('stale model ID after resync renames it: ONE alert card, never a thrown Not
     (p) => p instanceof vscode.LanguageModelTextPart && /OpenCode Model Alert/.test(p.value)
   );
   assert.equal(alertCards.length, 1, 'expected exactly ONE alert card, never a retry storm');
+  assert.equal(progress.parts.length, 1, 'expected no parts besides the single alert card');
   assert.match(alertCards[0].value, new RegExp(OLD_ID.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(alertCards[0].value, /stale model ID/);
+
+  // The resynced catalog must list the renamed ID with family === id so saved pins survive.
+  const infos = await provider.provideLanguageModelChatInformation({}, {});
+  const current = infos.find((i) => i.id === NEW_ID);
+  assert.ok(current, 'expected the renamed model ID in the resynced catalog');
+  assert.equal(current.family, NEW_ID, 'expected family === id after resync');
 });
 
 test('renamed (current) model ID still streams normally after resync', async () => {
