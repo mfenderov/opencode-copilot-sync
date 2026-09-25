@@ -68,6 +68,13 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
   function send(obj: any): void {
     child?.stdin?.write(JSON.stringify(obj) + '\n');
   }
+  function cacheConfig(cfg: AcpConfigOption[] | undefined): void {
+    for (const c of cfg ?? []) {
+      if (c.id === 'model' && c.options?.length) { cachedModels = c.options; cachedCurrentModel = c.currentValue; }
+      else if (c.id === 'effort' && c.options?.length) { cachedEfforts = c.options; cachedCurrentEffort = c.currentValue; }
+      else if (c.id === 'mode' && c.options?.length) { cachedModes = c.options; cachedCurrentMode = c.currentValue; }
+    }
+  }
   function ensure(cwd: string): ChildProcess {
     if (!child) {
       // opencode acp takes no --cwd flag (it errored 'Unrecognized flag');
@@ -84,6 +91,26 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
         await done;
         pending.delete(id);
         send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+        // Prefetch the model/effort/mode catalog: configOptions only arrive
+        // with session/new, but pickers query before any session exists.
+        // Create a throwaway session, harvest, delete it.
+        try {
+          const nid = nextId++;
+          const got = await new Promise<any>((resolve, reject) => {
+            pending.set(nid, { kind: 'new', resolve, reject, chunks: [], sid: '__prefetch__' });
+            send({ jsonrpc: '2.0', id: nid, method: 'session/new', params: { cwd, mcpServers: [] } });
+          });
+          cacheConfig(got.result.configOptions);
+          const psid: string | undefined = got.result.sessionId;
+          if (psid) {
+            const did = nextId++;
+            await new Promise<any>((resolve) => {
+              pending.set(did, { kind: 'new', resolve, reject: () => resolve({}), chunks: [], sid: '__prefetch__' });
+              send({ jsonrpc: '2.0', id: did, method: 'session/delete', params: { sessionId: psid } });
+              setTimeout(() => { pending.delete(did); resolve({}); }, 3000);
+            }).catch(() => {});
+          }
+        } catch { /* picker falls back to per-session config */ }
       })();
     }
     return child;
@@ -104,24 +131,13 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
       sessions.set(resource, acpSid);
       sessions.set(sid, acpSid);
       const cfg: AcpConfigOption[] = got.result.configOptions ?? [];
+      cacheConfig(cfg);
       const modelOpt = cfg.find(c => c.id === 'model');
-      if (modelOpt) {
-        cachedModels = modelOpt.options;
-        cachedCurrentModel = modelOpt.currentValue;
-        sessionModels.set(resource, modelOpt.currentValue);
-      }
+      if (modelOpt) sessionModels.set(resource, modelOpt.currentValue);
       const effortOpt = cfg.find(c => c.id === 'effort');
-      if (effortOpt) {
-        cachedEfforts = effortOpt.options;
-        cachedCurrentEffort = effortOpt.currentValue;
-        sessionEfforts.set(resource, effortOpt.currentValue);
-      }
+      if (effortOpt) sessionEfforts.set(resource, effortOpt.currentValue);
       const modeOpt = cfg.find(c => c.id === 'mode');
-      if (modeOpt) {
-        cachedModes = modeOpt.options;
-        cachedCurrentMode = modeOpt.currentValue;
-        sessionModes.set(resource, modeOpt.currentValue);
-      }
+      if (modeOpt) sessionModes.set(resource, modeOpt.currentValue);
       return { resource, label: `OpenCode ${acpSid.slice(-8)}` };
     },
     async prompt(handle: string, promptText: string, onChunk?: (t: string) => void, token?: { cancelled: boolean }): Promise<string> {
