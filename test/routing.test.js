@@ -1,14 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { enrichModel } from '../out/enricher.js';
+import { enrichModel } from '../out/models/infrastructure/model-enricher.js';
 import {
   isResponsesModel,
   isFreeOrZenModel,
+} from '../out/chat/infrastructure/request-factory.js';
+import {
   normalizeReasoningEffort,
   isStaleReasoningInput,
+} from '../out/chat/infrastructure/reasoning-controls.js';
+import {
   sanitizeResponsesInput,
   buildResponsesInput,
-} from '../out/provider.js';
+} from '../out/chat/infrastructure/message-mapper.js';
 
 test('muse-* models MUST have apiType === "responses" and url ending with /zen/go/v1 or /zen/v1', () => {
   const museModels = [
@@ -292,7 +296,7 @@ test('All Muse models MUST have thinking === true and valid supportsReasoningEff
 });
 
 test('VERIFIED_OPENCODE_MODELS static fallback includes all Muse models with thinking: true', async () => {
-  const { VERIFIED_OPENCODE_MODELS } = await import('../out/provider.js');
+  const { VERIFIED_OPENCODE_MODELS } = await import('../out/models/infrastructure/verified-catalog.js');
   const museIds = [
     'muse-spark-1.3',
     'muse-spark-1.3-contributor',

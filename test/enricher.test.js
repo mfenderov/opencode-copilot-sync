@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { enrichModel } from '../out/enricher.js';
+import { enrichModel } from '../out/models/infrastructure/model-enricher.js';
 
 test('enrichModel handles deepseek models with reasoning', () => {
   const model = enrichModel('deepseek-v4-flash', { isGo: true });

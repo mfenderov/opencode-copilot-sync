@@ -1,4 +1,4 @@
-// This file MUST set OPENCODE_STREAM_IDLE_TIMEOUT_MS before '../out/provider.js'
+// This file MUST set OPENCODE_STREAM_IDLE_TIMEOUT_MS before '../out/chat/infrastructure/vscode-chat-provider.js'
 // evaluates its top-level module code, because STREAM_IDLE_TIMEOUT_MS is read
 // once at module-load time. Static `import` specifiers are hoisted above all
 // other statements in an ES module, so a plain top-level assignment here would
@@ -14,7 +14,7 @@ import path from 'node:path';
 import * as vscode from 'vscode';
 import { startMockServer } from './helpers/mock-opencode-server.js';
 
-const { OpenCodeChatProvider } = await import('../out/provider.js');
+const { OpenCodeChatProvider } = await import('../out/chat/infrastructure/vscode-chat-provider.js');
 
 let mockServer;
 let originalFetch;

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { fetchWithRetry } from '../../network.js';
+import { fetchWithRetry } from '../../infrastructure/http/fetch-policy.js';
 import type { OpenCodeModelMeta } from '../../models/domain/model.js';
 import { readModelCache, writeModelCache } from '../../models/infrastructure/model-cache.js';
 import { resolveModelTokenLimits } from '../../models/domain/token-budget.js';

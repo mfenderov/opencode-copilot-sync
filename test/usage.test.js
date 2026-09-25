@@ -1,6 +1,7 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fetchOpenCodeUsage, formatStatusBarText, formatUsageTooltip } from '../out/usage.js';
+import { formatStatusBarText, formatUsageTooltip } from '../out/usage/domain/usage-snapshot.js';
+import { fetchOpenCodeUsage } from '../out/usage/infrastructure/quota-client.js';
 
 const originalOfflineMode = process.env.OPENCODE_OFFLINE;
 delete process.env.OPENCODE_OFFLINE;

@@ -1,7 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { startMockServer } from './helpers/mock-opencode-server.js';
-import { OpenCodeChatProvider } from '../out/provider.js';
+import { OpenCodeChatProvider } from '../out/chat/infrastructure/vscode-chat-provider.js';
 
 let mockServer;
 let mockContext;

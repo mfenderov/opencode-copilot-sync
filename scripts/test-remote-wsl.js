@@ -118,11 +118,15 @@ async function runRemoteAssertions({ forceOffline: offlineRequested = false } = 
     isWSL,
     getChatLanguageModelsPath,
     getAllChatLanguageModelsPaths,
+  } = await import("../out/sync-targets.js");
+  const {
     safeWriteFileSync,
     createBackup,
     readChatLanguageModels,
+  } = await import("../out/sync-files.js");
+  const {
     writeProvidersToConfig,
-  } = await import("../out/syncer.js");
+  } = await import("../out/sync-writer.js");
   const { buildProviderEntry } = await import("../out/config.js");
   const sandbox = createRemoteWslSandbox();
   const home = sandbox.homeDir;

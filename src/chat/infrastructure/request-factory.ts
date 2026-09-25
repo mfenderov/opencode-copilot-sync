@@ -1,4 +1,4 @@
-import { isFreeTierModel } from '../../fetcher.js';
+import { isFreeTierModel } from '../../models/infrastructure/models-dev-client.js';
 import type { OpenCodeModelMeta } from '../../models/domain/model.js';
 import type { FormattedMessage } from './message-mapper.js';
 import { sanitizeResponsesInput } from './message-mapper.js';

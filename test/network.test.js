@@ -5,8 +5,8 @@ import {
   setVSCodeProxyUrl,
   withProxy,
   getProxyDispatcher,
-  fetchWithRetry,
-} from '../out/network.js';
+} from '../out/infrastructure/http/proxy-routing.js';
+import { fetchWithRetry } from '../out/infrastructure/http/fetch-policy.js';
 
 // Snapshot/restore proxy-related env vars around every test so a developer's
 // real shell environment (or CI runner) can't leak into assertions, and so

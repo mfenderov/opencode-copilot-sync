@@ -1,4 +1,5 @@
-import { fetchWithRetry, isOfflineMode, withProxy } from '../../network.js';
+import { fetchWithRetry, isOfflineMode } from '../../infrastructure/http/fetch-policy.js';
+import { withProxy } from '../../infrastructure/http/proxy-routing.js';
 
 // Bound for catalog fetches: a hung connection must fail fast instead of
 // stalling the whole startup sync past every retry budget.

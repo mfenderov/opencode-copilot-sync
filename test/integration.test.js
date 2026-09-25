@@ -4,8 +4,9 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { syncOpenCodeModels } from '../out/syncer.js';
-import { readChatLanguageModels, writeProvidersToConfig } from '../out/syncer.js';
+import { syncOpenCodeModels } from '../out/models/application/synchronize-models.js';
+import { readChatLanguageModels } from '../out/sync-files.js';
+import { writeProvidersToConfig } from '../out/sync-writer.js';
 import { mergeChatLanguageModels } from '../out/config.js';
 
 test('E2E Integration: syncOpenCodeModels protects config on empty/failed API responses', async () => {
