@@ -107,6 +107,7 @@ function createChatSessionItemController(id, refreshHandler) {
     id, refreshHandler,
     items: new Collection(),
     createChatSessionItem: (resource, label) => ({ resource, label, timing: { startTime: Date.now() } }),
+    createChatSessionInputState: (groups) => ({ groups, sessionResource: undefined, onDidDispose: { dispose() {} }, onDidChange: { event: () => ({ dispose() {} }) } }),
     onDidChangeChatSessionItemState: (fn) => { listeners.push(fn); return { dispose() {} }; },
     dispose() {},
   };
