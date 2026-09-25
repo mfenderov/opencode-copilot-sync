@@ -102,6 +102,10 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
     const cwd = vscode.workspace?.workspaceFolders?.[0]?.uri?.fsPath ?? process.cwd();
     const s = await b.newSession(cwd);
     // Honor options picked in the input state, if the user chose any.
+    // NOTE: ctx.inputState may be absent here (handler runs pre-input-state)
+    // — the bridge seeds sessionModels from the server currentValue, and the
+    // per-message requestHandler re-reads the picker. This block only applies
+    // an explicit user pick when one is actually present.
     try {
       const groups: any[] = ctx?.inputState?.groups ?? [];
       const pick = (id: string): string | undefined => {
@@ -112,7 +116,10 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
       const cfg: { model?: string; effort?: string; mode?: string } = {
         model: pick('models'), effort: pick('effort'), mode: pick('mode'),
       };
-      if (cfg.model || cfg.effort || cfg.mode) applySel(s.resource, cfg);
+      if (cfg.model || cfg.effort || cfg.mode) {
+        outputChannel.appendLine(`[opencode] new-session picks: ${JSON.stringify(cfg)}`);
+        applySel(s.resource, cfg);
+      }
     } catch (err) {
       outputChannel.appendLine(`[opencode] option select skipped: ${err}`);
     }
@@ -164,19 +171,28 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
       const requestHandler = async (request: any, context: any, response: any, token: any) => {
         const text = String(request?.prompt ?? '');
         const resourceStr = String(resource?.toString?.() ?? '');
-        // Options picked per message via the input-state pickers, if present.
+        // Re-read the pickers' current selection. IMPORTANT: only apply when
+        // the context actually carries a selection — the inputState shape
+        // varies by surface (Agents panel vs Chat view) and an absent/empty
+        // selection must NOT overwrite the per-session value with a default.
+        // Observed misroute: Space Bunny selected, prompt went out as GPT Luna.
         try {
           const groups: any[] = context?.inputState?.groups ?? context?.history?.inputState?.groups ?? [];
           const pick = (id: string): string | undefined => {
             const g = groups.find?.((x: any) => x?.id === id);
-            const v = g?.selected?.id ?? g?.selected;
-            const vid = typeof v === 'string' ? v : (v as any)?.id;
-            return typeof vid === 'string' ? vid : undefined;
+            if (!g) return undefined;
+            // selected may be an item {id}, a bare id string, or a Map-like.
+            const s = g?.selected;
+            const vid = typeof s === 'string' ? s : (s as any)?.id;
+            return typeof vid === 'string' && vid ? vid : undefined;
           };
           const cfg: { model?: string; effort?: string; mode?: string } = {
             model: pick('models'), effort: pick('effort'), mode: pick('mode'),
           };
-          if (cfg.model || cfg.effort || cfg.mode) applySel(resourceStr, cfg);
+          if (cfg.model || cfg.effort || cfg.mode) {
+            outputChannel.appendLine(`[opencode] per-message picks: ${JSON.stringify(cfg)}`);
+            applySel(resourceStr, cfg);
+          }
         } catch (err) {
           outputChannel.appendLine(`[opencode] option apply skipped: ${err}`);
         }
