@@ -1,4 +1,5 @@
 import { isFreeTierModel, type ModelDevMetadata } from './fetcher.js';
+import { resolveModelTokenLimits } from './provider-protocol.js';
 
 export interface EnrichOptions {
   isGo?: boolean;
@@ -183,7 +184,10 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
     }
   }
 
-  const maxInputTokens = contextWindow - maxOutputTokens;
+  const tokenLimits = resolveModelTokenLimits(contextWindow, maxOutputTokens);
+  contextWindow = tokenLimits.contextWindow;
+  maxOutputTokens = tokenLimits.maxOutputTokens;
+  const maxInputTokens = tokenLimits.maxInputTokens;
   let supportsReasoningEffort: string[] | undefined = undefined;
 
   if (thinking) {

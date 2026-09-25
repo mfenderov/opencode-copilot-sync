@@ -439,6 +439,27 @@ test('Provider [provideLanguageModelChatInformation]: dynamically sets reasoning
   assert.strictEqual(qwenInfo.configurationSchema?.properties?.reasoningEffort, undefined);
 });
 
+test('Provider [model information]: caps stale output metadata before Agent Mode budgeting', async () => {
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+
+  provider.updateModels([
+    {
+      id: 'muse-spark-1.3-contributor',
+      name: 'Muse Spark 1.3 Contributor (OpenCode Go)',
+      family: 'muse-spark-1.3-contributor',
+      contextWindow: 1048576,
+      maxOutputTokens: 943718,
+      vision: true,
+      thinking: true,
+    },
+  ]);
+
+  const [info] = await provider.provideLanguageModelChatInformation({}, createMockToken());
+  assert.equal(info.maxOutputTokens, 262144);
+  assert.equal(info.maxInputTokens, 786432);
+});
+
 // ============================================================================
 // 9. Muse Multi-Turn Tool Calling & Go Tool Isolation Tests
 // ============================================================================

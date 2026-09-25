@@ -12,6 +12,7 @@ import {
   isFreeOrZenModel,
   isResponsesModel,
   isStaleReasoningInput,
+  resolveModelTokenLimits,
   sanitizeResponsesInput,
 } from './provider-protocol.js';
 import type {
@@ -332,13 +333,14 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
 
       const configurationSchema = Object.keys(properties).length > 0 ? { properties } : undefined;
 
+      const tokenLimits = resolveModelTokenLimits(m.contextWindow, m.maxOutputTokens);
       return {
         id: m.id,
         name: m.name,
         family: m.family,
         version: '1.0.0',
-        maxInputTokens: m.contextWindow - m.maxOutputTokens,
-        maxOutputTokens: m.maxOutputTokens,
+        maxInputTokens: tokenLimits.maxInputTokens,
+        maxOutputTokens: tokenLimits.maxOutputTokens,
         capabilities: {
           imageInput: m.vision,
           vision: m.vision,

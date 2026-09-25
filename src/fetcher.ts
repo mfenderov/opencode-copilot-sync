@@ -75,9 +75,15 @@ export async function fetchModelsDevMetadata(): Promise<Record<string, ModelDevM
         }
       }
 
-      // 2. OpenCode provider is authoritative - overlay OpenCode-specific definitions
+      // 2. OpenCode providers are authoritative. OpenCode Go is applied last because
+      // Go-only model IDs can be absent from the general OpenCode provider entry.
       if (data.opencode?.models) {
         for (const [mId, mData] of Object.entries(data.opencode.models)) {
+          result[mId] = mData;
+        }
+      }
+      if (data['opencode-go']?.models) {
+        for (const [mId, mData] of Object.entries(data['opencode-go'].models)) {
           result[mId] = mData;
         }
       }

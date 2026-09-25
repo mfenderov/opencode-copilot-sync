@@ -75,3 +75,15 @@ test('enrichModel sets thinking = false and supportsReasoningEffort = undefined 
   assert.strictEqual(model.supportsReasoningEffort, undefined);
 });
 
+test('enrichModel keeps at least 75 percent of context available for input', () => {
+  const model = enrichModel('muse-spark-1.3-contributor', {
+    isGo: true,
+    modelsDevData: {
+      limit: { context: 1048576, output: 943718 },
+    },
+  });
+
+  assert.equal(model.maxOutputTokens, 262144);
+  assert.equal(model.maxInputTokens, 786432);
+});
+
