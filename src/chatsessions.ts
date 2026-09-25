@@ -185,6 +185,8 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
         try { token?.onCancellationRequested?.(onCancel); } catch { /* ignore */ }
         try {
           let first = true;
+          const selEcho = selFor(resourceStr);
+          outputChannel.appendLine(`[opencode] prompt model=${selEcho.model ?? '<server-default>'} effort=${selEcho.effort ?? '-'} mode=${selEcho.mode ?? '-'}`);
           const full = await b.prompt(resourceStr, text, (chunk) => {
             try {
               if (first) { response?.progress?.('OpenCode is thinking…'); first = false; }
