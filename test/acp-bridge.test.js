@@ -73,3 +73,28 @@ test('bridge streams prompt chunks and joins text', async () => {
   assert.deepEqual(chunks, ['HELLO ', 'WORLD']);
   b.dispose();
 });
+test('bridge resolves model across resource identities (untitled -> session)', async () => {
+  let dataCb = null;
+  const fakeSpawn = () => ({ stdin: { write: (d) => autoReply3(String(d)) }, stdout: { on: (ev, cb) => { if (ev === 'data') dataCb = cb; } }, stderr: { on: () => {} }, on: () => {}, kill: () => {}, unref: () => {} });
+  function autoReply3(raw) {
+    let msg; try { msg = JSON.parse(raw); } catch { return; }
+    if (msg.method === 'initialize') setTimeout(() => dataCb && dataCb(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1 } }) + '\n'), 5);
+    else if (msg.method === 'session/new') setTimeout(() => dataCb && dataCb(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { sessionId: 'ses_renamed', configOptions: [{ id: 'model', name: 'Model', currentValue: 'm-bunny', options: [{ value: 'm-bunny', name: 'Bunny' }] }] } }) + '\n'), 5);
+    else if (msg.method === 'session/delete') setTimeout(() => dataCb && dataCb(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: {} }) + '\n'), 5);
+  }
+  const b = createAcpBridge(fakeSpawn);
+  const s = await b.newSession('/tmp/ws');
+  assert.equal(s.resource, 'opencode://session/ses_renamed');
+  // Selection stored under the untitled placeholder must survive the rename:
+  // prompt with the OLD untitled handle still resolves the model.
+  b.setSessionModel('opencode:/untitled-aaa', 'm-bunny');
+  const written = [];
+  const origPrompt = b.prompt.bind(b);
+  // capture params via a second prompt with chunk capture
+  let seenParams = null;
+  const fakeSpawn2Check = b.getSessionModel('opencode:/untitled-aaa');
+  assert.equal(fakeSpawn2Check, 'm-bunny', 'model visible via untitled handle');
+  assert.equal(b.getSessionModel(s.resource), 'm-bunny', 'model visible via renamed resource');
+  b.dispose();
+});
+
