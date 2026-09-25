@@ -63,6 +63,14 @@ export class ThemeColor {
     this.id = id;
   }
 }
+export class ChatResponseMarkdownPart {
+  constructor(value) { this.value = typeof value === 'string' ? value : value?.value; }
+}
+export class ChatResponseTurn {
+  constructor(response, result, participant, command) {
+    this.response = response; this.result = result; this.participant = participant; this.command = command;
+  }
+}
 export class ThemeIcon {
   constructor(id, color) {
     this.id = id;
@@ -89,5 +97,22 @@ export const Uri = {
     scheme: str.split(':')[0],
   }),
 };
+class Collection extends Map {
+  replace(items) { this.clear(); for (const i of items) this.set(i.resource.toString(), i); }
+  add(item) { this.set(item.resource.toString(), item); return this; }
+}
+function createChatSessionItemController(id, refreshHandler) {
+  const listeners = [];
+  const controller = {
+    id, refreshHandler,
+    items: new Collection(),
+    createChatSessionItem: (resource, label) => ({ resource, label, timing: { startTime: Date.now() } }),
+    onDidChangeChatSessionItemState: (fn) => { listeners.push(fn); return { dispose() {} }; },
+    dispose() {},
+  };
+  return controller;
+}
+export const chat = { createChatSessionItemController, registerChatSessionContentProvider: (_s, _p) => ({ dispose() {} }) };
+export default { chat, Uri, ThemeIcon, EventEmitter, ChatResponseMarkdownPart, ChatResponseTurn };
 
 

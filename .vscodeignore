@@ -16,3 +16,5 @@ eslint.config.js
 .vscode-test/**
 .test-user-data/**
 .test-extensions/**
+.superpowers/**
+docs/superpowers/**

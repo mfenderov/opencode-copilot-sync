@@ -105,6 +105,11 @@ The extension registers a native **OpenCode** chat provider for requests and mai
 
 ---
 
+## Insiders spike: OpenCode Session Target
+Requires VS Code Insiders sideload (`code-insiders --install-extension *.vsix`). Uses proposed `chatSessionsProvider`; will not pass stable Marketplace validation. Needs `opencode` CLI on PATH (`opencode acp --help` prints ACP server help). Select OpenCode in Agent Session Target to run prompts on the local harness.
+
+---
+
 ## 📄 License
 
 MIT © Mark Fenderov
