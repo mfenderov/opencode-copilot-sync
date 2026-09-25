@@ -49,7 +49,33 @@ export class LanguageModelError extends Error {
 export const window = {
   createOutputChannel: () => ({ appendLine: () => {}, append: () => {}, show: () => {} }),
   registerTreeDataProvider: () => ({ dispose: () => {} }),
+  createStatusBarItem: () => ({ text: '', tooltip: '', command: undefined, show: () => {} }),
+  showWarningMessage: async () => undefined,
+  showInformationMessage: async () => undefined,
+  showErrorMessage: async () => undefined,
+  withProgress: (options, task) => task(),
 };
+export const workspace = {
+  getConfiguration: () => ({
+    get: (key, defaultValue) => defaultValue,
+    update: async () => {},
+  }),
+  onDidChangeConfiguration: () => ({ dispose: () => {} }),
+  openTextDocument: async () => { throw new Error('not implemented in mock'); },
+};
+export const commands = {
+  registerCommand: () => ({ dispose: () => {} }),
+  executeCommand: async () => undefined,
+};
+export const ConfigurationTarget = { Global: 1, Workspace: 2, WorkspaceFolder: 3 };
+export const ProgressLocation = { SourceControl: 1, Window: 10, Notification: 15 };
+export const StatusBarAlignment = { Left: 1, Right: 2 };
+export class MarkdownString {
+  constructor(value = '') {
+    this.value = value;
+    this.isTrusted = false;
+  }
+}
 export const lm = {
   registerLanguageModelChatProvider: () => ({ dispose: () => {} }),
 };

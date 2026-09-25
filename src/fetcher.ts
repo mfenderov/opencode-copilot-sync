@@ -1,5 +1,9 @@
 import { fetchWithRetry, isOfflineMode, withProxy } from './network.js';
 
+// Bound for catalog fetches: a hung connection must fail fast instead of
+// stalling the whole startup sync past every retry budget.
+const CATALOG_FETCH_TIMEOUT_MS = 5_000;
+
 export async function fetchOpenCodeModels(
   apiKey: string,
   catalog: 'go' | 'zen' = 'go'
@@ -15,6 +19,7 @@ export async function fetchOpenCodeModels(
       Authorization: `Bearer ${apiKey}`,
       'User-Agent': 'vscode-copilot/1.0',
     },
+    signal: AbortSignal.timeout(CATALOG_FETCH_TIMEOUT_MS),
   });
 
   if (!res.ok) {

@@ -14,12 +14,12 @@
     "complexity": 37,
     "coverage": 0.845
   },
-  "src/extension.ts:71:updateUsageMeter": {
-    "crap": 42,
+  "src/extension.ts:75:updateUsageMeter": {
+    "crap": 38,
     "complexity": 6,
-    "coverage": 0
+    "coverage": 0.038
   },
-  "src/fetcher.ts:151:checkZenBalance": {
+  "src/fetcher.ts:156:checkZenBalance": {
     "crap": 36.43,
     "complexity": 7,
     "coverage": 0.156
@@ -28,11 +28,6 @@
     "crap": 33.4,
     "complexity": 33,
     "coverage": 0.928
-  },
-  "src/extension.ts:16:activate": {
-    "crap": 30,
-    "complexity": 5,
-    "coverage": 0
   },
   "src/provider-protocol.ts:362:formatProviderMessages": {
     "crap": 25.01,
@@ -59,7 +54,7 @@
     "complexity": 16,
     "coverage": 1
   },
-  "src/fetcher.ts:56:fetchModelsDevMetadata": {
+  "src/fetcher.ts:61:fetchModelsDevMetadata": {
     "crap": 15.03,
     "complexity": 15,
     "coverage": 0.95
@@ -69,7 +64,7 @@
     "complexity": 15,
     "coverage": 0.957
   },
-  "src/fetcher.ts:103:isFreeTierModel": {
+  "src/fetcher.ts:108:isFreeTierModel": {
     "crap": 11.02,
     "complexity": 11,
     "coverage": 0.95

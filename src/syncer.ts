@@ -50,8 +50,12 @@ export async function syncOpenCodeModels(
 ): Promise<SyncOpenCodeResult> {
   const includeGo = options.includeGo ?? true;
   const includeZen = options.includeZen ?? true;
-  const catalogIds = await fetchOpenCodeCatalogIds(apiKey, includeGo, includeZen);
-  const metadata = await fetchOpenCodeModelMetadata();
+  // Catalog IDs and model metadata are independent: fetch them concurrently
+  // so the multi-megabyte metadata download never serializes behind catalogs.
+  const [catalogIds, metadata] = await Promise.all([
+    fetchOpenCodeCatalogIds(apiKey, includeGo, includeZen),
+    fetchOpenCodeModelMetadata(),
+  ]);
   const { models, zenCount } = buildUnifiedModels(
     catalogIds.goModelIds,
     catalogIds.zenModelIds,
