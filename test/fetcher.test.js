@@ -1,6 +1,6 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkZenBalance, fetchModelsDevMetadata, fetchOpenCodeModels, filterFreeModels, isFreeTierModel, filterAvailableGoModels, KNOWN_UNAVAILABLE_MODELS } from '../out/fetcher.js';
+import { checkZenBalance, fetchModelsDevMetadata, fetchOpenCodeModels, filterFreeModels, isFreeTierModel, filterAvailableGoModels, KNOWN_UNAVAILABLE_MODELS } from '../out/models/infrastructure/models-dev-client.js';
 
 const originalOfflineMode = process.env.OPENCODE_OFFLINE;
 delete process.env.OPENCODE_OFFLINE;

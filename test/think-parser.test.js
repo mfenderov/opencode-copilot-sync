@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ThinkTagStreamParser } from '../out/provider.js';
+import { ThinkTagStreamParser } from '../out/chat/infrastructure/sse-reader.js';
 
 test('ThinkTagStreamParser splits inline text/thinking when both are in one chunk', () => {
   const parser = new ThinkTagStreamParser();

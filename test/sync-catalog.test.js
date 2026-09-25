@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { fetchOpenCodeCatalogIds } from '../out/sync-catalog.js';
+import { fetchOpenCodeCatalogIds } from '../out/models/application/synchronize-models.js';
 
 const originalOfflineMode = process.env.OPENCODE_OFFLINE;
 delete process.env.OPENCODE_OFFLINE;

@@ -4,13 +4,15 @@ import * as vscode from 'vscode';
 import {
   createOpenCodeRequestHeaders,
   createProviderRequest,
-  formatProviderMessages,
+} from '../out/chat/infrastructure/request-factory.js';
+import { formatProviderMessages } from '../out/chat/infrastructure/message-mapper.js';
+import {
   formatProviderTools,
-  getReasoningEffort,
   isSyntheticVerificationTool,
-  resolveModelTokenLimits,
-} from '../out/provider-protocol.js';
-import { isSyntheticVerificationTool as providerSyntheticToolFilter } from '../out/provider.js';
+  isSyntheticVerificationTool as providerSyntheticToolFilter,
+} from '../out/chat/infrastructure/tool-mapper.js';
+import { getReasoningEffort } from '../out/chat/infrastructure/reasoning-controls.js';
+import { resolveModelTokenLimits } from '../out/models/domain/token-budget.js';
 
 test('resolveModelTokenLimits rejects metadata that cannot preserve a positive input budget', () => {
   const cases = [

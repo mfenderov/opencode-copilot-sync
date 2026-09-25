@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as vscode from 'vscode';
-import { consumeProviderStream } from '../out/provider-stream.js';
+import { consumeProviderStream } from '../out/chat/application/send-chat-message.js';
 
 function createProgress() {
   const parts = [];

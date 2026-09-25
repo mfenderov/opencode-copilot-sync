@@ -1,60 +1,65 @@
 {
-  "src/provider-stream.ts:116:<anonymous>": {
-    "crap": 157.18,
-    "complexity": 111,
-    "coverage": 0.845
+  "src/chat/infrastructure/responses-parser.ts:4:processResponsesEvent": {
+    "crap": 135.16,
+    "complexity": 79,
+    "coverage": 0.792
   },
-  "src/enricher.ts:62:enrichModel": {
+  "src/models/infrastructure/model-enricher.ts:42:enrichModel": {
     "crap": 66.65,
     "complexity": 65,
     "coverage": 0.927
   },
-  "src/provider-stream.ts:52:consumeProviderStream": {
-    "crap": 42.1,
-    "complexity": 37,
-    "coverage": 0.845
-  },
-  "src/extension.ts:75:updateUsageMeter": {
-    "crap": 38,
+  "src/usage/application/refresh-usage.ts:8:updateUsageMeter": {
+    "crap": 38.73,
     "complexity": 6,
-    "coverage": 0.038
+    "coverage": 0.031
   },
-  "src/fetcher.ts:156:checkZenBalance": {
+  "src/chat/application/send-chat-message.ts:30:consumeProviderStream": {
+    "crap": 38.32,
+    "complexity": 36,
+    "coverage": 0.879
+  },
+  "src/models/infrastructure/models-dev-client.ts:158:checkZenBalance": {
     "crap": 36.43,
     "complexity": 7,
     "coverage": 0.156
   },
-  "src/provider.ts:510:streamResponse": {
-    "crap": 31.22,
+  "src/chat/infrastructure/vscode-chat-provider.ts:234:streamResponse": {
+    "crap": 31.23,
     "complexity": 31,
-    "coverage": 0.939
+    "coverage": 0.938
   },
-  "src/provider-protocol.ts:362:formatProviderMessages": {
+  "src/chat/infrastructure/message-mapper.ts:45:formatProviderMessages": {
     "crap": 25.01,
     "complexity": 25,
     "coverage": 0.973
   },
-  "src/usage.ts:21:fetchOpenCodeUsage": {
+  "src/chat/infrastructure/chat-completions-parser.ts:4:processChatCompletionsEvent": {
+    "crap": 23,
+    "complexity": 23,
+    "coverage": 1
+  },
+  "src/usage/infrastructure/quota-client.ts:7:fetchOpenCodeUsage": {
     "crap": 18.48,
     "complexity": 18,
     "coverage": 0.886
   },
-  "src/enricher.ts:38:<anonymous>": {
+  "src/chat/infrastructure/message-mapper.ts:158:buildResponsesInput": {
     "crap": 17,
     "complexity": 17,
     "coverage": 1
   },
-  "src/provider-protocol.ts:501:buildResponsesInput": {
+  "src/models/infrastructure/model-enricher.ts:18:<anonymous>": {
     "crap": 17,
     "complexity": 17,
     "coverage": 1
   },
-  "src/provider-protocol.ts:241:getReasoningEffort": {
+  "src/chat/infrastructure/reasoning-controls.ts:32:getReasoningEffort": {
     "crap": 16,
     "complexity": 16,
     "coverage": 1
   },
-  "src/fetcher.ts:61:fetchModelsDevMetadata": {
+  "src/models/infrastructure/models-dev-client.ts:63:fetchModelsDevMetadata": {
     "crap": 15.03,
     "complexity": 15,
     "coverage": 0.95
@@ -64,17 +69,17 @@
     "complexity": 15,
     "coverage": 0.957
   },
-  "src/fetcher.ts:108:isFreeTierModel": {
-    "crap": 11.02,
-    "complexity": 11,
-    "coverage": 0.95
-  },
-  "src/provider-protocol.ts:463:sanitizeResponsesInput": {
+  "src/chat/infrastructure/message-mapper.ts:120:sanitizeResponsesInput": {
     "crap": 11.02,
     "complexity": 11,
     "coverage": 0.946
   },
-  "src/provider.ts:372:<anonymous>": {
+  "src/models/infrastructure/models-dev-client.ts:110:isFreeTierModel": {
+    "crap": 11.02,
+    "complexity": 11,
+    "coverage": 0.95
+  },
+  "src/chat/infrastructure/vscode-chat-provider.ts:97:<anonymous>": {
     "crap": 11.01,
     "complexity": 11,
     "coverage": 0.953

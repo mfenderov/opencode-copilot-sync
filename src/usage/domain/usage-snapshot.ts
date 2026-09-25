@@ -1,5 +1,4 @@
-import { isOfflineMode } from './network.js';
-
+// Usage domain: quota snapshot types and display mapping.
 export interface GoUsagePeriod {
   status: 'ok' | 'rate-limited';
   percent: number;
@@ -16,42 +15,20 @@ export type GoUsageResult =
   | { ok: true; usage: GoUsageData }
   | { ok: false; reason: 'no-key' | 'unauthorized' | 'no-subscription' | 'network' | 'invalid' };
 
-export const OPENCODE_USAGE_URL = 'https://opencode.ai/zen/go/v1/usage';
+export interface UsageDisplayState {
+  usage: GoUsageData | null;
+  error?: string;
+}
 
-export async function fetchOpenCodeUsage(
-  apiKey: string,
-  fetchFn: typeof fetch = fetch
-): Promise<GoUsageResult> {
-  if (!apiKey?.trim()) {
-    return { ok: false, reason: 'no-key' };
+/** Maps a quota result to tree/status-bar display state in one place. */
+export function toUsageDisplayState(res: GoUsageResult): UsageDisplayState {
+  if (res.ok) {
+    return { usage: res.usage };
   }
-  if (isOfflineMode()) {
-    return { ok: false, reason: 'network' };
+  if (res.reason === 'no-subscription') {
+    return { usage: null, error: 'No active Go subscription (Zen pay-as-you-go / free)' };
   }
-
-  try {
-    const res = await fetchFn(OPENCODE_USAGE_URL, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${apiKey.trim()}`,
-        'x-opencode-session': 'vscode-copilot',
-        'User-Agent': 'vscode-copilot/1.0',
-      },
-    });
-
-    if (res.status === 401) return { ok: false, reason: 'unauthorized' };
-    if (res.status === 403) return { ok: false, reason: 'no-subscription' };
-    if (!res.ok) return { ok: false, reason: 'network' };
-
-    const json = (await res.json()) as { usage?: GoUsageData };
-    if (!json?.usage?.rolling || !json?.usage?.weekly || !json?.usage?.monthly) {
-      return { ok: false, reason: 'invalid' };
-    }
-
-    return { ok: true, usage: json.usage };
-  } catch {
-    return { ok: false, reason: 'network' };
-  }
+  return { usage: null, error: `Unable to fetch usage (${res.reason})` };
 }
 
 export function formatStatusBarText(usage: GoUsageData): string {

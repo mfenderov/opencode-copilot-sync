@@ -1,33 +1,13 @@
-import { isFreeTierModel, type ModelDevMetadata } from './fetcher.js';
-import { resolveModelTokenLimits } from './provider-protocol.js';
+// Models infrastructure: model metadata enrichment.
+import { isFreeTierModel, type ModelDevMetadata } from './models-dev-client.js';
+import { resolveModelTokenLimits } from '../domain/token-budget.js';
+import type { CustomEndpointModel } from '../domain/model.js';
 
 export interface EnrichOptions {
   isGo?: boolean;
   isFree?: boolean;
   suffix?: string;
   modelsDevData?: ModelDevMetadata;
-}
-
-export interface CustomEndpointModel {
-  id: string;
-  name: string;
-  url: string;
-  family?: string;
-  apiType: 'chat-completions' | 'messages' | 'responses';
-  toolCalling: boolean;
-  vision: boolean;
-  contextWindow: number;
-  maxInputTokens: number;
-  maxOutputTokens: number;
-  thinking: boolean;
-  supportsReasoningEffort?: string[];
-  reasoningEffortFormat?: string;
-  requestHeaders?: Record<string, string>;
-  isFree?: boolean;
-  modelOptions?: {
-    temperature: number | null;
-    top_p: number | null;
-  };
 }
 
 export function formatModelName(id: string, suffix = '(OpenCode)'): string {

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as vscode from 'vscode';
-import { OpenCodeUsageTreeProvider } from '../out/views/usageTreeProvider.js';
+import { OpenCodeUsageTreeProvider } from '../out/usage/infrastructure/usage-tree-adapter.js';
 
 test('OpenCodeUsageTreeProvider: returns 3 root categories', () => {
   const provider = new OpenCodeUsageTreeProvider(async () => 'sk-test');

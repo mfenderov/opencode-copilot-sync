@@ -4,7 +4,7 @@ import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import * as vscode from 'vscode';
-import { OpenCodeChatProvider } from '../out/provider.js';
+import { OpenCodeChatProvider } from '../out/chat/infrastructure/vscode-chat-provider.js';
 import { startMockServer } from './helpers/mock-opencode-server.js';
 
 let mockServer;

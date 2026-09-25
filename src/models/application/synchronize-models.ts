@@ -1,20 +1,15 @@
-import { enrichModel, type CustomEndpointModel } from './enricher.js';
+// Models application: catalog sync orchestration.
+import { type ProviderEntry } from '../../config.js';
+import { enrichModel } from '../infrastructure/model-enricher.js';
+import type { CustomEndpointModel } from '../domain/model.js';
 import {
   fetchModelsDevMetadata,
   fetchOpenCodeModels,
   isFreeTierModel,
   type ModelDevMetadata,
-} from './fetcher.js';
-
-export interface OpenCodeCatalogIds {
-  goModelIds: string[];
-  zenModelIds: string[];
-}
-
-export interface UnifiedOpenCodeModels {
-  models: CustomEndpointModel[];
-  zenCount: number;
-}
+} from '../infrastructure/models-dev-client.js';
+import type { OpenCodeCatalogIds, UnifiedOpenCodeModels } from '../domain/model-catalog.js';
+import { writeProvidersToConfig } from '../../sync-writer.js';
 
 export async function fetchOpenCodeCatalogIds(
   apiKey: string,
@@ -119,4 +114,77 @@ export function buildUnifiedModels(
   const goModels = buildGoModels(goModelIds, metadata);
   const zenModels = buildZenModels(zenModelIds, goModelIds, metadata);
   return { models: [...goModels, ...zenModels], zenCount: zenModels.length };
+}
+
+export function getModelFamily(model: SyncOpenCodeResult['models'][number]): string {
+  return model.family || model.id;
+}
+
+export function getModelCatalog(model: SyncOpenCodeResult['models'][number]): 'go' | 'zen' {
+  return model.url.includes('/go/') ? 'go' : 'zen';
+}
+
+export interface SyncOpenCodeOptions {
+  includeGo?: boolean;
+  includeZen?: boolean;
+  /** Explicit config-file target; it is primary only when it resolves to the active storage path. */
+  targetPath?: string;
+  storagePath?: string;
+  remoteName?: string;
+  additionalTargetPaths?: readonly string[];
+}
+
+export interface SyncOpenCodeResult {
+  goCount: number;
+  zenCount: number;
+  totalCount: number;
+  models: CustomEndpointModel[];
+  targetPath: string;
+  backupPath: string | null;
+  warnings: string[];
+}
+
+export async function syncOpenCodeModels(
+  apiKey: string,
+  options: SyncOpenCodeOptions = {}
+): Promise<SyncOpenCodeResult> {
+  const includeGo = options.includeGo ?? true;
+  const includeZen = options.includeZen ?? true;
+  // Catalog IDs and model metadata are independent: fetch them concurrently
+  // so the multi-megabyte metadata download never serializes behind catalogs.
+  const [catalogIds, metadata] = await Promise.all([
+    fetchOpenCodeCatalogIds(apiKey, includeGo, includeZen),
+    fetchOpenCodeModelMetadata(),
+  ]);
+  const { models, zenCount } = buildUnifiedModels(
+    catalogIds.goModelIds,
+    catalogIds.zenModelIds,
+    metadata
+  );
+
+  if (models.length === 0) {
+    throw new Error('No models were fetched from OpenCode API. Preserving existing configuration to prevent accidental erasure.');
+  }
+
+  const unifiedProvider: ProviderEntry = {
+    name: 'OpenCode',
+    vendor: 'customendpoint',
+    apiKey,
+    apiType: 'chat-completions',
+    models,
+  };
+  const writeResult = writeProvidersToConfig([unifiedProvider], options.targetPath, options.storagePath, {
+    remoteName: options.remoteName,
+    additionalTargetPaths: options.additionalTargetPaths,
+  });
+
+  return {
+    goCount: catalogIds.goModelIds.length,
+    zenCount,
+    totalCount: models.length,
+    models,
+    targetPath: writeResult.targetPath,
+    backupPath: writeResult.backupPath,
+    warnings: writeResult.warnings,
+  };
 }

@@ -2,17 +2,21 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   readChatLanguageModels,
+  safeWriteFileSync,
+} from '../out/sync-files.js';
+import {
   getChatLanguageModelsPath,
   getAllChatLanguageModelsPaths,
+} from '../out/sync-targets.js';
+import {
   syncWslMirror,
   writeProvidersToConfig,
   cleanupLegacyOpenCodeCustomEndpoints,
-  safeWriteFileSync,
-  syncOpenCodeModels,
-} from '../out/syncer.js';
+} from '../out/sync-writer.js';
+import { syncOpenCodeModels } from '../out/models/application/synchronize-models.js';
 import { buildProviderEntry } from '../out/config.js';
-import * as syncerModule from '../out/syncer.js';
-import { setVSCodeProxyUrl } from '../out/network.js';
+import * as syncerModule from '../out/models/application/synchronize-models.js';
+import { setVSCodeProxyUrl } from '../out/infrastructure/http/proxy-routing.js';
 
 function createCurrentUserSyncFixture(root) {
   const platform = process.platform;

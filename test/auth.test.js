@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveApiKey, promptAndSetApiKey, SECRET_KEY } from '../out/auth.js';
+import { resolveApiKey, promptAndSetApiKey, SECRET_KEY } from '../out/infrastructure/vscode/secret-store.js';
 import * as vscode from 'vscode';
 
 function createMockSecretStorage(initialKey = '') {
