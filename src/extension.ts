@@ -21,6 +21,9 @@ export async function activate(context: vscode.ExtensionContext) {
   outputChannel.appendLine(
     `[Platform] OS: ${process.platform} (${process.arch}), Remote: ${vscode.env.remoteName || 'local'}, App: ${vscode.env.appName}`
   );
+  outputChannel.appendLine(
+    `[Version] opencode-copilot-sync ${context.extension.packageJSON?.version ?? 'unknown'} (chatSessions spike branch)`
+  );
 
   // Honor VS Code's own `http.proxy` setting for all outbound requests, in addition to
   // the standard HTTPS_PROXY/HTTP_PROXY/NO_PROXY env vars (network.ts falls back to those).
