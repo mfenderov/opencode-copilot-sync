@@ -51,7 +51,7 @@ export {
   isStaleReasoningInput,
   normalizeReasoningEffort,
 } from './chat/infrastructure/reasoning-controls.js';
-export { ThinkTagStreamParser } from './provider-protocol.js';
+export { ThinkTagStreamParser } from './chat/infrastructure/sse-reader.js';
 export type { OpenCodeModelMeta } from './models/domain/model.js';
 
 export const VERIFIED_OPENCODE_MODELS: OpenCodeModelMeta[] = [

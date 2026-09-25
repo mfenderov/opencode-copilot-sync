@@ -29,6 +29,32 @@
       "count": 2
     }
   },
+  "src/chat/infrastructure/chat-completions-parser.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 3
+    },
+    "@typescript-eslint/no-unsafe-argument": {
+      "count": 3
+    },
+    "@typescript-eslint/no-unsafe-assignment": {
+      "count": 6
+    },
+    "@typescript-eslint/no-unsafe-call": {
+      "count": 3
+    },
+    "@typescript-eslint/no-unsafe-member-access": {
+      "count": 22
+    },
+    "@typescript-eslint/no-unsafe-return": {
+      "count": 1
+    },
+    "@typescript-eslint/prefer-nullish-coalescing": {
+      "count": 5
+    },
+    "@typescript-eslint/restrict-plus-operands": {
+      "count": 2
+    }
+  },
   "src/chat/infrastructure/message-mapper.ts": {
     "@typescript-eslint/no-explicit-any": {
       "count": 5
@@ -66,6 +92,29 @@
       "count": 5
     }
   },
+  "src/chat/infrastructure/responses-parser.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 2
+    },
+    "@typescript-eslint/no-unsafe-argument": {
+      "count": 10
+    },
+    "@typescript-eslint/no-unsafe-assignment": {
+      "count": 25
+    },
+    "@typescript-eslint/no-unsafe-member-access": {
+      "count": 58
+    },
+    "@typescript-eslint/prefer-nullish-coalescing": {
+      "count": 19
+    },
+    "@typescript-eslint/prefer-optional-chain": {
+      "count": 1
+    },
+    "@typescript-eslint/restrict-plus-operands": {
+      "count": 1
+    }
+  },
   "src/chat/infrastructure/tool-mapper.ts": {
     "@typescript-eslint/prefer-nullish-coalescing": {
       "count": 2
@@ -73,34 +122,22 @@
   },
   "src/provider-stream.ts": {
     "@typescript-eslint/no-explicit-any": {
-      "count": 9
+      "count": 2
     },
     "@typescript-eslint/no-unnecessary-condition": {
       "count": 3
     },
     "@typescript-eslint/no-unsafe-argument": {
-      "count": 23
+      "count": 2
     },
     "@typescript-eslint/no-unsafe-assignment": {
-      "count": 35
+      "count": 3
     },
     "@typescript-eslint/no-unsafe-call": {
-      "count": 7
+      "count": 1
     },
     "@typescript-eslint/no-unsafe-member-access": {
-      "count": 84
-    },
-    "@typescript-eslint/no-unsafe-return": {
       "count": 1
-    },
-    "@typescript-eslint/prefer-nullish-coalescing": {
-      "count": 24
-    },
-    "@typescript-eslint/prefer-optional-chain": {
-      "count": 1
-    },
-    "@typescript-eslint/restrict-plus-operands": {
-      "count": 3
     }
   },
   "src/provider.ts": {
