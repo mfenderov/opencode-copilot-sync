@@ -18,8 +18,11 @@ test('registers opencode controller and serves content', async () => {
     registerChatSessionContentProvider: (scheme, p) => { fakeVscode._provider = p; fakeVscode._handleOptions = p.provideHandleOptionsChange?.bind?.(p); return { dispose() {} }; } } };
   const bridge = { listSessions: async () => [], newSession: async () => ({ resource: 'opencode://session/abc', label: 'abc' }), prompt: async (handle, text, onChunk) => { prompts.push([handle, text]); onChunk?.('bridge says: ' + text); return 'bridge says: ' + text; }, cancel: async () => {}, dispose: () => {},
     getModels: async () => ({ models: [{ value: 'opencode/big-pickle', name: 'opencode/Big Pickle' }, { value: 'opencode/gpt-5', name: 'opencode/GPT 5' }], current: 'opencode/big-pickle' }),
-    getSessionModel: (h) => sessionModelOf(h), setSessionModel: (h, m) => { sessionModelSet.push([h, m]); } };
+    getConfig: async () => ({ models: [{ value: 'opencode/big-pickle', name: 'opencode/Big Pickle' }, { value: 'opencode/gpt-5', name: 'opencode/GPT 5' }], currentModel: 'opencode/big-pickle', efforts: [{ value: 'low', name: 'Low' }, { value: 'default', name: 'Default' }], currentEffort: 'default', modes: [{ value: 'build', name: 'Build' }, { value: 'plan', name: 'Plan' }], currentMode: 'build' }),
+    getSessionModel: (h) => sessionModelOf(h), setSessionModel: (h, m) => { sessionCfgSet.push([h, { model: m }]); },
+    getSessionConfig: (h) => ({}), setSessionConfig: (h, c) => { sessionCfgSet.push([h, c]); } };
   const sessionModelSet = [];
+  const sessionCfgSet = [];
   const prompts = [];
   const sessionModelOf = (_h) => undefined;
   const h = registerOpencodeChatSession(fakeVscode, { appendLine() {} }, bridge);
@@ -46,14 +49,14 @@ test('registers opencode controller and serves content', async () => {
   assert.ok(modelGroup.selected?.id === 'opencode/big-pickle', 'current model preselected');
   // Per-message model override flows into the bridge.
   await content.requestHandler({ prompt: 'hi again' }, { inputState: { groups: [{ id: 'models', selected: { id: 'opencode/gpt-5' } }] } }, { markdown: () => {}, progress: () => {} }, {});
-  assert.ok(sessionModelSet.some(([h, m]) => m === 'opencode/gpt-5'), 'model override applied to bridge');
+  assert.ok(sessionCfgSet.some(([h, c]) => c?.model === 'opencode/gpt-5'), 'model override applied to bridge');
   // Picker-driven change (provideHandleOptionsChange) persists per session.
   await fakeVscode._provider.provideHandleOptionsChange(
     vscode.Uri.parse('opencode://session/abc'),
     [{ optionId: 'models', value: 'opencode/kimi-k3' }],
     {},
   );
-  assert.ok(sessionModelSet.some(([h, m]) => m === 'opencode/kimi-k3'), 'picker selection applied to bridge');
+  assert.ok(sessionCfgSet.some(([h, c]) => c?.model === 'opencode/kimi-k3'), 'picker selection applied to bridge');
   // Type-level provider options seed the input-bar Model picker.
   const providerOpts = await fakeVscode._provider.provideChatSessionProviderOptions({});
   const typeGroups = providerOpts?.optionGroups ?? [];
@@ -61,5 +64,8 @@ test('registers opencode controller and serves content', async () => {
   assert.ok(typeModels, 'type-level models group present');
   assert.equal(typeModels.items.length, 2, 'ACP catalog exposed at type level');
   assert.ok(typeModels.selected?.id === 'opencode/big-pickle', 'current model preselected at type level');
+  const typeMode = typeGroups.find((g) => g?.id === 'mode');
+  assert.ok(typeMode, 'type-level mode group present (build/plan)');
+  assert.equal(typeMode.items.length, 2, 'mode options exposed');
   h.dispose();
 });

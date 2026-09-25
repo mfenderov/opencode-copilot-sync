@@ -6,30 +6,75 @@ export function isChatSessionsAvailable(vscode: any): boolean {
 export function registerOpencodeChatSession(vscode: any, outputChannel: { appendLine(m: string): void }, bridge = createAcpBridge()) {
   if (!isChatSessionsAvailable(vscode)) throw new Error('chatSessionsProvider API not available (Insiders proposed API required)');
   type Bridge = ReturnType<typeof createAcpBridge>;
-  const b = bridge as Bridge & { getModels?: () => Promise<{ models: { value: string; name: string }[]; current?: string }>; getSessionModel?: (h: string) => string | undefined; setSessionModel?: (h: string, m: string) => void };
-  // Per-session model selection shown in the agent input pickers. Resolved
-  // lazily from the ACP session/new configOptions (108 models).
-  const sessionModelSel = new Map<string, string>();
-  async function modelGroupFor(resourceStr: string) {
-    let items: { value: string; name: string }[] = [];
-    let current: string | undefined = sessionModelSel.get(resourceStr) ?? b.getSessionModel?.(resourceStr);
+  const b = bridge as Bridge & {
+    getModels?: () => Promise<{ models: { value: string; name: string }[]; current?: string }>;
+    getConfig?: () => Promise<{ models: { value: string; name: string }[]; currentModel?: string; efforts: { value: string; name: string }[]; currentEffort?: string; modes: { value: string; name: string }[]; currentMode?: string }>;
+    getSessionModel?: (h: string) => string | undefined;
+    setSessionModel?: (h: string, m: string) => void;
+    getSessionConfig?: (h: string) => { model?: string; effort?: string; mode?: string };
+    setSessionConfig?: (h: string, c: { model?: string; effort?: string; mode?: string }) => void;
+  };
+  // Per-session selections shown in the agent input pickers (Model, Effort,
+  // Mode). Resolved lazily from the ACP session/new configOptions.
+  const sessionSel = new Map<string, { model?: string; effort?: string; mode?: string }>();
+  function selFor(resourceStr: string): { model?: string; effort?: string; mode?: string } {
+    return {
+      model: sessionSel.get(resourceStr)?.model ?? b.getSessionModel?.(resourceStr),
+      effort: sessionSel.get(resourceStr)?.effort ?? b.getSessionConfig?.(resourceStr)?.effort,
+      mode: sessionSel.get(resourceStr)?.mode ?? b.getSessionConfig?.(resourceStr)?.mode,
+    };
+  }
+  function applySel(resourceStr: string, cfg: { model?: string; effort?: string; mode?: string }): void {
+    const prev = sessionSel.get(resourceStr) ?? {};
+    sessionSel.set(resourceStr, { ...prev, ...cfg });
+    b.setSessionConfig?.(resourceStr, cfg);
+    if (cfg.model) b.setSessionModel?.(resourceStr, cfg.model);
+  }
+  function groupFor(id: string, name: string, description: string, options: { value: string; name: string }[], current?: string): any {
+    if (!options.length) return undefined;
+    const sel = options.find(o => o.value === current) ?? options[0];
+    const cap = (s: string) => s.length > 60 ? s.slice(0, 57) + '…' : s;
+    return {
+      id, name, description,
+      selected: { id: sel.value, name: sel.name, default: true },
+      items: options.map(o => ({ id: o.value, name: cap(o.name), description: o.value, tooltip: o.value, default: o.value === sel.value })),
+    };
+  }
+  async function optionGroupsFor(resourceStr: string): Promise<any[]> {
+    const sel = selFor(resourceStr);
+    let models: { value: string; name: string }[] = [];
+    let efforts: { value: string; name: string }[] = [];
+    let modes: { value: string; name: string }[] = [];
+    let currentModel = sel.model;
+    let currentEffort = sel.effort;
+    let currentMode = sel.mode;
     try {
-      const got = await b.getModels?.();
-      if (got?.models?.length) {
-        items = got.models;
-        current ??= got.current;
+      const cfg = await b.getConfig?.();
+      if (cfg) {
+        // NOTE: max 2 groups supported by the API; prefer models + mode.
+        if (cfg.models?.length) { models = cfg.models; currentModel ??= cfg.currentModel; }
+        if (cfg.modes?.length) { modes = cfg.modes; currentMode ??= cfg.currentMode; }
+        if (cfg.efforts?.length) { efforts = cfg.efforts; currentEffort ??= cfg.currentEffort; }
+      }
+      if (!models.length) {
+        const got = await b.getModels?.();
+        if (got?.models?.length) { models = got.models; currentModel ??= got.current; }
       }
     } catch (err) {
-      outputChannel.appendLine(`[opencode] models fetch failed: ${err}`);
+      outputChannel.appendLine(`[opencode] config fetch failed: ${err}`);
     }
-    if (!items.length) return undefined;
-    current ??= items[0].value;
-    const selected = items.find(i => i.value === current) ?? items[0];
-    return {
-      id: 'models', name: 'Model', description: 'OpenCode model for this session',
-      selected: { id: selected.value, name: selected.name, default: true },
-      items: items.map(i => ({ id: i.value, name: i.name, default: i.value === selected.value })),
-    };
+    const out: any[] = [];
+    // Log once per registration so the Output channel proves the round-trip.
+    outputChannel.appendLine(`[opencode] option groups for ${resourceStr || '<new>'}: models=${models.length} modes=${modes.length} efforts=${efforts.length}`);
+    const mg = groupFor('models', 'Model', 'OpenCode model for this session', models, currentModel);
+    if (mg) out.push(mg);
+    const md = groupFor('mode', 'Mode', 'Build or Plan', modes, currentMode);
+    if (md) { if (out.length < 2) out.push(md); }
+    if (out.length < 2) {
+      const eg = groupFor('effort', 'Effort', 'Reasoning effort', efforts, currentEffort);
+      if (eg) out.push(eg);
+    }
+    return out.slice(0, 2);
   }
   const controller = vscode.chat.createChatSessionItemController('opencode', async () => {
     try {
@@ -39,11 +84,11 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
       outputChannel.appendLine(`[opencode] refresh failed: ${err}`);
     }
   });
-  // Model picker in the agent input: VS Code queries this for option groups.
+  // Option groups for the agent input pickers. VS Code queries this for
+  // per-session input state; the content provider answers type-level groups.
   (controller as any).getChatSessionInputState = async (sessionResource: any, ctx: any) => {
     const resourceStr = String(sessionResource?.toString?.() ?? ctx?.previousInputState?.sessionResource?.toString?.() ?? '');
-    const group: any = await modelGroupFor(resourceStr);
-    const groups = group ? [group] : [];
+    const groups = await optionGroupsFor(resourceStr);
     try {
       return (controller as any).createChatSessionInputState
         ? (controller as any).createChatSessionInputState(groups)
@@ -55,16 +100,20 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
   controller.newChatSessionItemHandler = async (ctx: any) => {
     const cwd = vscode.workspace?.workspaceFolders?.[0]?.uri?.fsPath ?? process.cwd();
     const s = await b.newSession(cwd);
-    // Honor the model picked in the input state, if the user chose one.
+    // Honor options picked in the input state, if the user chose any.
     try {
-      const sel = ctx?.inputState?.groups?.find?.((g: any) => g?.id === 'models')?.selected?.id
-        ?? ctx?.inputState?.groups?.[0]?.selected?.id;
-      if (typeof sel === 'string' && sel) {
-        sessionModelSel.set(s.resource, sel);
-        b.setSessionModel?.(s.resource, sel);
-      }
+      const groups: any[] = ctx?.inputState?.groups ?? [];
+      const pick = (id: string): string | undefined => {
+        const g = groups.find?.((x: any) => x?.id === id);
+        const v = g?.selected?.id;
+        return typeof v === 'string' ? v : undefined;
+      };
+      const cfg: { model?: string; effort?: string; mode?: string } = {
+        model: pick('models'), effort: pick('effort'), mode: pick('mode'),
+      };
+      if (cfg.model || cfg.effort || cfg.mode) applySel(s.resource, cfg);
     } catch (err) {
-      outputChannel.appendLine(`[opencode] model select skipped: ${err}`);
+      outputChannel.appendLine(`[opencode] option select skipped: ${err}`);
     }
     const item = controller.createChatSessionItem(vscode.Uri.parse(s.resource), s.label);
     // The editor adds the returned item to the collection itself; only add
@@ -82,15 +131,19 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
   const contentDisp = vscode.chat.registerChatSessionContentProvider('opencode', {
     provideHandleOptionsChange: ((resource: any, updates: any) => {
       const resourceStr = String(resource?.toString?.() ?? '');
+      const cfg: { model?: string; effort?: string; mode?: string } = {};
       for (const u of updates ?? []) {
         const id = (u as any)?.optionId ?? (u as any)?.id;
         const val = (u as any)?.value;
         const valId = typeof val === 'string' ? val : (val as any)?.id;
-        if (id === 'models' && typeof valId === 'string' && valId) {
-          sessionModelSel.set(resourceStr, valId);
-          b.setSessionModel?.(resourceStr, valId);
-          outputChannel.appendLine(`[opencode] model selected: ${valId}`);
-        }
+        if (typeof valId !== 'string' || !valId) continue;
+        if (id === 'models') cfg.model = valId;
+        else if (id === 'effort') cfg.effort = valId;
+        else if (id === 'mode') cfg.mode = valId;
+      }
+      if (cfg.model || cfg.effort || cfg.mode) {
+        applySel(resourceStr, cfg);
+        outputChannel.appendLine(`[opencode] options selected: ${JSON.stringify(cfg)}`);
       }
     }) as any,
     async provideChatSessionContent(resource: any, _token: any, _ctx: any) {
@@ -110,17 +163,21 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
       const requestHandler = async (request: any, context: any, response: any, token: any) => {
         const text = String(request?.prompt ?? '');
         const resourceStr = String(resource?.toString?.() ?? '');
-        // Model picked per message via the input-state picker, if present.
+        // Options picked per message via the input-state pickers, if present.
         try {
           const groups: any[] = context?.inputState?.groups ?? context?.history?.inputState?.groups ?? [];
-          const sel = groups.find?.((g: any) => g?.id === 'models')?.selected?.id;
-          const selId = typeof sel === 'string' ? sel : (sel as any)?.id;
-          if (typeof selId === 'string' && selId) {
-            sessionModelSel.set(resourceStr, selId);
-            b.setSessionModel?.(resourceStr, selId);
-          }
+          const pick = (id: string): string | undefined => {
+            const g = groups.find?.((x: any) => x?.id === id);
+            const v = g?.selected?.id ?? g?.selected;
+            const vid = typeof v === 'string' ? v : (v as any)?.id;
+            return typeof vid === 'string' ? vid : undefined;
+          };
+          const cfg: { model?: string; effort?: string; mode?: string } = {
+            model: pick('models'), effort: pick('effort'), mode: pick('mode'),
+          };
+          if (cfg.model || cfg.effort || cfg.mode) applySel(resourceStr, cfg);
         } catch (err) {
-          outputChannel.appendLine(`[opencode] model apply skipped: ${err}`);
+          outputChannel.appendLine(`[opencode] option apply skipped: ${err}`);
         }
         const cancelled = { cancelled: false };
         const onCancel = () => { cancelled.cancelled = true; };
@@ -145,23 +202,18 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
       return { title: 'OpenCode', history: [turn], requestHandler };
     },
     // Type-level provider options: VS Code renders these as the input-bar
-    // pickers (Model, like Copilot's). Called with no session context, so
-    // this seeds the bridge catalog; per-session values come from session/new
-    // configOptions + inputState.
+    // pickers (Model, Mode). Called with no session context; per-session
+    // values come from session/new configOptions + inputState.
     provideChatSessionProviderOptions: (async (_token: any) => {
       try {
-        const got = await b.getModels?.();
-        const items = (got?.models ?? []).map((m: any) => ({ id: m.value, name: m.name, default: m.value === got?.current }));
-        if (!items.length) return {};
-        const current = items.find((i: any) => i.default) ?? items[0];
-        return {
-          optionGroups: [{
-            id: 'models', name: 'Model', description: 'OpenCode model for this session',
-            selected: { id: current.id, name: current.name, default: true },
-            items,
-          }],
-          newSessionOptions: { models: current.id },
-        };
+        const groups = await optionGroupsFor('');
+        if (!groups.length) return {};
+        const selected: Record<string, string> = {};
+        for (const g of groups) {
+          if (g?.selected?.id) selected[g.id] = g.selected.id;
+        }
+        outputChannel.appendLine(`[opencode] provider options served: ${groups.map((g: any) => `${g.id}=${g.items.length}`).join(', ')}`);
+        return { optionGroups: groups, newSessionOptions: selected };
       } catch (err) {
         outputChannel.appendLine(`[opencode] provider options failed: ${err}`);
         return {};

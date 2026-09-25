@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 export interface AcpSession { resource: string; label: string; }
 export interface AcpModelOption { value: string; name: string; }
 export interface AcpConfigOption { id: string; name: string; currentValue: string; options: AcpModelOption[]; }
+export interface AcpConfig { models: AcpModelOption[]; currentModel?: string; efforts: AcpModelOption[]; currentEffort?: string; modes: AcpModelOption[]; currentMode?: string; }
 export type SpawnImpl = typeof defaultSpawn;
 interface Pending { kind: 'init' | 'new' | 'prompt'; resolve: (v: any) => void; reject: (e: any) => void; chunks: string[]; sid: string; token?: { cancelled: boolean }; }
 function parseFramed(buf: string): { msgs: any[]; rest: string } {
@@ -24,9 +25,14 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
   const pending = new Map<number, Pending>();
   const sessions = new Map<string, string>();
   const sessionModels = new Map<string, string>();
+  const sessionEfforts = new Map<string, string>();
   const sessionModes = new Map<string, string>();
   let cachedModels: AcpModelOption[] | undefined;
   let cachedCurrentModel: string | undefined;
+  let cachedEfforts: AcpModelOption[] | undefined;
+  let cachedCurrentEffort: string | undefined;
+  let cachedModes: AcpModelOption[] | undefined;
+  let cachedCurrentMode: string | undefined;
   let ready: Promise<void> | undefined;
   function onData(chunk: any) {
     buf += String(chunk);
@@ -104,8 +110,18 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
         cachedCurrentModel = modelOpt.currentValue;
         sessionModels.set(resource, modelOpt.currentValue);
       }
+      const effortOpt = cfg.find(c => c.id === 'effort');
+      if (effortOpt) {
+        cachedEfforts = effortOpt.options;
+        cachedCurrentEffort = effortOpt.currentValue;
+        sessionEfforts.set(resource, effortOpt.currentValue);
+      }
       const modeOpt = cfg.find(c => c.id === 'mode');
-      if (modeOpt) sessionModes.set(resource, modeOpt.currentValue);
+      if (modeOpt) {
+        cachedModes = modeOpt.options;
+        cachedCurrentMode = modeOpt.currentValue;
+        sessionModes.set(resource, modeOpt.currentValue);
+      }
       return { resource, label: `OpenCode ${acpSid.slice(-8)}` };
     },
     async prompt(handle: string, promptText: string, onChunk?: (t: string) => void, token?: { cancelled: boolean }): Promise<string> {
@@ -116,6 +132,10 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
       const params: any = { sessionId: acpSid, prompt: [{ type: 'text', text: promptText }] };
       const model = sessionModels.get(handle);
       if (model) params.model = model;
+      const effort = sessionEfforts.get(handle);
+      if (effort && effort !== 'default') params.effort = effort;
+      const mode = sessionModes.get(handle);
+      if (mode) params.mode = mode;
       const got = await new Promise<{ result: any; chunks: string[] }>((resolve, reject) => {
         pending.set(id, { kind: 'prompt', resolve, reject, chunks: [], sid: acpSid, token });
         send({ jsonrpc: '2.0', id, method: 'session/prompt', params });
@@ -133,6 +153,23 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
       ensure(process.cwd());
       await ready;
       return { models: cachedModels ?? [], current: cachedCurrentModel };
+    },
+    async getConfig(): Promise<AcpConfig> {
+      ensure(process.cwd());
+      await ready;
+      return {
+        models: cachedModels ?? [], currentModel: cachedCurrentModel,
+        efforts: cachedEfforts ?? [], currentEffort: cachedCurrentEffort,
+        modes: cachedModes ?? [], currentMode: cachedCurrentMode,
+      };
+    },
+    getSessionConfig(handle: string): { model?: string; effort?: string; mode?: string } {
+      return { model: sessionModels.get(handle), effort: sessionEfforts.get(handle), mode: sessionModes.get(handle) };
+    },
+    setSessionConfig(handle: string, cfg: { model?: string; effort?: string; mode?: string }): void {
+      if (cfg.model) sessionModels.set(handle, cfg.model);
+      if (cfg.effort) sessionEfforts.set(handle, cfg.effort);
+      if (cfg.mode) sessionModes.set(handle, cfg.mode);
     },
     async cancel(_handle: string): Promise<void> { return; },
     dispose(): void { try { child?.kill(); } catch { /* ignore */ } child = undefined; buf = ''; pending.clear(); ready = undefined; },
