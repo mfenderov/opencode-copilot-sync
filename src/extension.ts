@@ -12,6 +12,7 @@ import { formatSyncFailureMessage, formatSyncFailureTooltip } from './sync-statu
 import { buildSyncOptions, shouldPromptForApiKey } from './sync-options.js';
 import { updateUsageMeter } from './usage/application/refresh-usage.js';
 import { OpenCodeChatProvider } from './chat/infrastructure/vscode-chat-provider.js';
+import { registerOpencodeChatSession, isChatSessionsAvailable } from './chatsessions.js';
 import { setVSCodeProxyUrl } from './infrastructure/http/proxy-routing.js';
 import { OpenCodeUsageTreeProvider } from './usage/infrastructure/usage-tree-adapter.js';
 
@@ -21,6 +22,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
   outputChannel.appendLine(
     `[Platform] OS: ${process.platform} (${process.arch}), Remote: ${vscode.env.remoteName || 'local'}, App: ${vscode.env.appName}`
+  );
+  outputChannel.appendLine(
+    `[Version] opencode-copilot-sync ${context.extension.packageJSON?.version ?? 'unknown'} (chatSessions spike branch)`
   );
 
   // Honor VS Code's own `http.proxy` setting for all outbound requests, in addition to
@@ -48,6 +52,18 @@ export async function activate(context: vscode.ExtensionContext) {
   // lookup until the first post-sync refresh.
   chatProvider.refresh();
   outputChannel.appendLine('Registered native OpenCode LanguageModelChatProvider with VS Code.');
+
+  // ChatSessions controller: 'OpenCode' entry in the Agent Session Target dropdown (Insiders, proposed API)
+  if (!isChatSessionsAvailable(vscode as any)) {
+    outputChannel.appendLine('Note: chatSessions controller skipped (chatSessionsProvider API not available on this VS Code build).');
+  } else {
+    try {
+      const chatSessionsHandle = registerOpencodeChatSession(vscode as any, outputChannel);
+      context.subscriptions.push(chatSessionsHandle);
+    } catch (err: any) {
+      outputChannel.appendLine(`Note: chatSessions controller unavailable (Insiders proposed API required): ${err?.message ?? err}`);
+    }
+  }
 
   // Auto-enable VS Code's experimental Agent Host BYOK bridge so custom models appear in Agent Mode
   try {
