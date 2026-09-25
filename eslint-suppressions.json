@@ -15,18 +15,23 @@
       "count": 2
     },
     "@typescript-eslint/prefer-nullish-coalescing": {
-      "count": 4
+      "count": 2
     }
   },
-  "src/network.ts": {
+  "src/infrastructure/http/fetch-policy.ts": {
+    "@typescript-eslint/prefer-nullish-coalescing": {
+      "count": 1
+    },
+    "@typescript-eslint/prefer-promise-reject-errors": {
+      "count": 2
+    }
+  },
+  "src/infrastructure/http/proxy-routing.ts": {
     "@typescript-eslint/no-empty-function": {
       "count": 1
     },
     "@typescript-eslint/prefer-nullish-coalescing": {
-      "count": 7
-    },
-    "@typescript-eslint/prefer-promise-reject-errors": {
-      "count": 2
+      "count": 6
     }
   },
   "src/chat/application/send-chat-message.ts": {
@@ -163,6 +168,11 @@
       "count": 1
     }
   },
+  "src/models/application/synchronize-models.ts": {
+    "@typescript-eslint/prefer-nullish-coalescing": {
+      "count": 1
+    }
+  },
   "src/models/infrastructure/model-cache.ts": {
     "@typescript-eslint/no-unsafe-assignment": {
       "count": 1
@@ -185,7 +195,12 @@
       "count": 1
     }
   },
-  "src/usage.ts": {
+  "src/usage/application/refresh-usage.ts": {
+    "@typescript-eslint/prefer-nullish-coalescing": {
+      "count": 1
+    }
+  },
+  "src/usage/infrastructure/quota-client.ts": {
     "@typescript-eslint/no-unnecessary-condition": {
       "count": 8
     }

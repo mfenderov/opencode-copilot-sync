@@ -1,17 +1,19 @@
 import * as vscode from 'vscode';
-import { resolveApiKey, promptAndSetApiKey } from './auth.js';
+import { resolveApiKey, promptAndSetApiKey } from './infrastructure/vscode/secret-store.js';
 import {
   syncOpenCodeModels,
+  getModelFamily,
+  getModelCatalog,
   type SyncOpenCodeOptions,
   type SyncOpenCodeResult,
 } from './models/application/synchronize-models.js';
 import { getChatLanguageModelsPath } from './sync-targets.js';
 import { formatSyncFailureMessage, formatSyncFailureTooltip } from './sync-status.js';
 import { buildSyncOptions, shouldPromptForApiKey } from './sync-options.js';
-import { fetchOpenCodeUsage, formatStatusBarText, formatUsageTooltip } from './usage.js';
+import { updateUsageMeter } from './usage/application/refresh-usage.js';
 import { OpenCodeChatProvider } from './chat/infrastructure/vscode-chat-provider.js';
-import { setVSCodeProxyUrl } from './network.js';
-import { OpenCodeUsageTreeProvider } from './views/usageTreeProvider.js';
+import { setVSCodeProxyUrl } from './infrastructure/http/proxy-routing.js';
+import { OpenCodeUsageTreeProvider } from './usage/infrastructure/usage-tree-adapter.js';
 
 export async function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel('OpenCode Copilot Sync');
@@ -71,33 +73,6 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('opencode-usage-view', usageTreeProvider)
   );
-
-  async function updateUsageMeter(apiKey?: string) {
-    try {
-      const key = apiKey || (await resolveApiKey(context.secrets, false));
-      if (!key) {
-        usageTreeProvider.setUsage(null, 'No API key configured');
-        return;
-      }
-
-      const res = await fetchOpenCodeUsage(key);
-      if (res.ok) {
-        statusBarItem.text = formatStatusBarText(res.usage);
-        const md = new vscode.MarkdownString(formatUsageTooltip(res.usage));
-        md.isTrusted = true;
-        statusBarItem.tooltip = md;
-        usageTreeProvider.setUsage(res.usage);
-      } else if (res.reason === 'no-subscription') {
-        statusBarItem.text = '$(hubot) OpenCode (Zen)';
-        statusBarItem.tooltip = 'OpenCode Zen (Pay-as-you-go / Free tier). Click to sync models.';
-        usageTreeProvider.setUsage(null, 'No active Go subscription (Zen pay-as-you-go / free)');
-      } else {
-        usageTreeProvider.setUsage(null, `Unable to fetch usage (${res.reason})`);
-      }
-    } catch {
-      usageTreeProvider.setUsage(null, 'Error fetching usage');
-    }
-  }
 
   async function openApiKeyPageAndSet(): Promise<void> {
     try {
@@ -181,14 +156,6 @@ export async function activate(context: vscode.ExtensionContext) {
     );
   }
 
-  function getModelFamily(model: SyncOpenCodeResult['models'][number]): string {
-    return model.family || model.id;
-  }
-
-  function getModelCatalog(model: SyncOpenCodeResult['models'][number]): 'go' | 'zen' {
-    return model.url.includes('/go/') ? 'go' : 'zen';
-  }
-
   function updateModelCatalog(syncResult: SyncOpenCodeResult): void {
     if (syncResult.models.length > 0) {
       chatProvider.updateModels(
@@ -239,7 +206,7 @@ export async function activate(context: vscode.ExtensionContext) {
     const syncResult = await runSyncWithProgress(interactive, apiKey, syncOptions);
     reportSyncResult(syncResult, interactive);
     updateModelCatalog(syncResult);
-    await updateUsageMeter(apiKey);
+    await updateUsageMeter(statusBarItem, usageTreeProvider, context.secrets, apiKey);
   }
 
   async function performSync(interactive: boolean): Promise<void> {
@@ -254,7 +221,7 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('opencode-copilot-sync.sync', () => performSync(true)),
     vscode.commands.registerCommand('opencode-copilot-sync.refreshUsage', async () => {
-      await Promise.all([updateUsageMeter(), usageTreeProvider.refresh()]);
+      await Promise.all([updateUsageMeter(statusBarItem, usageTreeProvider, context.secrets), usageTreeProvider.refresh()]);
     }),
     vscode.commands.registerCommand('opencode-copilot-sync.setApiKey', async () => {
       const key = await promptAndSetApiKey(context.secrets, vscode.window);
@@ -285,7 +252,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Periodic usage meter refresh (every 60 seconds)
   const usageTimer = setInterval(() => {
-    void updateUsageMeter();
+    void updateUsageMeter(statusBarItem, usageTreeProvider, context.secrets);
   }, 60000);
   context.subscriptions.push({ dispose: () => { clearInterval(usageTimer); } });
 

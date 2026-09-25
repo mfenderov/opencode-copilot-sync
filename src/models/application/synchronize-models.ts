@@ -114,6 +114,14 @@ export function buildUnifiedModels(
   return { models: [...goModels, ...zenModels], zenCount: zenModels.length };
 }
 
+export function getModelFamily(model: SyncOpenCodeResult['models'][number]): string {
+  return model.family || model.id;
+}
+
+export function getModelCatalog(model: SyncOpenCodeResult['models'][number]): 'go' | 'zen' {
+  return model.url.includes('/go/') ? 'go' : 'zen';
+}
+
 export interface SyncOpenCodeOptions {
   includeGo?: boolean;
   includeZen?: boolean;
