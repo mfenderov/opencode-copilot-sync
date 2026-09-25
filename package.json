@@ -83,7 +83,7 @@
         {
           "id": "opencode-explorer",
           "title": "OpenCode",
-          "icon": "icon.svg"
+          "icon": "resources/activitybar.svg"
         }
       ]
     },
