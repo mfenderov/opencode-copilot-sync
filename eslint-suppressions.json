@@ -29,27 +29,46 @@
       "count": 2
     }
   },
-  "src/provider-protocol.ts": {
+  "src/chat/infrastructure/message-mapper.ts": {
     "@typescript-eslint/no-explicit-any": {
-      "count": 11
+      "count": 5
     },
     "@typescript-eslint/no-unnecessary-condition": {
       "count": 4
-    },
-    "@typescript-eslint/no-unnecessary-type-conversion": {
-      "count": 1
     },
     "@typescript-eslint/no-unsafe-assignment": {
       "count": 2
     },
     "@typescript-eslint/no-unsafe-member-access": {
-      "count": 12
+      "count": 6
     },
     "@typescript-eslint/no-unsafe-return": {
-      "count": 2
+      "count": 1
     },
     "@typescript-eslint/prefer-nullish-coalescing": {
-      "count": 10
+      "count": 3
+    }
+  },
+  "src/chat/infrastructure/reasoning-controls.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 6
+    },
+    "@typescript-eslint/no-unnecessary-type-conversion": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unsafe-member-access": {
+      "count": 6
+    },
+    "@typescript-eslint/no-unsafe-return": {
+      "count": 1
+    },
+    "@typescript-eslint/prefer-nullish-coalescing": {
+      "count": 5
+    }
+  },
+  "src/chat/infrastructure/tool-mapper.ts": {
+    "@typescript-eslint/prefer-nullish-coalescing": {
+      "count": 2
     }
   },
   "src/provider-stream.ts": {

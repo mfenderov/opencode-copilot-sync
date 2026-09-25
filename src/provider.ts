@@ -6,45 +6,53 @@ import type { OpenCodeModelMeta } from './models/domain/model.js';
 import { resolveModelTokenLimits } from './models/domain/token-budget.js';
 import {
   buildResponsesInput,
+  formatProviderMessages,
+  sanitizeResponsesInput,
+} from './chat/infrastructure/message-mapper.js';
+import type { FormattedMessage } from './chat/infrastructure/message-mapper.js';
+import { formatProviderTools } from './chat/infrastructure/tool-mapper.js';
+import type { WireToolDefinition } from './chat/infrastructure/tool-mapper.js';
+import {
   createOpenCodeRequestHeaders,
   createProviderRequest,
-  formatProviderMessages,
-  formatProviderTools,
-  getReasoningEffort,
   isFreeOrZenModel,
   isResponsesModel,
+} from './chat/infrastructure/request-factory.js';
+import {
+  getReasoningEffort,
   isStaleReasoningInput,
-  sanitizeResponsesInput,
-} from './provider-protocol.js';
-import type {
-  FormattedMessage,
-  WireToolDefinition,
-} from './provider-protocol.js';
+} from './chat/infrastructure/reasoning-controls.js';
 import { consumeProviderStream } from './provider-stream.js';
 
 export {
   buildResponsesInput,
-  injectOpenCodeVerificationTools,
-  isFreeOrZenModel,
-  isResponsesModel,
-  isSyntheticVerificationTool,
-  isStaleReasoningInput,
-  normalizeReasoningEffort,
-  OPENCODE_CLIENT_VERIFICATION_TOOLS_CHAT,
-  OPENCODE_CLIENT_VERIFICATION_TOOLS_RESPONSES,
   sanitizeResponsesInput,
-  ThinkTagStreamParser,
-} from './provider-protocol.js';
+} from './chat/infrastructure/message-mapper.js';
 export type {
   FormattedMessage,
   FormattedToolCall,
-  OpenCodeModelMeta,
   ResponsesInputFunctionCall,
   ResponsesInputFunctionCallOutput,
   ResponsesInputItem,
   ResponsesInputMessage,
-  WireToolDefinition,
-} from './provider-protocol.js';
+} from './chat/infrastructure/message-mapper.js';
+export {
+  injectOpenCodeVerificationTools,
+  isSyntheticVerificationTool,
+  OPENCODE_CLIENT_VERIFICATION_TOOLS_CHAT,
+  OPENCODE_CLIENT_VERIFICATION_TOOLS_RESPONSES,
+} from './chat/infrastructure/tool-mapper.js';
+export type { WireToolDefinition } from './chat/infrastructure/tool-mapper.js';
+export {
+  isFreeOrZenModel,
+  isResponsesModel,
+} from './chat/infrastructure/request-factory.js';
+export {
+  isStaleReasoningInput,
+  normalizeReasoningEffort,
+} from './chat/infrastructure/reasoning-controls.js';
+export { ThinkTagStreamParser } from './provider-protocol.js';
+export type { OpenCodeModelMeta } from './models/domain/model.js';
 
 export const VERIFIED_OPENCODE_MODELS: OpenCodeModelMeta[] = [
   { id: 'minimax-m3', name: 'MiniMax M3 (OpenCode Go)', family: 'minimax-m3', catalog: 'go', contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: false },
