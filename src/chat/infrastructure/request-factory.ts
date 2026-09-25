@@ -1,3 +1,4 @@
+// Chat infrastructure: provider request construction and routing.
 import { isFreeTierModel } from '../../models/infrastructure/models-dev-client.js';
 import type { OpenCodeModelMeta } from '../../models/domain/model.js';
 import type { FormattedMessage } from './message-mapper.js';

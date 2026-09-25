@@ -1,3 +1,4 @@
+// Chat application: stream recovery policy (idle timeout, stall retry).
 import * as vscode from 'vscode';
 
 const STREAM_IDLE_TIMEOUT_MS = Number(process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS) || 90_000;

@@ -1,3 +1,4 @@
+// Chat infrastructure: native VS Code chat provider adapter.
 import * as vscode from 'vscode';
 import { fetchWithRetry } from '../../infrastructure/http/fetch-policy.js';
 import type { OpenCodeModelMeta } from '../../models/domain/model.js';
@@ -7,20 +8,20 @@ import {
   buildResponsesInput,
   formatProviderMessages,
   sanitizeResponsesInput,
-} from '../infrastructure/message-mapper.js';
-import type { FormattedMessage } from '../infrastructure/message-mapper.js';
-import { formatProviderTools } from '../infrastructure/tool-mapper.js';
-import type { WireToolDefinition } from '../infrastructure/tool-mapper.js';
+} from './message-mapper.js';
+import type { FormattedMessage } from './message-mapper.js';
+import { formatProviderTools } from './tool-mapper.js';
+import type { WireToolDefinition } from './tool-mapper.js';
 import {
   createOpenCodeRequestHeaders,
   createProviderRequest,
   isFreeOrZenModel,
   isResponsesModel,
-} from '../infrastructure/request-factory.js';
+} from './request-factory.js';
 import {
   getReasoningEffort,
   isStaleReasoningInput,
-} from '../infrastructure/reasoning-controls.js';
+} from './reasoning-controls.js';
 import { consumeProviderStream } from '../application/send-chat-message.js';
 import { getStreamIdleTimeoutMs } from '../application/recover-stream.js';
 import { VERIFIED_OPENCODE_MODELS } from '../../models/infrastructure/verified-catalog.js';
@@ -197,7 +198,6 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
 
     const formattedMessages = formatProviderMessages(messages);
 
-    const lowerId = model.id.toLowerCase();
     const meta = this._models.find((m) => m.id === model.id || model.id.endsWith('/' + m.id));
     const isResponses = isResponsesModel(model.id, meta?.apiType);
     const isFreeOrZen = isFreeOrZenModel(model.id, meta);
@@ -219,7 +219,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         abortController,
         meta,
         isResponses,
-        lowerId,
+        isFreeOrZen,
         formattedMessages,
         toolsPayload,
         responsesInput,
@@ -239,7 +239,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     abortController: AbortController,
     meta: OpenCodeModelMeta | undefined,
     isResponses: boolean,
-    lowerId: string,
+    isFreeOrZen: boolean,
     formattedMessages: FormattedMessage[],
     toolsPayload: WireToolDefinition[] | undefined,
     responsesInput: any[],
@@ -247,8 +247,6 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     sessionId: string
   ): Promise<void> {
     // Free models and Zen-exclusive models route to zen/v1, flat-rate Go models route to zen/go/v1
-    const isFreeOrZen = isFreeOrZenModel(model.id, meta);
-
     const reasoningEffort = getReasoningEffort(options);
     const { url, body: requestBody } = createProviderRequest({
       modelId: model.id,

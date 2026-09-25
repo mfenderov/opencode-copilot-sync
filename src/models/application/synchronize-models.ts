@@ -1,5 +1,7 @@
+// Models application: catalog sync orchestration.
 import { type ProviderEntry } from '../../config.js';
-import { enrichModel, type CustomEndpointModel } from '../infrastructure/model-enricher.js';
+import { enrichModel } from '../infrastructure/model-enricher.js';
+import type { CustomEndpointModel } from '../domain/model.js';
 import {
   fetchModelsDevMetadata,
   fetchOpenCodeModels,

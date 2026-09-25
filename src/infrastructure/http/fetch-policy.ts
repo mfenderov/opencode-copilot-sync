@@ -1,3 +1,4 @@
+// Shared infrastructure: fetch retry policy and offline mode.
 import { withProxy } from './proxy-routing.js';
 
 export function isOfflineMode(): boolean {

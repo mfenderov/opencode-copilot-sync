@@ -1,3 +1,4 @@
+// Models domain: token budget calculation.
 export interface ModelTokenLimits {
   contextWindow: number;
   maxInputTokens: number;

@@ -1,4 +1,5 @@
-import type { CustomEndpointModel } from '../infrastructure/model-enricher.js';
+// Models domain: catalog identity types.
+import type { CustomEndpointModel } from './model.js';
 
 export interface OpenCodeCatalogIds {
   goModelIds: string[];

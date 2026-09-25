@@ -1,3 +1,4 @@
+// Chat infrastructure: VS Code message to wire-format mapping.
 import * as vscode from 'vscode';
 
 export interface FormattedToolCall {

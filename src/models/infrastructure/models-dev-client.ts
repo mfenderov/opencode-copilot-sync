@@ -1,3 +1,4 @@
+// Models infrastructure: model catalog HTTP clients.
 import { fetchWithRetry, isOfflineMode } from '../../infrastructure/http/fetch-policy.js';
 import { withProxy } from '../../infrastructure/http/proxy-routing.js';
 

@@ -1,3 +1,4 @@
+// Models infrastructure: verified model catalog.
 import type { OpenCodeModelMeta } from '../domain/model.js';
 
 export const VERIFIED_OPENCODE_MODELS: OpenCodeModelMeta[] = [

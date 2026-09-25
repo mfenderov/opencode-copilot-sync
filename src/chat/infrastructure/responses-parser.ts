@@ -1,3 +1,4 @@
+// Chat infrastructure: Responses API SSE event parsing.
 import type { SseEvent, StreamSink } from './sse-reader.js';
 
 export function processResponsesEvent(event: SseEvent, sink: StreamSink): boolean {

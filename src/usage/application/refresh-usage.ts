@@ -1,7 +1,8 @@
+// Usage application: quota meter refresh orchestration.
 import * as vscode from 'vscode';
 import { resolveApiKey } from '../../infrastructure/vscode/secret-store.js';
 import { fetchOpenCodeUsage } from '../infrastructure/quota-client.js';
-import { formatStatusBarText, formatUsageTooltip } from '../domain/usage-snapshot.js';
+import { formatStatusBarText, formatUsageTooltip, toUsageDisplayState } from '../domain/usage-snapshot.js';
 import type { OpenCodeUsageTreeProvider } from '../infrastructure/usage-tree-adapter.js';
 
 export async function updateUsageMeter(
@@ -24,13 +25,14 @@ export async function updateUsageMeter(
       md.isTrusted = true;
       statusBarItem.tooltip = md;
       usageTreeProvider.setUsage(res.usage);
-    } else if (res.reason === 'no-subscription') {
+      return;
+    }
+    if (res.reason === 'no-subscription') {
       statusBarItem.text = '$(hubot) OpenCode (Zen)';
       statusBarItem.tooltip = 'OpenCode Zen (Pay-as-you-go / Free tier). Click to sync models.';
-      usageTreeProvider.setUsage(null, 'No active Go subscription (Zen pay-as-you-go / free)');
-    } else {
-      usageTreeProvider.setUsage(null, `Unable to fetch usage (${res.reason})`);
     }
+    const state = toUsageDisplayState(res);
+    usageTreeProvider.setUsage(state.usage, state.error);
   } catch {
     usageTreeProvider.setUsage(null, 'Error fetching usage');
   }

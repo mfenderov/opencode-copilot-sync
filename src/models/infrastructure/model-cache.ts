@@ -1,3 +1,4 @@
+// Models infrastructure: catalog cache persistence.
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { OpenCodeModelMeta } from '../domain/model.js';

@@ -1,3 +1,4 @@
+// Usage infrastructure: quota HTTP client.
 import { isOfflineMode } from '../../infrastructure/http/fetch-policy.js';
 import type { GoUsageData, GoUsageResult } from '../domain/usage-snapshot.js';
 

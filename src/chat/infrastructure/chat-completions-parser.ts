@@ -1,3 +1,4 @@
+// Chat infrastructure: Chat Completions SSE event parsing.
 import type { SseEvent, StreamSink } from './sse-reader.js';
 
 export function processChatCompletionsEvent(event: SseEvent, sink: StreamSink): boolean {

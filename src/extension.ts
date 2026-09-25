@@ -24,7 +24,7 @@ export async function activate(context: vscode.ExtensionContext) {
   );
 
   // Honor VS Code's own `http.proxy` setting for all outbound requests, in addition to
-  // the standard HTTPS_PROXY/HTTP_PROXY/NO_PROXY env vars (network.ts falls back to those).
+  // the standard HTTPS_PROXY/HTTP_PROXY/NO_PROXY env vars (fetch-policy.ts falls back to those).
   const applyProxySetting = () => {
     const proxyUrl = vscode.workspace.getConfiguration('http').get<string>('proxy');
     setVSCodeProxyUrl(proxyUrl || undefined);
@@ -221,7 +221,8 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('opencode-copilot-sync.sync', () => performSync(true)),
     vscode.commands.registerCommand('opencode-copilot-sync.refreshUsage', async () => {
-      await Promise.all([updateUsageMeter(statusBarItem, usageTreeProvider, context.secrets), usageTreeProvider.refresh()]);
+      // updateUsageMeter already fans out to the status bar and the tree view.
+      await updateUsageMeter(statusBarItem, usageTreeProvider, context.secrets);
     }),
     vscode.commands.registerCommand('opencode-copilot-sync.setApiKey', async () => {
       const key = await promptAndSetApiKey(context.secrets, vscode.window);

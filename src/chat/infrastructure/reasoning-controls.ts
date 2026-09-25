@@ -1,3 +1,4 @@
+// Chat infrastructure: reasoning effort and stale-reasoning guards.
 import * as vscode from 'vscode';
 
 const VALID_REASONING_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh']);

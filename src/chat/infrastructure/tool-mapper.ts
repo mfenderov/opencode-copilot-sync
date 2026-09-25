@@ -1,3 +1,4 @@
+// Chat infrastructure: tool definition mapping and verification tools.
 import * as vscode from 'vscode';
 
 export type WireToolDefinition = Record<string, unknown>;

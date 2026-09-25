@@ -1,3 +1,4 @@
+// Chat application: chat message orchestration (stream loop, watchdog).
 import * as vscode from 'vscode';
 import { isSyntheticVerificationTool } from '../infrastructure/tool-mapper.js';
 import {

@@ -1,3 +1,4 @@
+// Shared infrastructure: VS Code secret storage.
 import * as vscode from 'vscode';
 
 export const SECRET_KEY = 'opencode_api_key';

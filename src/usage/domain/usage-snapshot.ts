@@ -1,3 +1,4 @@
+// Usage domain: quota snapshot types and display mapping.
 export interface GoUsagePeriod {
   status: 'ok' | 'rate-limited';
   percent: number;
@@ -13,6 +14,22 @@ export interface GoUsageData {
 export type GoUsageResult =
   | { ok: true; usage: GoUsageData }
   | { ok: false; reason: 'no-key' | 'unauthorized' | 'no-subscription' | 'network' | 'invalid' };
+
+export interface UsageDisplayState {
+  usage: GoUsageData | null;
+  error?: string;
+}
+
+/** Maps a quota result to tree/status-bar display state in one place. */
+export function toUsageDisplayState(res: GoUsageResult): UsageDisplayState {
+  if (res.ok) {
+    return { usage: res.usage };
+  }
+  if (res.reason === 'no-subscription') {
+    return { usage: null, error: 'No active Go subscription (Zen pay-as-you-go / free)' };
+  }
+  return { usage: null, error: `Unable to fetch usage (${res.reason})` };
+}
 
 export function formatStatusBarText(usage: GoUsageData): string {
   const maxPercent = Math.max(usage.rolling.percent, usage.weekly.percent);

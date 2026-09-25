@@ -1,6 +1,7 @@
+// Usage infrastructure: activity-bar tree adapter.
 import * as vscode from 'vscode';
 import { fetchOpenCodeUsage } from './quota-client.js';
-import { formatRelativeTime, type GoUsageData } from '../domain/usage-snapshot.js';
+import { formatRelativeTime, toUsageDisplayState, type GoUsageData } from '../domain/usage-snapshot.js';
 
 export type UsageTreeItemType =
   | 'category'
@@ -55,16 +56,9 @@ export class OpenCodeUsageTreeProvider implements vscode.TreeDataProvider<OpenCo
         return;
       }
       const res = await fetchOpenCodeUsage(apiKey);
-      if (res.ok) {
-        this.usageData = res.usage;
-        this.usageError = null;
-      } else if (res.reason === 'no-subscription') {
-        this.usageData = null;
-        this.usageError = 'No active Go subscription (Zen pay-as-you-go / free)';
-      } else {
-        this.usageData = null;
-        this.usageError = `Unable to fetch usage (${res.reason})`;
-      }
+      const state = toUsageDisplayState(res);
+      this.usageData = state.usage;
+      this.usageError = state.error ?? null;
     } catch (err: unknown) {
       this.usageData = null;
       this.usageError = err instanceof Error ? err.message : 'Error fetching usage';

@@ -1,3 +1,4 @@
+// Chat infrastructure: SSE framing and stream sink contract.
 /**
  * Chunk-boundary-safe parser for inline `<think>...</think>` tags that some
  * Chat Completions models emit within regular content deltas. SSE deltas can

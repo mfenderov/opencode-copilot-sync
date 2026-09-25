@@ -1,4 +1,6 @@
-import * as vscode from 'vscode';
+// Chat domain: conversation identity (fingerprint chains, session cache).
+import type * as vscode from 'vscode';
+import { LanguageModelTextPart } from 'vscode';
 
 export interface ConversationSession {
   sessionId: string;
@@ -24,7 +26,7 @@ function fingerprintMessage(msg: vscode.LanguageModelChatRequestMessage | undefi
   let text = '';
   try {
     for (const part of msg.content) {
-      if (part instanceof vscode.LanguageModelTextPart) {
+      if (part instanceof LanguageModelTextPart) {
         text += part.value;
       } else if (part && typeof part === 'object') {
         text += JSON.stringify(part);
@@ -100,7 +102,7 @@ export class ChatSessionCache {
   static readonly MAX_SIZE = 50;
   static readonly TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
-  get(key: string): ConversationSession | undefined {
+  private get(key: string): ConversationSession | undefined {
     const entry = this.sessions.get(key);
     if (!entry) return undefined;
     if (Date.now() - entry.lastUsedAt >= ChatSessionCache.TTL_MS) {
@@ -110,8 +112,8 @@ export class ChatSessionCache {
     return entry;
   }
 
-  set(key: string, value: ConversationSession): void {
-    this.evictStaleSessions(Date.now());
+  private set(key: string, value: ConversationSession, now: number): void {
+    this.evictStaleSessions(now);
     this.evictSessionIfFull();
     this.sessions.set(key, value);
   }
@@ -145,12 +147,12 @@ export class ChatSessionCache {
         return forkedSessionId;
       }
       const sessionId = generateOpenCodeSessionId();
-      this.set(`${rootKey}::${djb2Hash(chain.join('|'))}`, { sessionId, lastUsedAt: now, chain });
+      this.set(`${rootKey}::${djb2Hash(chain.join('|'))}`, { sessionId, lastUsedAt: now, chain }, now);
       return sessionId;
     }
 
     const sessionId = generateOpenCodeSessionId();
-    this.set(rootKey, { sessionId, lastUsedAt: now, chain });
+    this.set(rootKey, { sessionId, lastUsedAt: now, chain }, now);
     return sessionId;
   }
 

@@ -1,3 +1,4 @@
+// Shared infrastructure: proxy routing.
 // `undici` is imported dynamically (not statically) and only inside
 // `loadProxyAgentCtor()` below. undici's package eagerly requires a Cache API
 // polyfill at load time that throws on Node < 22.19 (see its `engines` field),

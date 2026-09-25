@@ -1,3 +1,4 @@
+// Chat infrastructure: stream token-usage reporting.
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object';
 }
