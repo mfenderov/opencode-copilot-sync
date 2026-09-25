@@ -17,7 +17,15 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
     const cwd = vscode.workspace?.workspaceFolders?.[0]?.uri?.fsPath ?? process.cwd();
     const s = await bridge.newSession(cwd);
     const item = controller.createChatSessionItem(vscode.Uri.parse(s.resource), s.label);
-    (controller.items as Map<string, unknown>).set(s.resource, item);
+    // The editor adds the returned item to the collection itself; only add
+    // explicitly when the collection API supports it (older mocks key by string).
+    try {
+      const items: any = controller.items;
+      if (typeof items?.add === 'function') items.add(item);
+      else if (typeof items?.set === 'function') items.set(s.resource, item);
+    } catch (err) {
+      outputChannel.appendLine(`[opencode] items add skipped: ${err}`);
+    }
     if (ctx?.request?.prompt) await bridge.prompt(s.resource, ctx.request.prompt);
     return item;
   };
@@ -34,7 +42,20 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
       const turn = TurnCtor
         ? new TurnCtor([part], {}, 'opencode', undefined)
         : { response: [part], result: {}, participant: 'opencode' };
-      return { title: 'OpenCode', history: [turn], requestHandler: undefined };
+      // Interactive handler: echo the user prompt back as markdown while the
+      // real ACP streaming bridge lands. requestHandler present (not undefined)
+      // marks the session writeable instead of read-only.
+      const requestHandler = async (request: any, _context: any, response: any, _token: any) => {
+        const text = String(request?.prompt ?? '');
+        await bridge.prompt(String(resource?.toString?.() ?? ''), text);
+        try {
+          response?.markdown?.(`OpenCode echo (stub, ACP streaming next): ${text}`);
+        } catch (err) {
+          outputChannel.appendLine(`[opencode] response stream failed: ${err}`);
+        }
+        return {};
+      };
+      return { title: 'OpenCode', history: [turn], requestHandler };
     },
   });
   outputChannel.appendLine('[opencode] chatSessions controller registered for type opencode');
