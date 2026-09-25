@@ -2,6 +2,21 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.18.6 - 2026-09-25
+#### Documentation
+- (**structure**) commit DDD design spec and implementation plan - (3b412f8) - Mark Fenderov
+#### Refactoring
+- (**chat**) separate application orchestration from VS Code adapter - (c9e691a) - Mark Fenderov
+- (**chat**) split stream parsing into dedicated modules - (66d5e12) - Mark Fenderov
+- (**chat**) split protocol conversion into infrastructure mappers - (4f1288a) - Mark Fenderov
+- (**models**) move fetch, enrich, and sync behind application service - (9e51410) - Mark Fenderov
+- (**models**) extract model and token-budget domain - (d8ce4eb) - Mark Fenderov
+- (**review**) domain type ownership, cache encapsulation, dead-code removal, usage-state mapping, ownership headers, last shim - (c32d6b0) - Mark Fenderov
+- (**structure**) remove re-export shims after clean DDD move - (1d4ce3b) - Mark Fenderov
+- (**usage**) move quota context and consolidate technical adapters - (e7009c0) - Mark Fenderov
+
+- - -
+
 ## v0.18.5 - 2026-09-25
 #### Bug Fixes
 - (**provider**) stale model IDs, session bleed, and model family - (05aa566) - Mark Fenderov
