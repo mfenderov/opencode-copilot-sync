@@ -42,16 +42,28 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
       const turn = TurnCtor
         ? new TurnCtor([part], {}, 'opencode', undefined)
         : { response: [part], result: {}, participant: 'opencode' };
-      // Interactive handler: echo the user prompt back as markdown while the
-      // real ACP streaming bridge lands. requestHandler present (not undefined)
-      // marks the session writeable instead of read-only.
-      const requestHandler = async (request: any, _context: any, response: any, _token: any) => {
+      // Interactive handler: stream the prompt through the real ACP bridge.
+      // Falls back to an explanatory note if the harness is unreachable.
+      const requestHandler = async (request: any, _context: any, response: any, token: any) => {
         const text = String(request?.prompt ?? '');
-        await bridge.prompt(String(resource?.toString?.() ?? ''), text);
+        const resourceStr = String(resource?.toString?.() ?? '');
+        const cancelled = { cancelled: false };
+        const onCancel = () => { cancelled.cancelled = true; };
+        try { token?.onCancellationRequested?.(onCancel); } catch { /* ignore */ }
         try {
-          response?.markdown?.(`OpenCode echo (stub, ACP streaming next): ${text}`);
+          let first = true;
+          const full = await bridge.prompt(resourceStr, text, (chunk) => {
+            try {
+              if (first) { response?.progress?.('OpenCode is thinking…'); first = false; }
+              response?.markdown?.(chunk);
+            } catch (err) {
+              outputChannel.appendLine(`[opencode] response stream failed: ${err}`);
+            }
+          }, cancelled);
+          if (!full) response?.markdown?.('(OpenCode returned no text for this prompt.)');
         } catch (err) {
-          outputChannel.appendLine(`[opencode] response stream failed: ${err}`);
+          outputChannel.appendLine(`[opencode] prompt failed: ${err}`);
+          response?.markdown?.(`OpenCode harness error: ${err instanceof Error ? err.message : String(err)}`);
         }
         return {};
       };
