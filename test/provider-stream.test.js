@@ -89,6 +89,55 @@ test('streams Responses reasoning and output text through their respective part 
   );
 });
 
+test('forwards one Responses usage payload for VS Code Agent Mode', async () => {
+  const progress = createProgress();
+  const result = await consumeProviderStream({
+    response: createResponse([
+      sse({
+        type: 'response.completed',
+        response: {
+          output: [],
+          usage: {
+            input_tokens: 1234,
+            output_tokens: 56,
+            output_tokens_details: { reasoning_tokens: 7 },
+          },
+        },
+      }),
+      sse({
+        type: 'response.completed',
+        response: {
+          output: [],
+          usage: { input_tokens: 9999, output_tokens: 99 },
+        },
+      }),
+    ]),
+    modelId: 'muse-spark-1.3-contributor',
+    tools: undefined,
+    progress,
+    token: createToken(),
+    abortSignal: new AbortController().signal,
+    idleTimeoutMs: 1000,
+    stallAttempt: 0,
+    maxStallRetries: 1,
+    log() {},
+  });
+
+  assert.equal(result, 'done');
+  const usageParts = progress.parts.filter(
+    (part) => part instanceof vscode.LanguageModelDataPart && part.mimeType === 'usage'
+  );
+  assert.equal(usageParts.length, 1);
+  assert.deepEqual(
+    JSON.parse(new TextDecoder().decode(usageParts[0].data)),
+    {
+      prompt_tokens: 1234,
+      completion_tokens: 56,
+      completion_tokens_details: { reasoning_tokens: 7 },
+    }
+  );
+});
+
 test('retries an idle stream only before the configured stall-retry budget is exhausted', async () => {
   const logs = [];
   const progress = createProgress();

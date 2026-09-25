@@ -18,6 +18,15 @@ export class EventEmitter {
 }
 export const LanguageModelChatMessageRole = { User: 1, Assistant: 2 };
 export class LanguageModelTextPart { constructor(value) { this.value = value; } }
+export class LanguageModelDataPart {
+  constructor(data, mimeType = 'application/json') {
+    this.data = data;
+    this.mimeType = mimeType;
+  }
+  static json(value, mimeType = 'application/json') {
+    return new LanguageModelDataPart(new TextEncoder().encode(JSON.stringify(value)), mimeType);
+  }
+}
 export class LanguageModelToolCallPart { constructor(callId, name, input) { this.callId = callId; this.name = name; this.input = input; } }
 export class LanguageModelToolResultPart { constructor(callId, content) { this.callId = callId; this.content = content; } }
 export class LanguageModelThinkingPart { constructor(value, id) { this.value = value; this.id = id; } }

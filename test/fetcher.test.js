@@ -1,6 +1,6 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkZenBalance, filterFreeModels, isFreeTierModel, filterAvailableGoModels, KNOWN_UNAVAILABLE_MODELS } from '../out/fetcher.js';
+import { checkZenBalance, fetchModelsDevMetadata, filterFreeModels, isFreeTierModel, filterAvailableGoModels, KNOWN_UNAVAILABLE_MODELS } from '../out/fetcher.js';
 
 const originalOfflineMode = process.env.OPENCODE_OFFLINE;
 delete process.env.OPENCODE_OFFLINE;
@@ -89,6 +89,47 @@ test('filterAvailableGoModels filters out known broken/unavailable models', () =
     'glm-5.2',
     'minimax-m3'
   ]);
+});
+
+test('fetchModelsDevMetadata prefers OpenCode Go limits over third-party providers', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNoProxy = process.env.NO_PROXY;
+  process.env.NO_PROXY = '*';
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    bothub: {
+      models: {
+        'muse-spark-1.3-contributor': {
+          limit: { context: 1048576, output: 943718 },
+        },
+      },
+    },
+    opencode: {
+      models: {
+        'muse-spark-1.3-contributor': {
+          limit: { context: 1048576, output: 65536 },
+        },
+      },
+    },
+    'opencode-go': {
+      models: {
+        'muse-spark-1.3-contributor': {
+          limit: { context: 1048576, output: 131072 },
+        },
+      },
+    },
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
+
+  try {
+    const metadata = await fetchModelsDevMetadata();
+    assert.deepEqual(metadata['muse-spark-1.3-contributor'].limit, {
+      context: 1048576,
+      output: 131072,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalNoProxy === undefined) delete process.env.NO_PROXY;
+    else process.env.NO_PROXY = originalNoProxy;
+  }
 });
 
 test('checkZenBalance does not call the API while OPENCODE_OFFLINE is enabled', async () => {
