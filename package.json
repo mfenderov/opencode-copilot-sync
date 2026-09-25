@@ -43,12 +43,44 @@
   "activationEvents": [
     "onStartupFinished",
     "onLanguageModelChatProvider:opencode",
+    "onChatSession:opencode",
     "onCommand:opencode-copilot-sync.sync",
     "onCommand:opencode-copilot-sync.setApiKey",
     "onCommand:opencode-copilot-sync.openConfig"
   ],
   "main": "./dist/extension.cjs",
+  "enabledApiProposals": [
+    "chatSessionsProvider"
+  ],
   "contributes": {
+    "chatSessions": [
+      {
+        "type": "opencode",
+        "name": "opencode",
+        "displayName": "OpenCode",
+        "description": "Run VS Code Agent UI on local OpenCode harness via ACP",
+        "order": 3,
+        "inputPlaceholder": "Ask OpenCode to do something...",
+        "capabilities": {
+          "supportsFileAttachments": true,
+          "supportsToolAttachments": true,
+          "supportsImageAttachments": true,
+          "supportsInstructionAttachments": true,
+          "supportsHandOffs": false
+        },
+        "commands": [
+          {
+            "name": "new",
+            "description": "Start new OpenCode session"
+          }
+        ],
+        "canDelegate": false,
+        "requiresCustomModels": false,
+        "supportsAutoModel": false,
+        "requiresCopilotSignIn": false,
+        "autoAttachReferences": false
+      }
+    ],
     "languageModelChatProviders": [
       {
         "vendor": "opencode",
