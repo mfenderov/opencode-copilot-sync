@@ -2,6 +2,8 @@ import { spawn as defaultSpawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 export interface AcpSession { resource: string; label: string; }
+export interface AcpModelOption { value: string; name: string; }
+export interface AcpConfigOption { id: string; name: string; currentValue: string; options: AcpModelOption[]; }
 export type SpawnImpl = typeof defaultSpawn;
 interface Pending { kind: 'init' | 'new' | 'prompt'; resolve: (v: any) => void; reject: (e: any) => void; chunks: string[]; sid: string; token?: { cancelled: boolean }; }
 function parseFramed(buf: string): { msgs: any[]; rest: string } {
@@ -21,6 +23,10 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
   let nextId = 1;
   const pending = new Map<number, Pending>();
   const sessions = new Map<string, string>();
+  const sessionModels = new Map<string, string>();
+  const sessionModes = new Map<string, string>();
+  let cachedModels: AcpModelOption[] | undefined;
+  let cachedCurrentModel: string | undefined;
   let ready: Promise<void> | undefined;
   function onData(chunk: any) {
     buf += String(chunk);
@@ -91,6 +97,15 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
       const resource = `opencode://session/${acpSid}`;
       sessions.set(resource, acpSid);
       sessions.set(sid, acpSid);
+      const cfg: AcpConfigOption[] = got.result.configOptions ?? [];
+      const modelOpt = cfg.find(c => c.id === 'model');
+      if (modelOpt) {
+        cachedModels = modelOpt.options;
+        cachedCurrentModel = modelOpt.currentValue;
+        sessionModels.set(resource, modelOpt.currentValue);
+      }
+      const modeOpt = cfg.find(c => c.id === 'mode');
+      if (modeOpt) sessionModes.set(resource, modeOpt.currentValue);
       return { resource, label: `OpenCode ${acpSid.slice(-8)}` };
     },
     async prompt(handle: string, promptText: string, onChunk?: (t: string) => void, token?: { cancelled: boolean }): Promise<string> {
@@ -98,12 +113,26 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
       await ready;
       const acpSid = sessions.get(handle) ?? handle.split('/').pop()!;
       const id = nextId++;
+      const params: any = { sessionId: acpSid, prompt: [{ type: 'text', text: promptText }] };
+      const model = sessionModels.get(handle);
+      if (model) params.model = model;
       const got = await new Promise<{ result: any; chunks: string[] }>((resolve, reject) => {
         pending.set(id, { kind: 'prompt', resolve, reject, chunks: [], sid: acpSid, token });
-        send({ jsonrpc: '2.0', id, method: 'session/prompt', params: { sessionId: acpSid, prompt: [{ type: 'text', text: promptText }] } });
+        send({ jsonrpc: '2.0', id, method: 'session/prompt', params });
       });
       for (const c of got.chunks) onChunk?.(c);
       return got.chunks.join('');
+    },
+    getSessionModel(handle: string): string | undefined {
+      return sessionModels.get(handle) ?? cachedCurrentModel;
+    },
+    setSessionModel(handle: string, model: string): void {
+      sessionModels.set(handle, model);
+    },
+    async getModels(): Promise<{ models: AcpModelOption[]; current: string | undefined }> {
+      ensure(process.cwd());
+      await ready;
+      return { models: cachedModels ?? [], current: cachedCurrentModel };
     },
     async cancel(_handle: string): Promise<void> { return; },
     dispose(): void { try { child?.kill(); } catch { /* ignore */ } child = undefined; buf = ''; pending.clear(); ready = undefined; },

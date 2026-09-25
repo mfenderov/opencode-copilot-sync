@@ -16,8 +16,12 @@ test('registers opencode controller and serves content', async () => {
   const fakeVscode = { ...vscode, chat: { ...vscode.chat,
     createChatSessionItemController: (id, rh) => { const c = vscode.chat.createChatSessionItemController(id, rh); created.push(c); return c; },
     registerChatSessionContentProvider: (scheme, p) => { fakeVscode._provider = p; return { dispose() {} }; } } };
-  const bridge = { listSessions: async () => [], newSession: async () => ({ resource: 'opencode://session/abc', label: 'abc' }), prompt: async (handle, text, onChunk) => { prompts.push([handle, text]); onChunk?.('bridge says: ' + text); return 'bridge says: ' + text; }, cancel: async () => {}, dispose: () => {} };
+  const bridge = { listSessions: async () => [], newSession: async () => ({ resource: 'opencode://session/abc', label: 'abc' }), prompt: async (handle, text, onChunk) => { prompts.push([handle, text]); onChunk?.('bridge says: ' + text); return 'bridge says: ' + text; }, cancel: async () => {}, dispose: () => {},
+    getModels: async () => ({ models: [{ value: 'opencode/big-pickle', name: 'opencode/Big Pickle' }, { value: 'opencode/gpt-5', name: 'opencode/GPT 5' }], current: 'opencode/big-pickle' }),
+    getSessionModel: (h) => sessionModelOf(h), setSessionModel: (h, m) => { sessionModelSet.push([h, m]); } };
+  const sessionModelSet = [];
   const prompts = [];
+  const sessionModelOf = (_h) => undefined;
   const h = registerOpencodeChatSession(fakeVscode, { appendLine() {} }, bridge);
   assert.equal(created[0].id, 'opencode');
   const content = await fakeVscode._provider.provideChatSessionContent(vscode.Uri.parse('opencode://session/abc'), {}, {});
@@ -33,5 +37,15 @@ test('registers opencode controller and serves content', async () => {
   assert.equal(progress.length, 1, 'progress notice pushed once');
   assert.equal(prompts.length, 1, 'bridge.prompt invoked once');
   assert.ok(prompts[0][1].includes('hello'), 'bridge receives user prompt');
+  // Model picker: input-state exposes the ACP model catalog as a group.
+  const inputState = await created[0].getChatSessionInputState(vscode.Uri.parse('opencode://session/abc'), {});
+  const groups = inputState?.groups ?? inputState;
+  const modelGroup = (Array.isArray(groups) ? groups : []).find((g) => g?.id === 'models');
+  assert.ok(modelGroup, 'models option group present');
+  assert.equal(modelGroup.items.length, 2, 'ACP catalog items exposed');
+  assert.ok(modelGroup.selected?.id === 'opencode/big-pickle', 'current model preselected');
+  // Per-message model override flows into the bridge.
+  await content.requestHandler({ prompt: 'hi again' }, { inputState: { groups: [{ id: 'models', selected: { id: 'opencode/gpt-5' } }] } }, { markdown: () => {}, progress: () => {} }, {});
+  assert.ok(sessionModelSet.some(([h, m]) => m === 'opencode/gpt-5'), 'model override applied to bridge');
   h.dispose();
 });
