@@ -2,6 +2,17 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.18.5 - 2026-09-25
+#### Bug Fixes
+- (**provider**) stale model IDs, session bleed, and model family - (05aa566) - Mark Fenderov
+#### Refactoring
+- (**provider**) review findings — stale-fork eviction, longest-match, simpler keys, gap tests - (eeee8bc) - Mark Fenderov
+- (**provider**) extract findContinuingFork, refresh crap anchors after rebase - (90d3ca7) - Mark Fenderov
+#### Miscellaneous Chores
+- (**lint**) prune unused eslint suppressions after provider rework - (4c43736) - Mark Fenderov
+
+- - -
+
 ## v0.18.4 - 2026-09-25
 #### Bug Fixes
 - (**startup**) announce provider models at registration and bound sync fetches - (b8f68c7) - Mark Fenderov
