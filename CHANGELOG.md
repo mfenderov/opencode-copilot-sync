@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.18.4 - 2026-09-25
+#### Bug Fixes
+- (**startup**) announce provider models at registration and bound sync fetches - (b8f68c7) - Mark Fenderov
+
+- - -
+
 ## v0.18.3 - 2026-09-25
 #### Bug Fixes
 - (**provider**) prefer OpenCode Go metadata and preserve Agent Mode input budget - (eb66fae) - Mark Fenderov
