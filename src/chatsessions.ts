@@ -22,20 +22,19 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
     const tail = String(resourceStr ?? '').split('/').pop() ?? resourceStr;
     return tail || resourceStr;
   }
-  const sessionSel = new Map<string, { model?: string; effort?: string; mode?: string }>();
+  // Server truth for the status pickers: the session's actual current values
+  // as reported by ACP configOptions. No local overrides — the server ignores
+  // switching params, so anything we store locally would be a lie.
   function selFor(resourceStr: string): { model?: string; effort?: string; mode?: string } {
-    const local = sessionSel.get(resourceStr) ?? sessionSel.get(xcanon(resourceStr));
     return {
-      model: local?.model ?? b.getSessionModel?.(resourceStr),
-      effort: local?.effort ?? b.getSessionConfig?.(resourceStr)?.effort,
-      mode: local?.mode ?? b.getSessionConfig?.(resourceStr)?.mode,
+      model: b.getSessionModel?.(resourceStr),
+      effort: b.getSessionConfig?.(resourceStr)?.effort,
+      mode: b.getSessionConfig?.(resourceStr)?.mode,
     };
   }
   function applySel(resourceStr: string, cfg: { model?: string; effort?: string; mode?: string }): void {
-    const prev = sessionSel.get(resourceStr) ?? sessionSel.get(xcanon(resourceStr)) ?? {};
-    const merged = { ...prev, ...cfg };
-    sessionSel.set(resourceStr, merged);
-    sessionSel.set(xcanon(resourceStr), merged);
+    // Recorded for diagnostics only; the v2.0.16 server ignores these params.
+    // Kept so the plumbing exists when the server starts honoring them.
     b.setSessionConfig?.(resourceStr, cfg);
     if (cfg.model) b.setSessionModel?.(resourceStr, cfg.model);
   }
@@ -47,6 +46,20 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
       id, name, description,
       selected: { id: sel.value, name: sel.name, default: true },
       items: options.map(o => ({ id: o.value, name: cap(o.name), description: o.value, tooltip: o.value, default: o.value === sel.value })),
+    };
+  }
+  // Honest single-item group: opencode ACP v2.0.16 ignores per-prompt and
+  // per-session model/mode params server-side (verified by behavioral probes:
+  // pinned model/mode never change the answering model). Show the session's
+  // ACTUAL current value as read-only status instead of a fake control.
+  // Per-context model control today = opencode config files, not ACP params.
+  function statusGroupFor(id: string, name: string, currentValue: string | undefined, serverNote: string): any {
+    if (!currentValue) return undefined;
+    return {
+      id, name,
+      description: `${serverNote} (server default — switching not supported by opencode ACP v2.0.16)`,
+      selected: { id: currentValue, name: currentValue, default: true, locked: true },
+      items: [{ id: currentValue, name: currentValue, description: serverNote, default: true, locked: true }],
     };
   }
   async function optionGroupsFor(resourceStr: string): Promise<any[]> {
@@ -75,15 +88,13 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
     const out: any[] = [];
     // Log once per registration so the Output channel proves the round-trip.
     outputChannel.appendLine(`[opencode] option groups for ${resourceStr || '<new>'}: models=${models.length} modes=${modes.length} efforts=${efforts.length}`);
-    // Order: Mode first, then Model (like the Agent/Model reading order).
-    const md = groupFor('mode', 'Mode', 'Build or Plan', modes, currentMode);
+    // Order: Mode status first, then Model status (mirrors Agent/Model row).
+    // Single-item + locked: the server ignores switching params, so the only
+    // honest UI is the session's actual current values as read-only status.
+    const md = statusGroupFor('mode', 'Mode', currentMode, 'session mode');
     if (md) out.push(md);
-    const mg = groupFor('models', 'Model', 'OpenCode model for this session', models, currentModel);
+    const mg = statusGroupFor('models', 'Model', currentModel, 'session model');
     if (mg) { if (out.length < 2) out.push(mg); }
-    if (out.length < 2) {
-      const eg = groupFor('effort', 'Effort', 'Reasoning effort', efforts, currentEffort);
-      if (eg) out.push(eg);
-    }
     return out.slice(0, 2);
   }
   const controller = vscode.chat.createChatSessionItemController('opencode', async () => {
