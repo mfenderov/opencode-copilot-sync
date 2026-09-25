@@ -84,6 +84,12 @@ export const VERIFIED_OPENCODE_MODELS: OpenCodeModelMeta[] = [
   { id: 'muse-spark-1.2-contributor-free', name: 'Muse Spark 1.2 Contributor (OpenCode Free)', family: 'muse-spark-1.2-contributor-free', catalog: 'zen', isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true, supportsReasoningEffort: ['minimal', 'low', 'medium', 'high', 'xhigh'] },
 ];
 
+interface ConversationSession {
+  sessionId: string;
+  lastUsedAt: number;
+  chain: string[];
+}
+
 const STREAM_IDLE_TIMEOUT_MS = Number(process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS) || 90_000;
 
 export function getStreamIdleTimeoutMs(): number {
@@ -100,7 +106,7 @@ export function getStreamIdleTimeoutMs(): number {
   return STREAM_IDLE_TIMEOUT_MS;
 }
 
-/** Cheap, dependency-free string hash (djb2) used to bucket conversations by their first message. */
+/** Cheap, dependency-free string hash (djb2) used to key conversation buckets and fork entries. */
 function djb2Hash(str: string): string {
   let hash = 5381;
   for (let i = 0; i < str.length; i++) {
@@ -125,9 +131,31 @@ function fingerprintMessage(msg: vscode.LanguageModelChatRequestMessage | undefi
       }
     }
   } catch {
-    // Malformed/unexpected content falls back to a role-only fingerprint below.
+    // Malformed content: fall back to hashing the text collected so far.
   }
   return `${msg.role}:${djb2Hash(text)}`;
+}
+
+/**
+ * Fingerprints a full turn's message history as a per-message chain so a
+ * conversation's growth can be prefix-matched (see `getConversationSessionId`).
+ */
+function fingerprintConversation(messages: readonly vscode.LanguageModelChatRequestMessage[]): string[] {
+  return messages.map((msg) => fingerprintMessage(msg));
+}
+
+/**
+ * True when the incoming chain continues the cached one: the cached chain is a
+ * prefix of (or equal to) the incoming chain. The conversation grew by
+ * appending turns. A shared root with a different next fingerprint means a
+ * distinct chat that happens to share an opener — not a continuation.
+ */
+function isChainContinuation(cachedChain: readonly string[], incomingChain: readonly string[]): boolean {
+  if (cachedChain.length > incomingChain.length) return false;
+  for (let i = 0; i < cachedChain.length; i++) {
+    if (cachedChain[i] !== incomingChain[i]) return false;
+  }
+  return true;
 }
 
 const OPENCODE_ID_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
@@ -181,9 +209,13 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
   private _models: OpenCodeModelMeta[] = [...VERIFIED_OPENCODE_MODELS];
 
   // Copilot resends full conversation history each turn, so a conversation's first message
-  // stays constant across its turns. We use that as a cheap, heuristic conversation identity
-  // since VS Code's chat provider API exposes no native conversation/session id.
-  private readonly sessionCache = new Map<string, { sessionId: string; lastUsedAt: number }>();
+  // stays constant across its turns. Conversations are bucketed by a fingerprint of that
+  // first message, since VS Code's chat provider API exposes no native conversation/session id.
+  //
+  // Same-opener chats fork on divergence: entries track the longest fingerprint chain
+  // seen so far, and a new chain that extends a different branch of the same root
+  // gets its own session instead of bleeding into the first chat's upstream context.
+  private readonly sessionCache = new Map<string, ConversationSession>();
   private static readonly SESSION_CACHE_MAX_SIZE = 50;
   private static readonly SESSION_CACHE_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
@@ -211,25 +243,93 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
   /**
    * Returns a stable x-opencode-session id for this conversation, reused across all
    * turns so OpenCode's routing/prompt caching sees one session instead of a fresh
-   * one per request. Conversations are identified by fingerprinting their first
-   * message (see `fingerprintMessage`), since VS Code's API exposes no session id.
+   * one per request. Conversations are bucketed by the fingerprint of their first
+   * message and continued by full-chain prefix match (see `fingerprintConversation`),
+   * since VS Code's API exposes no session id.
+   *
+   * Same-opener chats fork on divergence: when the incoming fingerprint chain
+   * extends the cached chain it is a continuation; when it shares only the root
+   * (or a shorter common prefix) with a different next fingerprint it is a
+   * distinct chat that happens to share an opener, and it gets its own session.
    */
   private getConversationSessionId(messages: readonly vscode.LanguageModelChatRequestMessage[]): string {
-    const key = fingerprintMessage(messages[0]);
+    const chain = fingerprintConversation(messages);
+    const rootKey = chain[0] ?? 'empty';
     const now = Date.now();
 
-    const cached = this.sessionCache.get(key);
+    const cached = this.sessionCache.get(rootKey);
     if (cached && now - cached.lastUsedAt < OpenCodeChatProvider.SESSION_CACHE_TTL_MS) {
-      cached.lastUsedAt = now;
-      return cached.sessionId;
+      if (isChainContinuation(cached.chain, chain)) {
+        return OpenCodeChatProvider.trackContinuation(cached, chain, now);
+      }
+      // Same opener, diverged history: look for an existing fork whose chain
+      // this request continues; otherwise mint a new forked session.
+      const forkedSessionId = this.findContinuingFork(rootKey, chain, now);
+      if (forkedSessionId !== undefined) {
+        return forkedSessionId;
+      }
+      const sessionId = generateOpenCodeSessionId();
+      this.evictStaleSessions(now);
+      this.evictSessionIfFull();
+      this.sessionCache.set(`${rootKey}::${djb2Hash(chain.join('|'))}`, { sessionId, lastUsedAt: now, chain });
+      return sessionId;
     }
 
-    // Drop stale entries, then evict the least-recently-used one if still at capacity.
+    this.evictStaleSessions(now);
+    this.evictSessionIfFull();
+
+    const sessionId = generateOpenCodeSessionId();
+    this.sessionCache.set(rootKey, { sessionId, lastUsedAt: now, chain });
+    return sessionId;
+  }
+
+  /**
+   * Records a continued conversation: extends the cached chain and refreshes
+   * last use. Returns the reused session id.
+   */
+  private static trackContinuation(entry: ConversationSession, chain: string[], now: number): string {
+    entry.lastUsedAt = now;
+    entry.chain = chain;
+    return entry.sessionId;
+  }
+
+  /**
+   * Finds the forked session under `rootKey` with the longest fingerprint chain
+   * that the incoming chain continues. Expired forks are deleted on sight.
+   * Returns its session id, or undefined when no fork matches (caller mints
+   * a new forked session).
+   */
+  private findContinuingFork(rootKey: string, chain: string[], now: number): string | undefined {
+    const prefix = `${rootKey}::`;
+    let best: ConversationSession | undefined;
+    for (const [forkKey, fork] of this.sessionCache) {
+      if (!forkKey.startsWith(prefix)) {
+        continue;
+      }
+      if (now - fork.lastUsedAt >= OpenCodeChatProvider.SESSION_CACHE_TTL_MS) {
+        this.sessionCache.delete(forkKey);
+        continue;
+      }
+      if (isChainContinuation(fork.chain, chain) && (best === undefined || fork.chain.length > best.chain.length)) {
+        best = fork;
+      }
+    }
+    if (best === undefined) {
+      return undefined;
+    }
+    return OpenCodeChatProvider.trackContinuation(best, chain, now);
+  }
+
+  private evictStaleSessions(now: number): void {
+    // Drops entries older than the session TTL.
     for (const [k, v] of this.sessionCache) {
       if (now - v.lastUsedAt >= OpenCodeChatProvider.SESSION_CACHE_TTL_MS) {
         this.sessionCache.delete(k);
       }
     }
+  }
+
+  private evictSessionIfFull(): void {
     if (this.sessionCache.size >= OpenCodeChatProvider.SESSION_CACHE_MAX_SIZE) {
       let oldestKey: string | undefined;
       let oldestAt = Infinity;
@@ -243,10 +343,6 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         this.sessionCache.delete(oldestKey);
       }
     }
-
-    const sessionId = generateOpenCodeSessionId();
-    this.sessionCache.set(key, { sessionId, lastUsedAt: now });
-    return sessionId;
   }
 
   refresh(): void {
@@ -441,7 +537,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     });
 
     this.log(
-      `Request: model=${model.id} protocol=${isResponses ? 'responses' : 'chat-completions'} url=${url} reasoningEffort=${reasoningEffort || 'none'} tools=${toolsPayload?.length ?? 0}`
+      `Request: model=${model.id} protocol=${isResponses ? 'responses' : 'chat-completions'} url=${url} reasoningEffort=${reasoningEffort || 'none'} tools=${toolsPayload?.length ?? 0} session=${sessionId.slice(0, 12)}`
     );
 
     const maxStallRetries = 1;
@@ -549,28 +645,27 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
             throw new Error(errMessage);
           }
 
-          // 2. Model not found: throw NotFound
-          if (res.status === 404) {
-            const LMError = (vscode as any).LanguageModelError;
-            if (LMError?.NotFound) {
-              throw LMError.NotFound(`OpenCode model '${model.id}' was not found in the remote catalog.`);
-            }
-            throw new Error(`OpenCode model '${model.id}' was not found in the remote catalog.`);
-          }
-
-          // 3. Upstream Server Errors (500, 502 Bad Gateway, 503, 504), rate limits, or FreeTierError policy alerts
-          // Instead of throwing an Error (which causes Copilot's runtime to retry 5 times for 32.4 seconds),
-          // stream an informative Markdown alert card to the user and resolve cleanly (return void).
+          // 2. Stale model ID (404: requested ID was renamed or removed by a later sync,
+          // or resurrected from a stale models_cache.json) and 3. upstream server errors
+          // (500, 502 Bad Gateway, 503, 504), rate limits, or FreeTierError policy alerts:
+          // stream an informative Markdown alert card and resolve cleanly (return void).
+          // A thrown Error makes Copilot retry 5 times for 32.4 seconds. A thrown
+          // NotFound here turns one stale pin into a retry storm. Never throw for 404.
+          const reason = res.status === 404
+            ? 'stale model ID (renamed or removed by a later sync; re-run sync and re-pick the model)'
+            : isFreeTierError
+              ? 'upstream free-tier policy error'
+              : 'upstream server error';
           const alertNotice = [
             `> ⚠️ **OpenCode Model Alert (${res.status} ${res.statusText || 'Service Error'})**`,
             `>`,
-            `> Unable to reach **${model.name}** (\`${model.id}\`): ${isFreeTierError ? 'upstream free-tier policy error' : 'upstream server error'}.`,
+            `> Unable to reach **${model.name}** (\`${model.id}\`): ${reason}.`,
             `>`,
             `> **Upstream detail:** \`${userDetail.slice(0, 300) || 'Internal server error'}\``,
           ].join('\n');
 
           progress.report(new vscode.LanguageModelTextPart(alertNotice));
-          return; // Clean resolution bypasses Copilot's 5-retry 32-second loop!
+          return; // Clean resolution bypasses the Copilot retry loop.
         }
       }
 

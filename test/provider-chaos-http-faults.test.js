@@ -303,7 +303,7 @@ test('Provider Chaos [403 Forbidden Fault]: throws LanguageModelError.NoPermissi
 // 3. 404 Model Fault Tests
 // ============================================================================
 
-test('Provider Chaos [404 Model Fault]: throws LanguageModelError.NotFound', async () => {
+test('Provider Chaos [404 Model Fault]: resolves with ONE alert card, never throws NotFound', async () => {
   mockServer.setScenario({ mode: 'fault', status: 404 });
 
   const context = createMockContext();
@@ -313,24 +313,24 @@ test('Provider Chaos [404 Model Fault]: throws LanguageModelError.NotFound', asy
 
   const unknownModel = { id: 'unknown-deprecated-model-xyz', name: 'Unknown Model' };
 
-  await assert.rejects(
-    async () => {
-      await provider.provideLanguageModelChatResponse(
-        unknownModel,
-        [createMockMessage('hello')],
-        {},
-        progress,
-        token
-      );
-    },
-    (err) => {
-      assert.ok(err instanceof Error);
-      assert.equal(err.name, 'LanguageModelError');
-      assert.equal(err.code, 'NotFound');
-      assert.match(err.message, /OpenCode model 'unknown-deprecated-model-xyz' was not found in the remote catalog/);
-      return true;
-    }
+  // Must NOT throw: a stale/unknown ID degrades to a single alert card, bypassing
+  // Copilot's 5-retry ~32s loop (same contract as the 5xx path).
+  await provider.provideLanguageModelChatResponse(
+    unknownModel,
+    [createMockMessage('hello')],
+    {},
+    progress,
+    token
   );
+
+  assert.equal(mockServer.getRequests().length, 1, 'expected exactly one upstream attempt (404 is not fetch-retried)');
+  const alertCards = progress.parts.filter(
+    (p) => p instanceof vscode.LanguageModelTextPart && /OpenCode Model Alert/.test(p.value)
+  );
+  assert.equal(alertCards.length, 1, 'expected exactly ONE alert card, never a retry storm');
+  assert.equal(progress.parts.length, 1, 'expected no parts besides the single alert card');
+  assert.match(alertCards[0].value, /unknown-deprecated-model-xyz/);
+  assert.match(alertCards[0].value, /stale model ID/);
 });
 
 // ============================================================================

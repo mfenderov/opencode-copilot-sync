@@ -10,7 +10,7 @@ let originalFetch;
 const MUSE_MODEL = {
   id: 'muse-spark-1.3-contributor-free',
   name: 'Muse Spark 1.3 Contributor Free',
-  family: 'gpt-5-5',
+  family: 'muse-spark-1.3-contributor-free',
 };
 
 const DEEPSEEK_MODEL = {

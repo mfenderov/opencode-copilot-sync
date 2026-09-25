@@ -386,7 +386,7 @@ test('Provider [provideLanguageModelChatInformation]: dynamically sets reasoning
     {
       id: 'muse-spark-1.3',
       name: 'Muse Spark 1.3',
-      family: 'gpt-5-5',
+      family: 'muse-spark-1.3',
       contextWindow: 1048576,
       maxOutputTokens: 65536,
       vision: true,

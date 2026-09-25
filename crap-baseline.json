@@ -5,9 +5,9 @@
     "coverage": 0.845
   },
   "src/enricher.ts:62:enrichModel": {
-    "crap": 68.74,
+    "crap": 66.65,
     "complexity": 65,
-    "coverage": 0.904
+    "coverage": 0.927
   },
   "src/provider-stream.ts:52:consumeProviderStream": {
     "crap": 42.1,
@@ -24,10 +24,10 @@
     "complexity": 7,
     "coverage": 0.156
   },
-  "src/provider.ts:414:streamResponse": {
-    "crap": 33.4,
-    "complexity": 33,
-    "coverage": 0.928
+  "src/provider.ts:510:streamResponse": {
+    "crap": 31.22,
+    "complexity": 31,
+    "coverage": 0.939
   },
   "src/provider-protocol.ts:362:formatProviderMessages": {
     "crap": 25.01,
@@ -74,7 +74,7 @@
     "complexity": 11,
     "coverage": 0.946
   },
-  "src/provider.ts:276:<anonymous>": {
+  "src/provider.ts:372:<anonymous>": {
     "crap": 11.01,
     "complexity": 11,
     "coverage": 0.953
