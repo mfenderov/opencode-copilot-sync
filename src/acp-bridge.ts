@@ -1,4 +1,5 @@
-import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
+import { spawn as defaultSpawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 export interface AcpSession { resource: string; label: string; }
 export type SpawnImpl = typeof defaultSpawn;

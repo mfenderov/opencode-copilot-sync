@@ -1,8 +1,12 @@
 import { createAcpBridge } from './acp-bridge.js';
 export function registerOpencodeChatSession(vscode: any, outputChannel: { appendLine(m: string): void }, bridge = createAcpBridge()) {
   const controller = vscode.chat.createChatSessionItemController('opencode', async () => {
-    const sessions = await bridge.listSessions();
-    controller.items.replace(sessions.map((s: any) => controller.createChatSessionItem(vscode.Uri.parse(s.resource), s.label)));
+    try {
+      const sessions = await bridge.listSessions();
+      controller.items.replace(sessions.map((s: any) => controller.createChatSessionItem(vscode.Uri.parse(s.resource), s.label)));
+    } catch (err) {
+      outputChannel.appendLine(`[opencode] refresh failed: ${err}`);
+    }
   });
   controller.newChatSessionItemHandler = async (ctx: any) => {
     const cwd = vscode.workspace?.workspaceFolders?.[0]?.uri?.fsPath ?? process.cwd();
