@@ -14,19 +14,28 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
     getSessionConfig?: (h: string) => { model?: string; effort?: string; mode?: string };
     setSessionConfig?: (h: string, c: { model?: string; effort?: string; mode?: string }) => void;
   };
-  // Per-session selections shown in the agent input pickers (Model, Effort,
-  // Mode). Resolved lazily from the ACP session/new configOptions.
+  // Canonicalize a VS Code-side resource to the ACP sessionId for the
+  // extension-side selection map. The resource string changes identity over
+  // the session lifetime (untitled placeholder -> opencode:// resource), so
+  // key by the stable tail (acpSid) as well as the full string.
+  function xcanon(resourceStr: string): string {
+    const tail = String(resourceStr ?? '').split('/').pop() ?? resourceStr;
+    return tail || resourceStr;
+  }
   const sessionSel = new Map<string, { model?: string; effort?: string; mode?: string }>();
   function selFor(resourceStr: string): { model?: string; effort?: string; mode?: string } {
+    const local = sessionSel.get(resourceStr) ?? sessionSel.get(xcanon(resourceStr));
     return {
-      model: sessionSel.get(resourceStr)?.model ?? b.getSessionModel?.(resourceStr),
-      effort: sessionSel.get(resourceStr)?.effort ?? b.getSessionConfig?.(resourceStr)?.effort,
-      mode: sessionSel.get(resourceStr)?.mode ?? b.getSessionConfig?.(resourceStr)?.mode,
+      model: local?.model ?? b.getSessionModel?.(resourceStr),
+      effort: local?.effort ?? b.getSessionConfig?.(resourceStr)?.effort,
+      mode: local?.mode ?? b.getSessionConfig?.(resourceStr)?.mode,
     };
   }
   function applySel(resourceStr: string, cfg: { model?: string; effort?: string; mode?: string }): void {
-    const prev = sessionSel.get(resourceStr) ?? {};
-    sessionSel.set(resourceStr, { ...prev, ...cfg });
+    const prev = sessionSel.get(resourceStr) ?? sessionSel.get(xcanon(resourceStr)) ?? {};
+    const merged = { ...prev, ...cfg };
+    sessionSel.set(resourceStr, merged);
+    sessionSel.set(xcanon(resourceStr), merged);
     b.setSessionConfig?.(resourceStr, cfg);
     if (cfg.model) b.setSessionModel?.(resourceStr, cfg.model);
   }

@@ -24,6 +24,21 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
   let nextId = 1;
   const pending = new Map<number, Pending>();
   const sessions = new Map<string, string>();
+  // Key insight: the SAME ACP sessionId is addressable by THREE VS Code-side
+  // resource strings over its lifetime — the untitled placeholder
+  // (opencode:/untitled-<uuid>), the opencode://session/<acpSid> resource,
+  // and the raw acpSid. Canonicalize everything to acpSid on entry.
+  function canon(handle: string): string {
+    const s = String(handle ?? '');
+    if (sessions.has(s)) return sessions.get(s)!;
+    const tail = s.split('/').pop() ?? s;
+    if (sessions.has(tail)) return sessions.get(tail)!;
+    return tail;
+  }
+  function remember(resource: string, acpSid: string): void {
+    sessions.set(resource, acpSid);
+    sessions.set(acpSid, acpSid);
+  }
   const sessionModels = new Map<string, string>();
   const sessionEfforts = new Map<string, string>();
   const sessionModes = new Map<string, string>();
@@ -128,29 +143,29 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
       });
       const acpSid: string = got.result.sessionId;
       const resource = `opencode://session/${acpSid}`;
-      sessions.set(resource, acpSid);
+      remember(resource, acpSid);
       sessions.set(sid, acpSid);
       const cfg: AcpConfigOption[] = got.result.configOptions ?? [];
       cacheConfig(cfg);
       const modelOpt = cfg.find(c => c.id === 'model');
-      if (modelOpt) sessionModels.set(resource, modelOpt.currentValue);
+      if (modelOpt) { sessionModels.set(acpSid, modelOpt.currentValue); sessionModels.set(resource, modelOpt.currentValue); }
       const effortOpt = cfg.find(c => c.id === 'effort');
-      if (effortOpt) sessionEfforts.set(resource, effortOpt.currentValue);
+      if (effortOpt) { sessionEfforts.set(acpSid, effortOpt.currentValue); sessionEfforts.set(resource, effortOpt.currentValue); }
       const modeOpt = cfg.find(c => c.id === 'mode');
-      if (modeOpt) sessionModes.set(resource, modeOpt.currentValue);
+      if (modeOpt) { sessionModes.set(acpSid, modeOpt.currentValue); sessionModes.set(resource, modeOpt.currentValue); }
       return { resource, label: `OpenCode ${acpSid.slice(-8)}` };
     },
     async prompt(handle: string, promptText: string, onChunk?: (t: string) => void, token?: { cancelled: boolean }): Promise<string> {
       ensure(process.cwd());
       await ready;
-      const acpSid = sessions.get(handle) ?? handle.split('/').pop()!;
+      const acpSid = canon(handle);
       const id = nextId++;
       const params: any = { sessionId: acpSid, prompt: [{ type: 'text', text: promptText }] };
-      const model = sessionModels.get(handle);
+      const model = sessionModels.get(acpSid) ?? sessionModels.get(handle);
       if (model) params.model = model;
-      const effort = sessionEfforts.get(handle);
+      const effort = sessionEfforts.get(acpSid) ?? sessionEfforts.get(handle);
       if (effort && effort !== 'default') params.effort = effort;
-      const mode = sessionModes.get(handle);
+      const mode = sessionModes.get(acpSid) ?? sessionModes.get(handle);
       if (mode) params.mode = mode;
       const got = await new Promise<{ result: any; chunks: string[] }>((resolve, reject) => {
         pending.set(id, { kind: 'prompt', resolve, reject, chunks: [], sid: acpSid, token });
@@ -160,9 +175,11 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
       return got.chunks.join('');
     },
     getSessionModel(handle: string): string | undefined {
-      return sessionModels.get(handle) ?? cachedCurrentModel;
+      const key = canon(handle);
+      return sessionModels.get(key) ?? sessionModels.get(handle) ?? cachedCurrentModel;
     },
     setSessionModel(handle: string, model: string): void {
+      sessionModels.set(canon(handle), model);
       sessionModels.set(handle, model);
     },
     async getModels(): Promise<{ models: AcpModelOption[]; current: string | undefined }> {
@@ -180,12 +197,18 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
       };
     },
     getSessionConfig(handle: string): { model?: string; effort?: string; mode?: string } {
-      return { model: sessionModels.get(handle), effort: sessionEfforts.get(handle), mode: sessionModes.get(handle) };
+      const key = canon(handle);
+      return {
+        model: sessionModels.get(key) ?? sessionModels.get(handle),
+        effort: sessionEfforts.get(key) ?? sessionEfforts.get(handle),
+        mode: sessionModes.get(key) ?? sessionModes.get(handle),
+      };
     },
     setSessionConfig(handle: string, cfg: { model?: string; effort?: string; mode?: string }): void {
-      if (cfg.model) sessionModels.set(handle, cfg.model);
-      if (cfg.effort) sessionEfforts.set(handle, cfg.effort);
-      if (cfg.mode) sessionModes.set(handle, cfg.mode);
+      const key = canon(handle);
+      if (cfg.model) { sessionModels.set(key, cfg.model); sessionModels.set(handle, cfg.model); }
+      if (cfg.effort) { sessionEfforts.set(key, cfg.effort); sessionEfforts.set(handle, cfg.effort); }
+      if (cfg.mode) { sessionModes.set(key, cfg.mode); sessionModes.set(handle, cfg.mode); }
     },
     async cancel(_handle: string): Promise<void> { return; },
     dispose(): void { try { child?.kill(); } catch { /* ignore */ } child = undefined; buf = ''; pending.clear(); ready = undefined; },
