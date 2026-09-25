@@ -80,6 +80,21 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
     return item;
   };
   const contentDisp = vscode.chat.registerChatSessionContentProvider('opencode', {
+    // Picker selection reporting: when the user changes an option group
+    // (e.g. models) in the agent input, persist it per session + bridge.
+    provideHandleOptionsChange: ((resource: any, updates: any) => {
+      const resourceStr = String(resource?.toString?.() ?? '');
+      for (const u of updates ?? []) {
+        const id = (u as any)?.optionId ?? (u as any)?.id;
+        const val = (u as any)?.value;
+        const valId = typeof val === 'string' ? val : (val as any)?.id;
+        if (id === 'models' && typeof valId === 'string' && valId) {
+          sessionModelSel.set(resourceStr, valId);
+          b.setSessionModel?.(resourceStr, valId);
+          outputChannel.appendLine(`[opencode] model selected: ${valId}`);
+        }
+      }
+    }) as any,
     async provideChatSessionContent(resource: any, _token: any, _ctx: any) {
       const prompt = String(resource?.toString?.() ?? '');
       // History items must be ChatResponseTurn instances: the extension host
