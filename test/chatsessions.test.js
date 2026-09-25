@@ -21,5 +21,8 @@ test('registers opencode controller and serves content', async () => {
   assert.equal(created[0].id, 'opencode');
   const content = await fakeVscode._provider.provideChatSessionContent(vscode.Uri.parse('opencode://session/abc'), {}, {});
   assert.ok(content.history.length >= 1);
+  const turn = content.history[0];
+  assert.ok(turn instanceof vscode.ChatResponseTurn, 'history items must be ChatResponseTurn instances (exthost convertResponseTurn reads .response.map)');
+  assert.ok(Array.isArray(turn.response) && turn.response.length >= 1, 'response turn must carry parts array');
   h.dispose();
 });
