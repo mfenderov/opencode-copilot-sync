@@ -9,7 +9,7 @@ import {
 import { formatSyncFailureMessage, formatSyncFailureTooltip } from './sync-status.js';
 import { buildSyncOptions, shouldPromptForApiKey } from './sync-options.js';
 import { fetchOpenCodeUsage, formatStatusBarText, formatUsageTooltip } from './usage.js';
-import { OpenCodeChatProvider } from './provider.js';
+import { OpenCodeChatProvider } from './chat/infrastructure/vscode-chat-provider.js';
 import { setVSCodeProxyUrl } from './network.js';
 import { OpenCodeUsageTreeProvider } from './views/usageTreeProvider.js';
 

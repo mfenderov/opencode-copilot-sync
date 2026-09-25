@@ -29,6 +29,26 @@
       "count": 2
     }
   },
+  "src/chat/application/send-chat-message.ts": {
+    "@typescript-eslint/no-explicit-any": {
+      "count": 2
+    },
+    "@typescript-eslint/no-unnecessary-condition": {
+      "count": 3
+    },
+    "@typescript-eslint/no-unsafe-argument": {
+      "count": 2
+    },
+    "@typescript-eslint/no-unsafe-assignment": {
+      "count": 3
+    },
+    "@typescript-eslint/no-unsafe-call": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unsafe-member-access": {
+      "count": 1
+    }
+  },
   "src/chat/infrastructure/chat-completions-parser.ts": {
     "@typescript-eslint/no-explicit-any": {
       "count": 3
@@ -120,27 +140,7 @@
       "count": 2
     }
   },
-  "src/provider-stream.ts": {
-    "@typescript-eslint/no-explicit-any": {
-      "count": 2
-    },
-    "@typescript-eslint/no-unnecessary-condition": {
-      "count": 3
-    },
-    "@typescript-eslint/no-unsafe-argument": {
-      "count": 2
-    },
-    "@typescript-eslint/no-unsafe-assignment": {
-      "count": 3
-    },
-    "@typescript-eslint/no-unsafe-call": {
-      "count": 1
-    },
-    "@typescript-eslint/no-unsafe-member-access": {
-      "count": 1
-    }
-  },
-  "src/provider.ts": {
+  "src/chat/infrastructure/vscode-chat-provider.ts": {
     "@typescript-eslint/no-explicit-any": {
       "count": 6
     },
