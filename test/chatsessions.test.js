@@ -15,7 +15,7 @@ test('registers opencode controller and serves content', async () => {
   const created = [];
   const fakeVscode = { ...vscode, chat: { ...vscode.chat,
     createChatSessionItemController: (id, rh) => { const c = vscode.chat.createChatSessionItemController(id, rh); created.push(c); return c; },
-    registerChatSessionContentProvider: (scheme, p) => { fakeVscode._provider = p; return { dispose() {} }; } } };
+    registerChatSessionContentProvider: (scheme, p) => { fakeVscode._provider = p; fakeVscode._handleOptions = p.provideHandleOptionsChange?.bind?.(p); return { dispose() {} }; } } };
   const bridge = { listSessions: async () => [], newSession: async () => ({ resource: 'opencode://session/abc', label: 'abc' }), prompt: async (handle, text, onChunk) => { prompts.push([handle, text]); onChunk?.('bridge says: ' + text); return 'bridge says: ' + text; }, cancel: async () => {}, dispose: () => {},
     getModels: async () => ({ models: [{ value: 'opencode/big-pickle', name: 'opencode/Big Pickle' }, { value: 'opencode/gpt-5', name: 'opencode/GPT 5' }], current: 'opencode/big-pickle' }),
     getSessionModel: (h) => sessionModelOf(h), setSessionModel: (h, m) => { sessionModelSet.push([h, m]); } };
@@ -47,5 +47,12 @@ test('registers opencode controller and serves content', async () => {
   // Per-message model override flows into the bridge.
   await content.requestHandler({ prompt: 'hi again' }, { inputState: { groups: [{ id: 'models', selected: { id: 'opencode/gpt-5' } }] } }, { markdown: () => {}, progress: () => {} }, {});
   assert.ok(sessionModelSet.some(([h, m]) => m === 'opencode/gpt-5'), 'model override applied to bridge');
+  // Picker-driven change (provideHandleOptionsChange) persists per session.
+  await fakeVscode._provider.provideHandleOptionsChange(
+    vscode.Uri.parse('opencode://session/abc'),
+    [{ optionId: 'models', value: 'opencode/kimi-k3' }],
+    {},
+  );
+  assert.ok(sessionModelSet.some(([h, m]) => m === 'opencode/kimi-k3'), 'picker selection applied to bridge');
   h.dispose();
 });
