@@ -259,15 +259,9 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
       }
       // Same opener, diverged history: look for an existing fork whose chain
       // this request continues; otherwise mint a new forked session.
-      for (const [forkKey, fork] of this.sessionCache) {
-        if (!forkKey.startsWith(`${rootKey}::`) || now - fork.lastUsedAt >= OpenCodeChatProvider.SESSION_CACHE_TTL_MS) {
-          continue;
-        }
-        if (isChainContinuation(fork.chain, chain)) {
-          fork.lastUsedAt = now;
-          fork.chain = chain;
-          return fork.sessionId;
-        }
+      const forkedSessionId = this.findContinuingFork(rootKey, chain, now);
+      if (forkedSessionId !== undefined) {
+        return forkedSessionId;
       }
       const sessionId = generateOpenCodeSessionId();
       this.evictSessionIfFull();
@@ -281,6 +275,25 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     const sessionId = generateOpenCodeSessionId();
     this.sessionCache.set(rootKey, { sessionId, lastUsedAt: now, chain });
     return sessionId;
+  }
+
+  /**
+   * Finds an existing forked session under `rootKey` whose fingerprint chain
+   * the incoming chain continues. Returns its session id, or undefined when
+   * no fork matches (caller mints a new forked session).
+   */
+  private findContinuingFork(rootKey: string, chain: string[], now: number): string | undefined {
+    for (const [forkKey, fork] of this.sessionCache) {
+      if (!forkKey.startsWith(`${rootKey}::`) || now - fork.lastUsedAt >= OpenCodeChatProvider.SESSION_CACHE_TTL_MS) {
+        continue;
+      }
+      if (isChainContinuation(fork.chain, chain)) {
+        fork.lastUsedAt = now;
+        fork.chain = chain;
+        return fork.sessionId;
+      }
+    }
+    return undefined;
   }
 
   private evictStaleSessions(now: number): void {
