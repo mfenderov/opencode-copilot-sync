@@ -66,10 +66,11 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
     const out: any[] = [];
     // Log once per registration so the Output channel proves the round-trip.
     outputChannel.appendLine(`[opencode] option groups for ${resourceStr || '<new>'}: models=${models.length} modes=${modes.length} efforts=${efforts.length}`);
-    const mg = groupFor('models', 'Model', 'OpenCode model for this session', models, currentModel);
-    if (mg) out.push(mg);
+    // Order: Mode first, then Model (like the Agent/Model reading order).
     const md = groupFor('mode', 'Mode', 'Build or Plan', modes, currentMode);
-    if (md) { if (out.length < 2) out.push(md); }
+    if (md) out.push(md);
+    const mg = groupFor('models', 'Model', 'OpenCode model for this session', models, currentModel);
+    if (mg) { if (out.length < 2) out.push(mg); }
     if (out.length < 2) {
       const eg = groupFor('effort', 'Effort', 'Reasoning effort', efforts, currentEffort);
       if (eg) out.push(eg);

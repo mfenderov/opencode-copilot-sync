@@ -67,5 +67,7 @@ test('registers opencode controller and serves content', async () => {
   const typeMode = typeGroups.find((g) => g?.id === 'mode');
   assert.ok(typeMode, 'type-level mode group present (build/plan)');
   assert.equal(typeMode.items.length, 2, 'mode options exposed');
+  assert.equal(typeGroups[0]?.id, 'mode', 'mode picker comes first');
+  assert.equal(typeGroups[1]?.id, 'models', 'model picker comes second');
   h.dispose();
 });
