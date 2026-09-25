@@ -63,6 +63,14 @@ export class ThemeColor {
     this.id = id;
   }
 }
+export class ChatResponseMarkdownPart {
+  constructor(value) { this.value = typeof value === 'string' ? value : value?.value; }
+}
+export class ChatResponseTurn {
+  constructor(response, result, participant, command) {
+    this.response = response; this.result = result; this.participant = participant; this.command = command;
+  }
+}
 export class ThemeIcon {
   constructor(id, color) {
     this.id = id;
@@ -105,6 +113,6 @@ function createChatSessionItemController(id, refreshHandler) {
   return controller;
 }
 export const chat = { createChatSessionItemController, registerChatSessionContentProvider: (_s, _p) => ({ dispose() {} }) };
-export default { chat, Uri, ThemeIcon, EventEmitter };
+export default { chat, Uri, ThemeIcon, EventEmitter, ChatResponseMarkdownPart, ChatResponseTurn };
 
 

@@ -24,7 +24,17 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
   const contentDisp = vscode.chat.registerChatSessionContentProvider('opencode', {
     async provideChatSessionContent(resource: any, _token: any, _ctx: any) {
       const prompt = String(resource?.toString?.() ?? '');
-      return { title: 'OpenCode', history: [{ role: 'assistant', content: `OpenCode ready: ${prompt}` }] };
+      // History items must be ChatResponseTurn instances: the extension host
+      // routes non-ChatRequestTurn items through convertResponseTurn, which
+      // reads turn.response.map. Plain {role, content} objects crash it.
+      const PartCtor: any = (vscode as any).ChatResponseMarkdownPart
+        ?? class { value: unknown; constructor(value: unknown) { this.value = value; } };
+      const TurnCtor: any = (vscode as any).ChatResponseTurn;
+      const part = new PartCtor(`OpenCode ready: ${prompt}`);
+      const turn = TurnCtor
+        ? new TurnCtor([part], {}, 'opencode', undefined)
+        : { response: [part], result: {}, participant: 'opencode' };
+      return { title: 'OpenCode', history: [turn], requestHandler: undefined };
     },
   });
   outputChannel.appendLine('[opencode] chatSessions controller registered for type opencode');
