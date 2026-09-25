@@ -10,6 +10,7 @@ import { formatSyncFailureMessage, formatSyncFailureTooltip } from './sync-statu
 import { buildSyncOptions, shouldPromptForApiKey } from './sync-options.js';
 import { fetchOpenCodeUsage, formatStatusBarText, formatUsageTooltip } from './usage.js';
 import { OpenCodeChatProvider } from './provider.js';
+import { registerOpencodeChatSession } from './chatsessions.js';
 import { setVSCodeProxyUrl } from './network.js';
 import { OpenCodeUsageTreeProvider } from './views/usageTreeProvider.js';
 
@@ -42,6 +43,14 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.lm.registerLanguageModelChatProvider('opencode', chatProvider)
   );
   outputChannel.appendLine('Registered native OpenCode LanguageModelChatProvider with VS Code.');
+
+  // ChatSessions controller: 'OpenCode' entry in the Agent Session Target dropdown (Insiders, proposed API)
+  try {
+    const chatSessionsHandle = registerOpencodeChatSession(vscode as any, outputChannel);
+    context.subscriptions.push(chatSessionsHandle);
+  } catch (err: any) {
+    outputChannel.appendLine(`Note: chatSessions controller unavailable (Insiders proposed API required): ${err?.message ?? err}`);
+  }
 
   // Auto-enable VS Code's experimental Agent Host BYOK bridge so custom models appear in Agent Mode
   try {
