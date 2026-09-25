@@ -1,5 +1,10 @@
 import { createAcpBridge } from './acp-bridge.js';
+export function isChatSessionsAvailable(vscode: any): boolean {
+  return typeof vscode?.chat?.createChatSessionItemController === 'function'
+    && typeof vscode?.chat?.registerChatSessionContentProvider === 'function';
+}
 export function registerOpencodeChatSession(vscode: any, outputChannel: { appendLine(m: string): void }, bridge = createAcpBridge()) {
+  if (!isChatSessionsAvailable(vscode)) throw new Error('chatSessionsProvider API not available (Insiders proposed API required)');
   const controller = vscode.chat.createChatSessionItemController('opencode', async () => {
     try {
       const sessions = await bridge.listSessions();

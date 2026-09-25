@@ -2,7 +2,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vscode from './mocks/vscode/index.js';
-import { registerOpencodeChatSession } from '../out/chatsessions.js';
+import { registerOpencodeChatSession, isChatSessionsAvailable } from '../out/chatsessions.js';
+test('isChatSessionsAvailable gates on proposed API presence', () => {
+  assert.equal(isChatSessionsAvailable(vscode), true);
+  assert.equal(isChatSessionsAvailable({ chat: {} }), false);
+  assert.equal(isChatSessionsAvailable({}), false);
+});
+test('register throws a clear error when proposed API is missing', () => {
+  assert.throws(() => registerOpencodeChatSession({ chat: {} }, { appendLine() {} }), /chatSessionsProvider API not available/);
+});
 test('registers opencode controller and serves content', async () => {
   const created = [];
   const fakeVscode = { ...vscode, chat: { ...vscode.chat,
