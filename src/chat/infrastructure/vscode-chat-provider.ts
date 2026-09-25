@@ -1,8 +1,7 @@
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { fetchWithRetry } from '../../network.js';
 import type { OpenCodeModelMeta } from '../../models/domain/model.js';
+import { readModelCache, writeModelCache } from '../../models/infrastructure/model-cache.js';
 import { resolveModelTokenLimits } from '../../models/domain/token-budget.js';
 import {
   buildResponsesInput,
@@ -65,14 +64,9 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     private readonly outputChannel?: vscode.OutputChannel
   ) {
     try {
-      if (this.context.globalStorageUri.fsPath) {
-        const cacheFile = path.join(this.context.globalStorageUri.fsPath, 'models_cache.json');
-        if (fs.existsSync(cacheFile)) {
-          const parsed = JSON.parse(fs.readFileSync(cacheFile, 'utf-8'));
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            this._models = parsed;
-          }
-        }
+      const cached = readModelCache(this.context.globalStorageUri.fsPath);
+      if (cached) {
+        this._models = cached;
       }
     } catch {}
   }
@@ -90,13 +84,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
       this._models = models;
       this.refresh();
       try {
-        if (this.context.globalStorageUri.fsPath) {
-          const cacheDir = this.context.globalStorageUri.fsPath;
-          if (!fs.existsSync(cacheDir)) {
-            fs.mkdirSync(cacheDir, { recursive: true });
-          }
-          fs.writeFileSync(path.join(cacheDir, 'models_cache.json'), JSON.stringify(models), 'utf-8');
-        }
+        writeModelCache(this.context.globalStorageUri.fsPath, models);
       } catch {}
     }
   }

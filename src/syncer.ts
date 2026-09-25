@@ -1,12 +1,3 @@
-import { type ProviderEntry } from './config.js';
-import { type CustomEndpointModel } from './enricher.js';
-import {
-  buildUnifiedModels,
-  fetchOpenCodeCatalogIds,
-  fetchOpenCodeModelMetadata,
-} from './sync-catalog.js';
-import { writeProvidersToConfig } from './sync-writer.js';
-
 export {
   getAllChatLanguageModelsPaths,
   getChatLanguageModelsPath,
@@ -21,70 +12,14 @@ export {
   writeProvidersToConfig,
   writeProvidersToTargets,
 } from './sync-writer.js';
-export { buildUnifiedModels } from './sync-catalog.js';
-export type { OpenCodeCatalogIds, UnifiedOpenCodeModels } from './sync-catalog.js';
-
-export interface SyncOpenCodeOptions {
-  includeGo?: boolean;
-  includeZen?: boolean;
-  /** Explicit config-file target; it is primary only when it resolves to the active storage path. */
-  targetPath?: string;
-  storagePath?: string;
-  remoteName?: string;
-  additionalTargetPaths?: readonly string[];
-}
-
-export interface SyncOpenCodeResult {
-  goCount: number;
-  zenCount: number;
-  totalCount: number;
-  models: CustomEndpointModel[];
-  targetPath: string;
-  backupPath: string | null;
-  warnings: string[];
-}
-
-export async function syncOpenCodeModels(
-  apiKey: string,
-  options: SyncOpenCodeOptions = {}
-): Promise<SyncOpenCodeResult> {
-  const includeGo = options.includeGo ?? true;
-  const includeZen = options.includeZen ?? true;
-  // Catalog IDs and model metadata are independent: fetch them concurrently
-  // so the multi-megabyte metadata download never serializes behind catalogs.
-  const [catalogIds, metadata] = await Promise.all([
-    fetchOpenCodeCatalogIds(apiKey, includeGo, includeZen),
-    fetchOpenCodeModelMetadata(),
-  ]);
-  const { models, zenCount } = buildUnifiedModels(
-    catalogIds.goModelIds,
-    catalogIds.zenModelIds,
-    metadata
-  );
-
-  if (models.length === 0) {
-    throw new Error('No models were fetched from OpenCode API. Preserving existing configuration to prevent accidental erasure.');
-  }
-
-  const unifiedProvider: ProviderEntry = {
-    name: 'OpenCode',
-    vendor: 'customendpoint',
-    apiKey,
-    apiType: 'chat-completions',
-    models,
-  };
-  const writeResult = writeProvidersToConfig([unifiedProvider], options.targetPath, options.storagePath, {
-    remoteName: options.remoteName,
-    additionalTargetPaths: options.additionalTargetPaths,
-  });
-
-  return {
-    goCount: catalogIds.goModelIds.length,
-    zenCount,
-    totalCount: models.length,
-    models,
-    targetPath: writeResult.targetPath,
-    backupPath: writeResult.backupPath,
-    warnings: writeResult.warnings,
-  };
-}
+export {
+  syncOpenCodeModels,
+  fetchOpenCodeCatalogIds,
+  fetchOpenCodeModelMetadata,
+  buildUnifiedModels,
+} from './models/application/synchronize-models.js';
+export type {
+  SyncOpenCodeOptions,
+  SyncOpenCodeResult,
+} from './models/application/synchronize-models.js';
+export type { OpenCodeCatalogIds, UnifiedOpenCodeModels } from './models/domain/model-catalog.js';

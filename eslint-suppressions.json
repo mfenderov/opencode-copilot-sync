@@ -145,7 +145,7 @@
       "count": 6
     },
     "@typescript-eslint/no-unsafe-assignment": {
-      "count": 3
+      "count": 1
     },
     "@typescript-eslint/no-unsafe-call": {
       "count": 1
@@ -160,6 +160,14 @@
       "count": 3
     },
     "@typescript-eslint/require-await": {
+      "count": 1
+    }
+  },
+  "src/models/infrastructure/model-cache.ts": {
+    "@typescript-eslint/no-unsafe-assignment": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unsafe-return": {
       "count": 1
     }
   },

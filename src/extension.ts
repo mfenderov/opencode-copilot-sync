@@ -2,10 +2,10 @@ import * as vscode from 'vscode';
 import { resolveApiKey, promptAndSetApiKey } from './auth.js';
 import {
   syncOpenCodeModels,
-  getChatLanguageModelsPath,
   type SyncOpenCodeOptions,
   type SyncOpenCodeResult,
-} from './syncer.js';
+} from './models/application/synchronize-models.js';
+import { getChatLanguageModelsPath } from './sync-targets.js';
 import { formatSyncFailureMessage, formatSyncFailureTooltip } from './sync-status.js';
 import { buildSyncOptions, shouldPromptForApiKey } from './sync-options.js';
 import { fetchOpenCodeUsage, formatStatusBarText, formatUsageTooltip } from './usage.js';

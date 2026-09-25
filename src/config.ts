@@ -1,4 +1,4 @@
-import { enrichModel, type CustomEndpointModel } from './enricher.js';
+import { enrichModel, type CustomEndpointModel } from './models/infrastructure/model-enricher.js';
 
 export interface ProviderEntry {
   name: string;
