@@ -2,6 +2,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { fetchWithRetry } from './network.js';
+import type { OpenCodeModelMeta } from './models/domain/model.js';
+import { resolveModelTokenLimits } from './models/domain/token-budget.js';
 import {
   buildResponsesInput,
   createOpenCodeRequestHeaders,
@@ -12,12 +14,10 @@ import {
   isFreeOrZenModel,
   isResponsesModel,
   isStaleReasoningInput,
-  resolveModelTokenLimits,
   sanitizeResponsesInput,
 } from './provider-protocol.js';
 import type {
   FormattedMessage,
-  OpenCodeModelMeta,
   WireToolDefinition,
 } from './provider-protocol.js';
 import { consumeProviderStream } from './provider-stream.js';

@@ -1,59 +1,10 @@
 import * as vscode from 'vscode';
 import { isFreeTierModel } from './fetcher.js';
+import type { OpenCodeModelMeta } from './models/domain/model.js';
 
-export interface OpenCodeModelMeta {
-  id: string;
-  name: string;
-  family: string;
-  catalog?: 'go' | 'zen';
-  isFree?: boolean;
-  contextWindow: number;
-  maxOutputTokens: number;
-  vision: boolean;
-  thinking?: boolean;
-  supportsReasoningEffort?: string[];
-  defaultReasoningEffort?: string;
-  /** Upstream wire protocol, when known authoritatively (e.g. from models.dev). */
-  apiType?: 'chat-completions' | 'messages' | 'responses';
-}
-
-const DEFAULT_CONTEXT_WINDOW = 1_048_576;
-const DEFAULT_MAX_OUTPUT_TOKENS = 65_536;
-const MIN_SAFE_CONTEXT_WINDOW = 4;
-const MAX_OUTPUT_CONTEXT_RATIO = 0.25;
-
-export interface ModelTokenLimits {
-  contextWindow: number;
-  maxInputTokens: number;
-  maxOutputTokens: number;
-}
-
-/**
- * Keep the VS Code Agent Mode prompt budget usable. The host treats maxInputTokens
- * as the compaction limit and reserves maxOutputTokens in the context gauge.
- */
-export function resolveModelTokenLimits(
-  contextWindow: unknown,
-  maxOutputTokens: unknown
-): ModelTokenLimits {
-  const context = typeof contextWindow === 'number' &&
-    Number.isSafeInteger(contextWindow) &&
-    contextWindow >= MIN_SAFE_CONTEXT_WINDOW
-    ? contextWindow
-    : DEFAULT_CONTEXT_WINDOW;
-  const output = typeof maxOutputTokens === 'number' &&
-    Number.isSafeInteger(maxOutputTokens) &&
-    maxOutputTokens > 0
-    ? maxOutputTokens
-    : DEFAULT_MAX_OUTPUT_TOKENS;
-  const safeOutput = Math.min(output, Math.floor(context * MAX_OUTPUT_CONTEXT_RATIO));
-
-  return {
-    contextWindow: context,
-    maxInputTokens: context - safeOutput,
-    maxOutputTokens: safeOutput,
-  };
-}
+export type { OpenCodeModelMeta } from './models/domain/model.js';
+export type { ModelTokenLimits } from './models/domain/token-budget.js';
+export { resolveModelTokenLimits } from './models/domain/token-budget.js';
 
 export type WireToolDefinition = Record<string, unknown>;
 

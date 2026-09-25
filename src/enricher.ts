@@ -1,5 +1,5 @@
 import { isFreeTierModel, type ModelDevMetadata } from './fetcher.js';
-import { resolveModelTokenLimits } from './provider-protocol.js';
+import { resolveModelTokenLimits } from './models/domain/token-budget.js';
 
 export interface EnrichOptions {
   isGo?: boolean;
