@@ -40,14 +40,15 @@ test('registers opencode controller and serves content', async () => {
   assert.equal(progress.length, 1, 'progress notice pushed once');
   assert.equal(prompts.length, 1, 'bridge.prompt invoked once');
   assert.ok(prompts[0][1].includes('hello'), 'bridge receives user prompt');
-  // Model picker: input-state exposes the ACP model catalog as a group.
+  // Pickers are honest read-only status: the v2.0.16 server ignores switching
+  // params, so groups carry the session's actual current value, single item.
   const inputState = await created[0].getChatSessionInputState(vscode.Uri.parse('opencode://session/abc'), {});
   const groups = inputState?.groups ?? inputState;
   const modelGroup = (Array.isArray(groups) ? groups : []).find((g) => g?.id === 'models');
-  assert.ok(modelGroup, 'models option group present');
-  assert.equal(modelGroup.items.length, 2, 'ACP catalog items exposed');
-  assert.ok(modelGroup.selected?.id === 'opencode/big-pickle', 'current model preselected');
-  // Per-message model override flows into the bridge.
+  assert.ok(modelGroup, 'models status group present');
+  assert.equal(modelGroup.items.length, 1, 'single current value, no fake choice');
+  assert.ok(modelGroup.selected?.locked === true, 'status is locked read-only');
+  // Selections still flow into the bridge (plumbing for when server honors them).
   await content.requestHandler({ prompt: 'hi again' }, { inputState: { groups: [{ id: 'models', selected: { id: 'opencode/gpt-5' } }] } }, { markdown: () => {}, progress: () => {} }, {});
   assert.ok(sessionCfgSet.some(([h, c]) => c?.model === 'opencode/gpt-5'), 'model override applied to bridge');
   // Picker-driven change (provideHandleOptionsChange) persists per session.
@@ -57,17 +58,16 @@ test('registers opencode controller and serves content', async () => {
     {},
   );
   assert.ok(sessionCfgSet.some(([h, c]) => c?.model === 'opencode/kimi-k3'), 'picker selection applied to bridge');
-  // Type-level provider options seed the input-bar Model picker.
+  // Type-level provider options: Mode status first, then Model status.
   const providerOpts = await fakeVscode._provider.provideChatSessionProviderOptions({});
   const typeGroups = providerOpts?.optionGroups ?? [];
   const typeModels = typeGroups.find((g) => g?.id === 'models');
-  assert.ok(typeModels, 'type-level models group present');
-  assert.equal(typeModels.items.length, 2, 'ACP catalog exposed at type level');
-  assert.ok(typeModels.selected?.id === 'opencode/big-pickle', 'current model preselected at type level');
+  assert.ok(typeModels, 'type-level models status present');
+  assert.equal(typeModels.items.length, 1, 'single current model at type level');
   const typeMode = typeGroups.find((g) => g?.id === 'mode');
-  assert.ok(typeMode, 'type-level mode group present (build/plan)');
-  assert.equal(typeMode.items.length, 2, 'mode options exposed');
-  assert.equal(typeGroups[0]?.id, 'mode', 'mode picker comes first');
-  assert.equal(typeGroups[1]?.id, 'models', 'model picker comes second');
+  assert.ok(typeMode, 'type-level mode status present (build/plan)');
+  assert.equal(typeMode.items.length, 1, 'single current mode at type level');
+  assert.equal(typeGroups[0]?.id, 'mode', 'mode status comes first');
+  assert.equal(typeGroups[1]?.id, 'models', 'model status comes second');
   h.dispose();
 });

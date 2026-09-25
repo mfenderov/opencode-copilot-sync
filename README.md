@@ -108,6 +108,8 @@ The extension registers a native **OpenCode** chat provider for requests and mai
 ## Insiders spike: OpenCode Session Target
 Requires VS Code Insiders sideload (`code-insiders --install-extension *.vsix`). Uses proposed `chatSessionsProvider`; will not pass stable Marketplace validation. Needs `opencode` CLI on PATH (`opencode acp --help` prints ACP server help). Select OpenCode in Agent Session Target to run prompts on the local harness.
 
+Known server limitation (opencode v2.0.16): the ACP server ignores per-prompt and per-session `model`/`mode` params, so the input-bar Model/Mode pickers show the session's actual current values as read-only status instead of switching controls. Per-context model control today = opencode config files (global `~/.config/opencode/opencode.jsonc` `"model"`, or project-local config in the workspace cwd, which applies since sessions spawn with the workspace cwd).
+
 ---
 
 ## 📄 License
