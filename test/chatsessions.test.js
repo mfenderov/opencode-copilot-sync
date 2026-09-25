@@ -54,5 +54,12 @@ test('registers opencode controller and serves content', async () => {
     {},
   );
   assert.ok(sessionModelSet.some(([h, m]) => m === 'opencode/kimi-k3'), 'picker selection applied to bridge');
+  // Type-level provider options seed the input-bar Model picker.
+  const providerOpts = await fakeVscode._provider.provideChatSessionProviderOptions({});
+  const typeGroups = providerOpts?.optionGroups ?? [];
+  const typeModels = typeGroups.find((g) => g?.id === 'models');
+  assert.ok(typeModels, 'type-level models group present');
+  assert.equal(typeModels.items.length, 2, 'ACP catalog exposed at type level');
+  assert.ok(typeModels.selected?.id === 'opencode/big-pickle', 'current model preselected at type level');
   h.dispose();
 });

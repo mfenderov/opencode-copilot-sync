@@ -80,8 +80,6 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
     return item;
   };
   const contentDisp = vscode.chat.registerChatSessionContentProvider('opencode', {
-    // Picker selection reporting: when the user changes an option group
-    // (e.g. models) in the agent input, persist it per session + bridge.
     provideHandleOptionsChange: ((resource: any, updates: any) => {
       const resourceStr = String(resource?.toString?.() ?? '');
       for (const u of updates ?? []) {
@@ -146,6 +144,29 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
       };
       return { title: 'OpenCode', history: [turn], requestHandler };
     },
+    // Type-level provider options: VS Code renders these as the input-bar
+    // pickers (Model, like Copilot's). Called with no session context, so
+    // this seeds the bridge catalog; per-session values come from session/new
+    // configOptions + inputState.
+    provideChatSessionProviderOptions: (async (_token: any) => {
+      try {
+        const got = await b.getModels?.();
+        const items = (got?.models ?? []).map((m: any) => ({ id: m.value, name: m.name, default: m.value === got?.current }));
+        if (!items.length) return {};
+        const current = items.find((i: any) => i.default) ?? items[0];
+        return {
+          optionGroups: [{
+            id: 'models', name: 'Model', description: 'OpenCode model for this session',
+            selected: { id: current.id, name: current.name, default: true },
+            items,
+          }],
+          newSessionOptions: { models: current.id },
+        };
+      } catch (err) {
+        outputChannel.appendLine(`[opencode] provider options failed: ${err}`);
+        return {};
+      }
+    }) as any,
   });
   outputChannel.appendLine('[opencode] chatSessions controller registered for type opencode');
   return { dispose() { try { controller.dispose(); } catch {} try { contentDisp.dispose(); } catch {} try { b.dispose(); } catch {} } };
