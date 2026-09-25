@@ -87,3 +87,35 @@ test('enrichModel keeps at least 75 percent of context available for input', () 
   assert.equal(model.maxInputTokens, 786432);
 });
 
+test('enrichModel assigns a distinct stable family per model id (no shared hardcoded family)', () => {
+  const ids = [
+    'muse-spark-1.3',
+    'deepseek-v4-flash',
+    'kimi-k3',
+    'big-pickle',
+    'muse-spark-1.3-contributor',
+    'muse-spark-1.3-contributor-free',
+    'nemotron-3-ultra-free',
+  ];
+  const models = ids.map((id) => enrichModel(id, { isGo: true }));
+  for (const m of models) {
+    assert.equal(m.family, m.id, `${m.id} must advertise family === id (verified-list convention)`);
+    assert.notEqual(m.family, 'gpt-5-5', `${m.id} must not carry the legacy hardcoded family`);
+  }
+  assert.equal(new Set(models.map((m) => m.family)).size, ids.length, 'no two different models may share one family');
+});
+
+test('enrichModel family is stable for the same model across calls and options', () => {
+  const first = enrichModel('kimi-k3', { isGo: true }).family;
+  for (const opts of [
+    { isGo: false },
+    { isGo: true, suffix: '(Custom)' },
+    { isGo: true, modelsDevData: { limit: { context: 200000, output: 64000 } } },
+  ]) {
+    assert.equal(enrichModel('kimi-k3', opts).family, first, 'same model must keep same family across options');
+  }
+  const free = enrichModel('muse-spark-1.3-contributor-free', { isGo: false, isFree: true }).family;
+  assert.equal(enrichModel('muse-spark-1.3-contributor-free', { isGo: true }).family, free);
+  assert.notEqual(free, enrichModel('muse-spark-1.3-contributor', { isGo: true }).family, 'free/contributor variants are distinct models');
+});
+

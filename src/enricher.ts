@@ -210,7 +210,8 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
   const model: CustomEndpointModel = {
     id: modelId,
     name,
-    family: 'gpt-5-5',
+    // Stable per-model family matching the VERIFIED_OPENCODE_MODELS convention (family = id).
+    family: modelId,
     url: modelUrl,
     apiType,
     toolCalling: true,

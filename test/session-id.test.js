@@ -99,6 +99,99 @@ function createMockMessage(text, role = vscode.LanguageModelChatMessageRole.User
   };
 }
 
+test('Session ID: same-opener conversations fork to distinct sessions on divergence', async () => {
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const opener = 'identical opener pasted into two different chats';
+  const assistant = vscode.LanguageModelChatMessageRole.Assistant;
+
+  // Turn 1 in chat A and chat B: byte-identical single message (shares a session — unavoidable).
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage(opener)],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage(opener)],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+
+  // Turn 2 diverges: same opener, different replies and follow-ups.
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [
+      createMockMessage(opener),
+      createMockMessage('reply A', assistant),
+      createMockMessage('follow-up A'),
+    ],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [
+      createMockMessage(opener),
+      createMockMessage('reply B', assistant),
+      createMockMessage('follow-up B'),
+    ],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+
+  // Turn 3 continues chat A (must stay on A's forked session).
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [
+      createMockMessage(opener),
+      createMockMessage('reply A', assistant),
+      createMockMessage('follow-up A'),
+      createMockMessage('reply A2', assistant),
+      createMockMessage('follow-up A2'),
+    ],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+
+  const sessions = mockServer.getRequests().map(sessionHeaderOf);
+  assert.equal(sessions.length, 5, 'Expected exactly 5 upstream requests');
+  assert.notEqual(
+    sessions[2],
+    sessions[3],
+    'Diverged same-opener turns must NOT share one upstream session (context bleed)'
+  );
+  assert.equal(
+    sessions[2],
+    sessions[4],
+    "Continuation of chat A must stay on A's session"
+  );
+});
+
+test('Session ID: upstream session id is logged on every request line', async () => {
+  const lines = [];
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context, { appendLine: (m) => lines.push(m) });
+
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage('log my session id')],
+    {},
+    createMockProgress(),
+    createMockToken()
+  );
+
+  const requestLines = lines.filter((l) => l.includes('Request: model='));
+  assert.ok(requestLines.length >= 1, 'Expected at least one Request: log line');
+  assert.match(requestLines[0], /session=ses_/, 'Request line must carry the upstream session id');
+});
+
 const GO_CHAT_MODEL = {
   id: 'deepseek-v4-pro',
   name: 'DeepSeek V4 Pro (OpenCode Go)',
