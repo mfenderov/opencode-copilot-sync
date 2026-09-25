@@ -52,14 +52,16 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
   // per-session model/mode params server-side (verified by behavioral probes:
   // pinned model/mode never change the answering model). Show the session's
   // ACTUAL current value as read-only status instead of a fake control.
-  // Per-context model control today = opencode config files, not ACP params.
+  // To run a different model, set "model" in ~/.config/opencode/opencode.jsonc
+  // or a project-local opencode config (sessions spawn with workspace cwd).
   function statusGroupFor(id: string, name: string, currentValue: string | undefined, serverNote: string): any {
     if (!currentValue) return undefined;
+    const how = 'change via opencode.jsonc "model" or project config';
     return {
       id, name,
-      description: `${serverNote} (server default — switching not supported by opencode ACP v2.0.16)`,
+      description: `${serverNote} — read-only (ACP v2.0.16 ignores switching; ${how})`,
       selected: { id: currentValue, name: currentValue, default: true, locked: true },
-      items: [{ id: currentValue, name: currentValue, description: serverNote, default: true, locked: true }],
+      items: [{ id: currentValue, name: currentValue, description: `${serverNote} — ${how}`, tooltip: how, default: true, locked: true }],
     };
   }
   async function optionGroupsFor(resourceStr: string): Promise<any[]> {
