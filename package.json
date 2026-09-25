@@ -180,7 +180,8 @@
     "lint": "eslint src",
     "test:all": "node test/runner-all.js",
     "test:e2e": "node test/e2e/runner.js",
-    "test:remote": "node scripts/test-remote-wsl.js"
+    "test:remote": "node scripts/test-remote-wsl.js",
+    "test:e2e-chatsessions": "node test/e2e/runner-chatsessions.js"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
