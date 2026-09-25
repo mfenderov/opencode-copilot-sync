@@ -1,6 +1,6 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkZenBalance, fetchModelsDevMetadata, filterFreeModels, isFreeTierModel, filterAvailableGoModels, KNOWN_UNAVAILABLE_MODELS } from '../out/fetcher.js';
+import { checkZenBalance, fetchModelsDevMetadata, fetchOpenCodeModels, filterFreeModels, isFreeTierModel, filterAvailableGoModels, KNOWN_UNAVAILABLE_MODELS } from '../out/fetcher.js';
 
 const originalOfflineMode = process.env.OPENCODE_OFFLINE;
 delete process.env.OPENCODE_OFFLINE;
@@ -129,6 +129,26 @@ test('fetchModelsDevMetadata prefers OpenCode Go limits over third-party provide
     globalThis.fetch = originalFetch;
     if (originalNoProxy === undefined) delete process.env.NO_PROXY;
     else process.env.NO_PROXY = originalNoProxy;
+  }
+});
+
+test('fetchOpenCodeModels aborts a hung catalog request instead of stalling startup sync', { timeout: 15000 }, async () => {
+  const originalFetch = globalThis.fetch;
+  // Signal-aware hang: mirrors the real fetch contract, which rejects when
+  // the passed AbortSignal fires.
+  globalThis.fetch = (url, init) => new Promise((resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(init.signal.reason));
+  });
+
+  try {
+    const start = Date.now();
+    await assert.rejects(
+      fetchOpenCodeModels('sk-test-key-12345', 'go'),
+      (err) => err && err.name === 'TimeoutError'
+    );
+    assert.ok(Date.now() - start < 12000, 'hung request must be time-bounded');
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 

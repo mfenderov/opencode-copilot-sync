@@ -21,27 +21,28 @@ export async function fetchOpenCodeCatalogIds(
   includeGo: boolean,
   includeZen: boolean
 ): Promise<OpenCodeCatalogIds> {
+  // Go and Zen catalogs are independent: fetch them concurrently so one slow
+  // endpoint does not serialize behind the other on startup.
+  const [goOutcome, zenOutcome] = await Promise.allSettled([
+    includeGo ? fetchOpenCodeModels(apiKey, 'go') : Promise.resolve([] as string[]),
+    includeZen ? fetchOpenCodeModels(apiKey, 'zen') : Promise.resolve([] as string[]),
+  ]);
+
   let goModelIds: string[] = [];
   let zenModelIds: string[] = [];
 
-  if (includeGo) {
-    try {
-      const rawGoIds = await fetchOpenCodeModels(apiKey, 'go');
-      goModelIds = rawGoIds.filter(Boolean);
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Failed to fetch Go models: ${message}`);
-    }
+  if (goOutcome.status === 'fulfilled') {
+    goModelIds = goOutcome.value.filter(Boolean);
+  } else {
+    const message = goOutcome.reason instanceof Error ? goOutcome.reason.message : String(goOutcome.reason);
+    console.error(`Failed to fetch Go models: ${message}`);
   }
 
-  if (includeZen) {
-    try {
-      const rawZenIds = await fetchOpenCodeModels(apiKey, 'zen');
-      zenModelIds = rawZenIds.filter(Boolean);
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Failed to fetch Zen models: ${message}`);
-    }
+  if (zenOutcome.status === 'fulfilled') {
+    zenModelIds = zenOutcome.value.filter(Boolean);
+  } else {
+    const message = zenOutcome.reason instanceof Error ? zenOutcome.reason.message : String(zenOutcome.reason);
+    console.error(`Failed to fetch Zen models: ${message}`);
   }
 
   return { goModelIds, zenModelIds };

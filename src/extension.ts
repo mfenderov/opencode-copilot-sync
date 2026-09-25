@@ -41,6 +41,10 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.lm.registerLanguageModelChatProvider('opencode', chatProvider)
   );
+  // Announce the cached models immediately so Agent Mode sees them before the
+  // delayed startup sync finishes; otherwise restored sessions fail model
+  // lookup until the first post-sync refresh.
+  chatProvider.refresh();
   outputChannel.appendLine('Registered native OpenCode LanguageModelChatProvider with VS Code.');
 
   // Auto-enable VS Code's experimental Agent Host BYOK bridge so custom models appear in Agent Mode
