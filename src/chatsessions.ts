@@ -14,14 +14,6 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
     getSessionConfig?: (h: string) => { model?: string; effort?: string; mode?: string };
     setSessionConfig?: (h: string, c: { model?: string; effort?: string; mode?: string }) => void;
   };
-  // Canonicalize a VS Code-side resource to the ACP sessionId for the
-  // extension-side selection map. The resource string changes identity over
-  // the session lifetime (untitled placeholder -> opencode:// resource), so
-  // key by the stable tail (acpSid) as well as the full string.
-  function xcanon(resourceStr: string): string {
-    const tail = String(resourceStr ?? '').split('/').pop() ?? resourceStr;
-    return tail || resourceStr;
-  }
   // Server truth for the status pickers: the session's actual current values
   // as reported by ACP configOptions. No local overrides — the server ignores
   // switching params, so anything we store locally would be a lie.
@@ -38,17 +30,7 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
     b.setSessionConfig?.(resourceStr, cfg);
     if (cfg.model) b.setSessionModel?.(resourceStr, cfg.model);
   }
-  function groupFor(id: string, name: string, description: string, options: { value: string; name: string }[], current?: string): any {
-    if (!options.length) return undefined;
-    const sel = options.find(o => o.value === current) ?? options[0];
-    const cap = (s: string) => s.length > 60 ? s.slice(0, 57) + '…' : s;
-    return {
-      id, name, description,
-      selected: { id: sel.value, name: sel.name, default: true },
-      items: options.map(o => ({ id: o.value, name: cap(o.name), description: o.value, tooltip: o.value, default: o.value === sel.value })),
-    };
-  }
-  // Honest single-item group: opencode ACP v2.0.16 ignores per-prompt and
+  // Honest single-item group: opencode ACP v2.0.16+ ignores per-prompt and
   // per-session model/mode params server-side (verified by behavioral probes:
   // pinned model/mode never change the answering model). Show the session's
   // ACTUAL current value as read-only status instead of a fake control.
@@ -146,15 +128,8 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
       outputChannel.appendLine(`[opencode] option select skipped: ${err}`);
     }
     const item = controller.createChatSessionItem(vscode.Uri.parse(s.resource), s.label);
-    // The editor adds the returned item to the collection itself; only add
-    // explicitly when the collection API supports it (older mocks key by string).
-    try {
-      const items: any = controller.items;
-      if (typeof items?.add === 'function') items.add(item);
-      else if (typeof items?.set === 'function') items.set(s.resource, item);
-    } catch (err) {
-      outputChannel.appendLine(`[opencode] items add skipped: ${err}`);
-    }
+    // The editor adds the returned item to the collection itself; adding it
+    // here too would double-add on the real API (items.add exists there).
     if (ctx?.request?.prompt) await b.prompt(s.resource, ctx.request.prompt);
     return item;
   };
@@ -219,7 +194,10 @@ export function registerOpencodeChatSession(vscode: any, outputChannel: { append
           outputChannel.appendLine(`[opencode] option apply skipped: ${err}`);
         }
         const cancelled = { cancelled: false };
-        const onCancel = () => { cancelled.cancelled = true; };
+        const onCancel = () => {
+          cancelled.cancelled = true;
+          void b.cancel?.(resourceStr);
+        };
         try { token?.onCancellationRequested?.(onCancel); } catch { /* ignore */ }
         try {
           let first = true;

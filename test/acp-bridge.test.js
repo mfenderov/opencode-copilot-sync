@@ -98,3 +98,81 @@ test('bridge resolves model across resource identities (untitled -> session)', a
   b.dispose();
 });
 
+
+// --- Issue 1: stderr must be consumed, else a full 64KB pipe buffer blocks
+// the child and the whole ACP session hangs.
+test('bridge drains child stderr so the ACP process cannot block', async () => {
+  let stderrCb = 'unset';
+  const fakeSpawn = () => ({ stdin: { on: () => {}, write: () => {} }, stdout: { on: () => {} }, stderr: { on: (ev, cb) => { if (ev === 'data') stderrCb = cb; } }, on: () => {}, once: () => {}, kill: () => {} });
+  const b = createAcpBridge(fakeSpawn);
+  b.getModels().catch(() => {}); // triggers ensure() -> spawn
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(typeof stderrCb, 'function', 'bridge must attach a stderr data handler');
+  b.dispose();
+});
+
+// --- Issue 2: child exit/error must reject in-flight pending requests, else
+// prompts hang forever after the ACP process dies.
+test('bridge rejects pending prompts when the ACP child exits', async () => {
+  let dataCb = null; let exitCb = 'unset';
+  const fakeSpawn = () => ({ stdin: { on: () => {}, write: () => {} }, stdout: { on: (ev, cb) => { if (ev === 'data') dataCb = cb; } }, stderr: { on: () => {} }, on: () => {}, once: (ev, cb) => { if (ev === 'exit') exitCb = cb; }, kill: () => {} });
+  const b = createAcpBridge(fakeSpawn);
+  const p = b.prompt('opencode://session/ses_x', 'hi').then(() => 'resolved', (e) => 'rejected:' + e.message);
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(typeof exitCb, 'function', 'bridge must attach a child exit handler');
+  exitCb(1, null);
+  const outcome = await Promise.race([p, new Promise(r => setTimeout(() => r('HUNG'), 200))]);
+  assert.notEqual(outcome, 'HUNG', 'in-flight prompt must not hang after child exit');
+  assert.match(outcome, /^rejected:/, 'in-flight prompt must reject after child exit');
+  b.dispose();
+});
+
+// --- Issue 3: per-session maps grow without bound across sessions.
+test('bridge prunes per-session state when a session is deleted', async () => {
+  let dataCb = null;
+  const fakeSpawn = () => ({ stdin: { write: (d) => autoReply4(String(d)) }, stdout: { on: (ev, cb) => { if (ev === 'data') dataCb = cb; } }, stderr: { on: () => {} }, on: () => {}, kill: () => {}, unref: () => {} });
+  function autoReply4(raw) {
+    let msg; try { msg = JSON.parse(raw); } catch { return; }
+    if (msg.method === 'initialize') setTimeout(() => dataCb && dataCb(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1 } }) + '\n'), 5);
+    else if (msg.method === 'session/new') setTimeout(() => dataCb && dataCb(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { sessionId: 'ses_prune', configOptions: [] } }) + '\n'), 5);
+    else if (msg.method === 'session/delete') setTimeout(() => dataCb && dataCb(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: {} }) + '\n'), 5);
+  }
+  const b = createAcpBridge(fakeSpawn);
+  const s = await b.newSession('/tmp/ws');
+  b.setSessionModel(s.resource, 'm-x');
+  assert.equal(b.getSessionModel(s.resource), 'm-x', 'model set before delete');
+  await b.deleteSession(s.resource);
+  assert.equal(b.getSessionModel(s.resource), undefined, 'session state must be pruned after delete');
+  b.dispose();
+});
+
+// --- Issue 4: chunks must reach the consumer WHILE the prompt is running.
+// Collecting them and emitting only after the final result freezes the UI
+// for the whole agent run.
+test('bridge streams chunks to onChunk before the prompt resolves', async () => {
+  let dataCb = null; const written = [];
+  const fakeSpawn = () => ({ stdin: { on: () => {}, write: (d) => { written.push(String(d)); autoReply5(String(d)); } }, stdout: { on: (ev, cb) => { if (ev === 'data') dataCb = cb; } }, stderr: { on: () => {} }, on: () => {}, once: () => {}, kill: () => {} });
+  function autoReply5(raw) {
+    let msg; try { msg = JSON.parse(raw); } catch { return; }
+    if (msg.method === 'initialize') setTimeout(() => dataCb && dataCb(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1 } }) + '\n'), 5);
+    else if (msg.method === 'session/new') setTimeout(() => dataCb && dataCb(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { sessionId: 'ses_stream', configOptions: [] } }) + '\n'), 5);
+    else if (msg.method === 'session/delete') setTimeout(() => dataCb && dataCb(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: {} }) + '\n'), 5);
+  }
+  const b = createAcpBridge(fakeSpawn);
+  const sess = await b.newSession('/tmp/ws');
+  const seen = [];
+  let resolved = false;
+  const p = b.prompt(sess.resource, 'hi', (t) => seen.push(t)).then((r) => { resolved = true; return r; });
+  await new Promise(r => setTimeout(r, 20));
+  let promptId = null;
+  for (const w of written) { try { const m = JSON.parse(w); if (m.method === 'session/prompt') promptId = m.id; } catch {} }
+  dataCb(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'ses_stream', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'PARTIAL' } } } }) + '\n');
+  await new Promise(r => setTimeout(r, 20));
+  assert.deepEqual(seen, ['PARTIAL'], 'chunk must be delivered before the prompt resolves');
+  assert.equal(resolved, false, 'prompt must still be in flight');
+  dataCb(JSON.stringify({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } }) + '\n');
+  const full = await p;
+  assert.equal(full, 'PARTIAL');
+  assert.deepEqual(seen, ['PARTIAL'], 'chunk must not be re-delivered on completion');
+  b.dispose();
+});

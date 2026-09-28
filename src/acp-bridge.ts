@@ -6,7 +6,7 @@ export interface AcpModelOption { value: string; name: string; }
 export interface AcpConfigOption { id: string; name: string; currentValue: string; options: AcpModelOption[]; }
 export interface AcpConfig { models: AcpModelOption[]; currentModel?: string; efforts: AcpModelOption[]; currentEffort?: string; modes: AcpModelOption[]; currentMode?: string; }
 export type SpawnImpl = typeof defaultSpawn;
-interface Pending { kind: 'init' | 'new' | 'prompt'; resolve: (v: any) => void; reject: (e: any) => void; chunks: string[]; sid: string; token?: { cancelled: boolean }; }
+interface Pending { kind: 'init' | 'new' | 'prompt'; resolve: (v: any) => void; reject: (e: any) => void; chunks: string[]; sid: string; token?: { cancelled: boolean }; onChunk?: (t: string) => void; }
 function parseFramed(buf: string): { msgs: any[]; rest: string } {
   const msgs: any[] = [];
   const lines = buf.split('\n');
@@ -18,7 +18,7 @@ function parseFramed(buf: string): { msgs: any[]; rest: string } {
   }
   return { msgs, rest };
 }
-export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
+export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn, onStderr: (line: string) => void = () => {}) {
   let child: ChildProcess | undefined;
   let buf = '';
   let nextId = 1;
@@ -29,15 +29,28 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
   // (opencode:/untitled-<uuid>), the opencode://session/<acpSid> resource,
   // and the raw acpSid. Canonicalize everything to acpSid on entry.
   function canon(handle: string): string {
-    const s = String(handle ?? '');
-    if (sessions.has(s)) return sessions.get(s)!;
+    const s = handle ?? '';
+    if (sessions.has(s)) return sessions.get(s) ?? s;
     const tail = s.split('/').pop() ?? s;
-    if (sessions.has(tail)) return sessions.get(tail)!;
-    return tail;
+    return sessions.get(tail) ?? tail;
   }
   function remember(resource: string, acpSid: string): void {
     sessions.set(resource, acpSid);
     sessions.set(acpSid, acpSid);
+  }
+  function forgetSession(acpSid: string): void {
+    for (const [k, v] of sessions) {
+      if (v === acpSid) {
+        sessions.delete(k);
+        sessionModels.delete(k);
+        sessionEfforts.delete(k);
+        sessionModes.delete(k);
+      }
+    }
+  }
+  function failPending(reason: string): void {
+    for (const [, p] of pending) p.reject(new Error(reason));
+    pending.clear();
   }
   const sessionModels = new Map<string, string>();
   const sessionEfforts = new Map<string, string>();
@@ -57,7 +70,8 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
   }
   function route(m: any) {
     if (m?.id !== undefined && pending.has(Number(m.id))) {
-      const p = pending.get(Number(m.id))!;
+      const p = pending.get(Number(m.id));
+      if (!p) return;
       if (m.error) { pending.delete(Number(m.id)); p.reject(new Error(m.error?.message ?? 'acp error')); return; }
       if (p.kind === 'prompt') {
         if (m.result && ('stopReason' in m.result)) { pending.delete(Number(m.id)); p.resolve({ result: m.result, chunks: p.chunks }); }
@@ -75,7 +89,12 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
       const text: string | undefined = upd?.content?.type === 'text' ? upd.content.text : undefined;
       if (sid && text !== undefined) {
         for (const p of pending.values()) {
-          if (p.kind === 'prompt' && p.sid === sid && !p.token?.cancelled) p.chunks.push(text);
+          if (p.kind === 'prompt' && p.sid === sid) {
+            p.chunks.push(text);
+            // Stream to the consumer immediately; waiting for the final result
+            // would freeze the UI for the whole agent run.
+            p.onChunk?.(text);
+          }
         }
       }
     }
@@ -95,8 +114,26 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
       // opencode acp takes no --cwd flag (it errored 'Unrecognized flag');
       // pass cwd via spawn options instead.
       child = spawnImpl('opencode', ['acp'], { stdio: ['pipe', 'pipe', 'pipe'], cwd } as any) as ChildProcess;
-      child.unref?.();
       (child.stdout as any)?.on?.('data', onData);
+      // Must drain stderr: a full 64KB pipe buffer blocks the child, which
+      // silently hangs the whole ACP session.
+      (child.stderr as any)?.on?.('data', (d: any) => onStderr(String(d).trimEnd()));
+      for (const stream of [child.stdout, child.stderr, child.stdin] as any[]) {
+        // Unhandled 'error' on a stream throws; the spawn may fail (ENOENT).
+        stream?.on?.('error', () => {});
+      }
+      // If the ACP process dies, reject everything in flight instead of
+      // leaving prompts pending forever, and reset so the next call respawns.
+      (child as any)?.once?.('exit', (code: number | null) => {
+        failPending(`opencode acp exited (code ${code})`);
+        child = undefined;
+        ready = undefined;
+      });
+      (child as any)?.on?.('error', (err: Error) => {
+        failPending(`opencode acp error: ${err?.message ?? String(err)}`);
+        child = undefined;
+        ready = undefined;
+      });
       ready = (async () => {
         const id = nextId++;
         const done = new Promise<void>((resolve, reject) => {
@@ -168,10 +205,11 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
       const mode = sessionModes.get(acpSid) ?? sessionModes.get(handle);
       if (mode) params.mode = mode;
       const got = await new Promise<{ result: any; chunks: string[] }>((resolve, reject) => {
-        pending.set(id, { kind: 'prompt', resolve, reject, chunks: [], sid: acpSid, token });
+        pending.set(id, { kind: 'prompt', resolve, reject, chunks: [], sid: acpSid, token, onChunk });
         send({ jsonrpc: '2.0', id, method: 'session/prompt', params });
       });
-      for (const c of got.chunks) onChunk?.(c);
+      // Chunks already streamed via onChunk; return the full text for callers
+      // that don't consume the stream.
       return got.chunks.join('');
     },
     getSessionModel(handle: string): string | undefined {
@@ -210,7 +248,27 @@ export function createAcpBridge(spawnImpl: SpawnImpl = defaultSpawn) {
       if (cfg.effort) { sessionEfforts.set(key, cfg.effort); sessionEfforts.set(handle, cfg.effort); }
       if (cfg.mode) { sessionModes.set(key, cfg.mode); sessionModes.set(handle, cfg.mode); }
     },
-    async cancel(_handle: string): Promise<void> { return; },
-    dispose(): void { try { child?.kill(); } catch { /* ignore */ } child = undefined; buf = ''; pending.clear(); ready = undefined; },
+    async cancel(handle: string): Promise<void> {
+      const acpSid = canon(handle);
+      send({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId: acpSid } });
+    },
+    async deleteSession(handle: string): Promise<void> {
+      const acpSid = canon(handle);
+      ensure(process.cwd());
+      await ready;
+      const id = nextId++;
+      await new Promise<void>((resolve, reject) => {
+        pending.set(id, { kind: 'new', resolve: () => resolve(), reject, chunks: [], sid: acpSid });
+        send({ jsonrpc: '2.0', id, method: 'session/delete', params: { sessionId: acpSid } });
+        setTimeout(() => { pending.delete(id); resolve(); }, 3000);
+      }).catch(() => {});
+      forgetSession(acpSid);
+    },
+    dispose(): void {
+      failPending('acp bridge disposed');
+      try { child?.kill(); } catch { /* ignore */ }
+      child = undefined; buf = ''; ready = undefined;
+      sessions.clear(); sessionModels.clear(); sessionEfforts.clear(); sessionModes.clear();
+    },
   };
 }
