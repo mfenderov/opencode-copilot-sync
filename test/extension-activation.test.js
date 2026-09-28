@@ -51,6 +51,7 @@ function createMockContext() {
     },
     globalStorageUri: { fsPath: storageDir },
     subscriptions: [],
+    extension: { packageJSON: { version: '0.0.0-test' } },
   };
 }
 
