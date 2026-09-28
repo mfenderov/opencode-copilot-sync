@@ -1,0 +1,73 @@
+// test/chatsessions.test.js
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import vscode from './mocks/vscode/index.js';
+import { registerOpencodeChatSession, isChatSessionsAvailable } from '../out/chatsessions.js';
+test('isChatSessionsAvailable gates on proposed API presence', () => {
+  assert.equal(isChatSessionsAvailable(vscode), true);
+  assert.equal(isChatSessionsAvailable({ chat: {} }), false);
+  assert.equal(isChatSessionsAvailable({}), false);
+});
+test('register throws a clear error when proposed API is missing', () => {
+  assert.throws(() => registerOpencodeChatSession({ chat: {} }, { appendLine() {} }), /chatSessionsProvider API not available/);
+});
+test('registers opencode controller and serves content', async () => {
+  const created = [];
+  const fakeVscode = { ...vscode, chat: { ...vscode.chat,
+    createChatSessionItemController: (id, rh) => { const c = vscode.chat.createChatSessionItemController(id, rh); created.push(c); return c; },
+    registerChatSessionContentProvider: (scheme, p) => { fakeVscode._provider = p; fakeVscode._handleOptions = p.provideHandleOptionsChange?.bind?.(p); return { dispose() {} }; } } };
+  const bridge = { listSessions: async () => [], newSession: async () => ({ resource: 'opencode://session/abc', label: 'abc' }), prompt: async (handle, text, onChunk) => { prompts.push([handle, text]); onChunk?.('bridge says: ' + text); return 'bridge says: ' + text; }, cancel: async () => {}, dispose: () => {},
+    getModels: async () => ({ models: [{ value: 'opencode/big-pickle', name: 'opencode/Big Pickle' }, { value: 'opencode/gpt-5', name: 'opencode/GPT 5' }], current: 'opencode/big-pickle' }),
+    getConfig: async () => ({ models: [{ value: 'opencode/big-pickle', name: 'opencode/Big Pickle' }, { value: 'opencode/gpt-5', name: 'opencode/GPT 5' }], currentModel: 'opencode/big-pickle', efforts: [{ value: 'low', name: 'Low' }, { value: 'default', name: 'Default' }], currentEffort: 'default', modes: [{ value: 'build', name: 'Build' }, { value: 'plan', name: 'Plan' }], currentMode: 'build' }),
+    getSessionModel: (h) => sessionModelOf(h), setSessionModel: (h, m) => { sessionCfgSet.push([h, { model: m }]); },
+    getSessionConfig: (h) => ({}), setSessionConfig: (h, c) => { sessionCfgSet.push([h, c]); } };
+  const sessionModelSet = [];
+  const sessionCfgSet = [];
+  const prompts = [];
+  const sessionModelOf = (_h) => undefined;
+  const h = registerOpencodeChatSession(fakeVscode, { appendLine() {} }, bridge);
+  assert.equal(created[0].id, 'opencode');
+  const content = await fakeVscode._provider.provideChatSessionContent(vscode.Uri.parse('opencode://session/abc'), {}, {});
+  assert.ok(content.history.length >= 1);
+  const turn = content.history[0];
+  assert.ok(turn instanceof vscode.ChatResponseTurn, 'history items must be ChatResponseTurn instances (exthost convertResponseTurn reads .response.map)');
+  assert.ok(Array.isArray(turn.response) && turn.response.length >= 1, 'response turn must carry parts array');
+  assert.equal(typeof content.requestHandler, 'function', 'session must be writeable (requestHandler present)');
+  const streamed = [];
+  const progress = [];
+  await content.requestHandler({ prompt: 'hello' }, {}, { markdown: (t) => { streamed.push(t); }, progress: (t) => { progress.push(t); } }, {});
+  assert.ok(streamed.length === 1 && streamed[0].includes('hello'), 'requestHandler streams bridge text');
+  assert.equal(progress.length, 1, 'progress notice pushed once');
+  assert.equal(prompts.length, 1, 'bridge.prompt invoked once');
+  assert.ok(prompts[0][1].includes('hello'), 'bridge receives user prompt');
+  // Pickers are honest read-only status: the v2.0.16 server ignores switching
+  // params, so groups carry the session's actual current value, single item.
+  const inputState = await created[0].getChatSessionInputState(vscode.Uri.parse('opencode://session/abc'), {});
+  const groups = inputState?.groups ?? inputState;
+  const modelGroup = (Array.isArray(groups) ? groups : []).find((g) => g?.id === 'models');
+  assert.ok(modelGroup, 'models status group present');
+  assert.equal(modelGroup.items.length, 1, 'single current value, no fake choice');
+  assert.ok(modelGroup.selected?.locked === true, 'status is locked read-only');
+  // Selections still flow into the bridge (plumbing for when server honors them).
+  await content.requestHandler({ prompt: 'hi again' }, { inputState: { groups: [{ id: 'models', selected: { id: 'opencode/gpt-5' } }] } }, { markdown: () => {}, progress: () => {} }, {});
+  assert.ok(sessionCfgSet.some(([h, c]) => c?.model === 'opencode/gpt-5'), 'model override applied to bridge');
+  // Picker-driven change (provideHandleOptionsChange) persists per session.
+  await fakeVscode._provider.provideHandleOptionsChange(
+    vscode.Uri.parse('opencode://session/abc'),
+    [{ optionId: 'models', value: 'opencode/kimi-k3' }],
+    {},
+  );
+  assert.ok(sessionCfgSet.some(([h, c]) => c?.model === 'opencode/kimi-k3'), 'picker selection applied to bridge');
+  // Type-level provider options: Mode status first, then Model status.
+  const providerOpts = await fakeVscode._provider.provideChatSessionProviderOptions({});
+  const typeGroups = providerOpts?.optionGroups ?? [];
+  const typeModels = typeGroups.find((g) => g?.id === 'models');
+  assert.ok(typeModels, 'type-level models status present');
+  assert.equal(typeModels.items.length, 1, 'single current model at type level');
+  const typeMode = typeGroups.find((g) => g?.id === 'mode');
+  assert.ok(typeMode, 'type-level mode status present (build/plan)');
+  assert.equal(typeMode.items.length, 1, 'single current mode at type level');
+  assert.equal(typeGroups[0]?.id, 'mode', 'mode status comes first');
+  assert.equal(typeGroups[1]?.id, 'models', 'model status comes second');
+  h.dispose();
+});
