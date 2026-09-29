@@ -202,7 +202,9 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     const isResponses = isResponsesModel(model.id, meta?.apiType);
     const isFreeOrZen = isFreeOrZenModel(model.id, meta);
 
-    const toolsPayload = formatProviderTools(options.tools, isResponses, isFreeOrZen);
+    const toolsPayload = formatProviderTools(options.tools, isResponses, isFreeOrZen, (message) => {
+      this.log(message);
+    });
 
     const responsesInput: any[] = isResponses ? buildResponsesInput(formattedMessages) : [];
 
@@ -350,6 +352,12 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
           const isFreeTierError =
             userDetail.includes('FreeTierError') ||
             userDetail.toLowerCase().includes('free tier');
+          // A schema-validation 400 means we sent something the gateway refuses, not
+          // that the gateway is unhealthy. Reporting it as a server error sends the
+          // user looking at the wrong thing — and a recurring one here means the
+          // sanitizer did not cover every schema position.
+          const isSchemaError =
+            res.status === 400 && /\benum\b|\bschema\b|too many|exceeds|invalid_request/i.test(userDetail);
 
           // 1. Auth errors: throw NoPermissions to let VS Code trigger re-auth prompts if configured.
           // IMPORTANT: Do NOT throw NoPermissions for upstream FreeTierError (e.g. policy/model restriction);
@@ -377,7 +385,9 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
             ? 'stale model ID (renamed or removed by a later sync; re-run sync and re-pick the model)'
             : isFreeTierError
               ? 'upstream free-tier policy error'
-              : 'upstream server error';
+              : isSchemaError
+                ? 'tool schema rejected by upstream (an attached tool declares a constraint the gateway cannot accept; retry without that tool, or re-run sync)'
+                : 'upstream server error';
           const alertNotice = [
             `> ⚠️ **OpenCode Model Alert (${res.status} ${res.statusText || 'Service Error'})**`,
             `>`,

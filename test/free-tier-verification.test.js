@@ -193,6 +193,79 @@ test('Free Tier Verification: appends bash and read tools alongside caller tools
   assert.ok(toolNames.includes('read'), 'Expected read tool to be appended');
 });
 
+test('Free Tier Verification: strips oversized enums from the wire payload in both protocols', async () => {
+  const many = Array.from({ length: 300 }, (_, i) => `mode-${i}`);
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+
+  for (const [model, path] of [
+    [MUSE_FREE_MODEL, '/zen/v1/responses'],
+    [MIMO_FREE_MODEL, '/zen/v1/chat/completions'],
+  ]) {
+    mockServer.requests.length = 0;
+
+    await provider.provideLanguageModelChatResponse(
+      model,
+      [createMockMessage('hello')],
+      {
+        tools: [
+          {
+            name: 'picker',
+            description: 'Pick a mode',
+            inputSchema: {
+              type: 'object',
+              properties: { mode: { type: 'string', enum: many } },
+            },
+          },
+        ],
+      },
+      createMockProgress(),
+      createMockToken()
+    );
+
+    const req = mockServer.requests[0];
+    assert.equal(req.pathname, path);
+    const tools = req.body.tools;
+    const schema = tools[0].parameters ?? tools[0].function.parameters;
+    assert.equal(
+      schema.properties.mode.enum,
+      undefined,
+      `oversized enum reached the wire on ${path} — the gateway would reject the whole request`
+    );
+    assert.equal(schema.properties.mode.type, 'string');
+  }
+});
+
+test('Free Tier Verification [400 schema error]: reports a tool schema rejection, not a server error', async () => {
+  mockServer.setScenario({
+    mode: 'fault',
+    status: 400,
+    message: JSON.stringify({
+      error: {
+        message:
+          'a single enum property with more than 250 values exceeds the maximum combined enum string length of 15000 characters',
+      },
+    }),
+  });
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+
+  await provider.provideLanguageModelChatResponse(
+    MUSE_FREE_MODEL,
+    [createMockMessage('hello')],
+    {},
+    progress,
+    createMockToken()
+  );
+
+  const text = progress.parts.map((p) => p.value ?? '').join('\n');
+  assert.match(text, /tool schema rejected by upstream/);
+  assert.doesNotMatch(text, /upstream server error/);
+});
+
 test('Free Tier Verification [403 FreeTierError]: streams alert card and does NOT throw NoPermissions', async () => {
   mockServer.setScenario({
     mode: 'fault',

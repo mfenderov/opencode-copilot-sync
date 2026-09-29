@@ -85,10 +85,130 @@ function clampToolName(name: string): string {
   return name.length > 64 ? name.slice(0, 64) : name;
 }
 
+// OpenCode's gateway validates every tool JSON Schema we send and rejects the whole
+// request with `a single enum property with more than 250 values exceeds the maximum
+// combined enum string length of 15000 characters`. One offending property in one tool
+// fails every request in the session, so oversized enums are dropped here rather than
+// forwarded. Values sit 20% under the gateway's documented ceiling for headroom against
+// undocumented upstream drift.
+const OPENCODE_MAX_ENUM_VALUES = 200;
+const OPENCODE_MAX_ENUM_CHARS = 12000;
+
+// Keys whose values are data, not schema. Descending into them risks stripping a property
+// that merely happens to be named `enum`, so the walk stops at these boundaries. Every
+// other key is descended into, which covers any JSON Schema applicator — present or future
+// — without this list having to be kept in sync with the spec.
+const NON_SCHEMA_KEYS = new Set([
+  'enum',
+  'const',
+  'default',
+  'example',
+  'examples',
+  'description',
+  'title',
+  '$comment',
+]);
+
+function exceedsEnumLimits(values: unknown[]): boolean {
+  if (values.length > OPENCODE_MAX_ENUM_VALUES) return true;
+  let total = 0;
+  for (const value of values) {
+    total += String(value).length;
+    if (total > OPENCODE_MAX_ENUM_CHARS) return true;
+  }
+  return false;
+}
+
+interface DropResult {
+  node: unknown;
+  changed: boolean;
+}
+
+/**
+ * Rebuilds a schema with oversized enums removed, descending generically through every
+ * object and array except `NON_SCHEMA_KEYS`. A node that only declared its shape via
+ * `enum` gains `type: 'string'` so it stays usable as a free-form value.
+ */
+function stripOversizedEnums(node: unknown, path: string, onDrop: (path: string, count: number) => void, inProgress: Set<unknown>): DropResult {
+  if (Array.isArray(node)) {
+    if (inProgress.has(node)) return { node, changed: false };
+    inProgress.add(node);
+    let changed = false;
+    const out = node.map((item) => {
+      const result = stripOversizedEnums(item, path, onDrop, inProgress);
+      if (result.changed) changed = true;
+      return result.node;
+    });
+    inProgress.delete(node);
+    return { node: out, changed };
+  }
+
+  if (typeof node !== 'object' || node === null) {
+    return { node, changed: false };
+  }
+  if (inProgress.has(node)) return { node, changed: false };
+  inProgress.add(node);
+
+  const source = node as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  let changed = false;
+  let droppedOwnEnum = false;
+
+  for (const [key, value] of Object.entries(source)) {
+    if (key === 'enum') {
+      if (Array.isArray(value) && exceedsEnumLimits(value)) {
+        onDrop(path, value.length);
+        changed = true;
+        droppedOwnEnum = true;
+        continue;
+      }
+      out[key] = value;
+      continue;
+    }
+    if (NON_SCHEMA_KEYS.has(key)) {
+      out[key] = value;
+      continue;
+    }
+    const result = stripOversizedEnums(value, `${path}.${key}`, onDrop, inProgress);
+    if (result.changed) changed = true;
+    out[key] = result.node;
+  }
+
+  // A node whose own enum was its only shape information now constrains and describes
+  // nothing; a free-form string keeps it usable. Keyed on this node's own drop, not on
+  // `changed`, which also propagates from descendants.
+  if (droppedOwnEnum && !('type' in out) && !('$ref' in out)) {
+    out.type = 'string';
+  }
+
+  inProgress.delete(node);
+  return { node: out, changed };
+}
+
+function sanitizeToolParameters(schema: unknown, toolName: string, log: (message: string) => void): unknown {
+  const fallback: unknown =
+    schema && typeof schema === 'object' ? schema : { type: 'object', properties: {} };
+  try {
+    const { node } = stripOversizedEnums(schema, 'root', (path, count) => {
+      log(`schema relaxed: dropped oversized enum on ${toolName}${path} (${count} values)`);
+    }, new Set<unknown>());
+    return node;
+  } catch (err) {
+    // Degrade to exactly the pre-change payload rather than to an empty schema: a
+    // detectable 400 beats a model invoking the tool with invented arguments.
+    const detail = err instanceof Error ? err.message : String(err);
+    log(`schema sanitization failed for ${toolName}: ${detail}; sending caller schema unchanged`);
+    return fallback;
+  }
+}
+
+const discardLog = (): void => undefined;
+
 export function formatProviderTools(
   tools: readonly vscode.LanguageModelChatTool[] | undefined,
   isResponses: boolean,
-  injectVerificationTools: boolean
+  injectVerificationTools: boolean,
+  log: (message: string) => void = discardLog
 ): WireToolDefinition[] | undefined {
   let toolsPayload: WireToolDefinition[] | undefined;
   if (tools && tools.length > 0) {
@@ -97,7 +217,7 @@ export function formatProviderTools(
         type: 'function',
         name: clampToolName(tool.name),
         description: tool.description,
-        parameters: tool.inputSchema || { type: 'object', properties: {} },
+        parameters: sanitizeToolParameters(tool.inputSchema, tool.name, log),
       }));
     } else {
       toolsPayload = tools.map((tool) => ({
@@ -105,7 +225,7 @@ export function formatProviderTools(
         function: {
           name: clampToolName(tool.name),
           description: tool.description,
-          parameters: tool.inputSchema || { type: 'object', properties: {} },
+          parameters: sanitizeToolParameters(tool.inputSchema, tool.name, log),
         },
       }));
     }
