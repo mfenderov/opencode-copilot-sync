@@ -112,6 +112,278 @@ test('preserves the provider export for filtering synthetic verification calls',
   assert.equal(providerSyntheticToolFilter('read', [{ name: 'read' }]), false);
 });
 
+// ============================================================================
+// Oversized enum clamping (OpenCode gateway: >250 values / >15000 chars per enum)
+// ============================================================================
+
+const manyValues = (n) => Array.from({ length: n }, (_, i) => `value-${i}`);
+
+function parametersOf(tools, isResponses) {
+  return tools[0].parameters ?? tools[0].function.parameters;
+}
+
+test('strips oversized enums in BOTH wire shapes, not just one branch', () => {
+  for (const isResponses of [true, false]) {
+    const schema = {
+      type: 'object',
+      properties: { mode: { type: 'string', enum: manyValues(300) } },
+    };
+    const tools = formatProviderTools(
+      [{ name: 'picker', description: 'Pick', inputSchema: schema }],
+      isResponses,
+      false
+    );
+    const params = parametersOf(tools, isResponses);
+    assert.equal(
+      params.properties.mode.enum,
+      undefined,
+      `oversized enum survived on the ${isResponses ? 'Responses' : 'Chat Completions'} branch`
+    );
+    assert.equal(params.properties.mode.type, 'string', 'property degrades to a free string');
+  }
+});
+
+test('drops an enum that breaches the character limit even under the count limit', () => {
+  // 60 values x 300 chars = 18000 chars, comfortably past the gateway's 15000 ceiling.
+  const long = manyValues(60).map((v) => v.repeat(60));
+  const tools = formatProviderTools(
+    [{ name: 'picker', description: 'Pick', inputSchema: { type: 'object', properties: { m: { enum: long } } } }],
+    true,
+    false
+  );
+  assert.equal(parametersOf(tools, true).properties.m.enum, undefined);
+  assert.equal(parametersOf(tools, true).properties.m.type, 'string');
+});
+
+test('pins the enum limits at their boundary', () => {
+  const atLimit = (n) =>
+    parametersOf(
+      formatProviderTools(
+        [{ name: 'p', description: 'P', inputSchema: { type: 'object', properties: { v: { enum: manyValues(n) } } } }],
+        true,
+        false
+      ),
+      true
+    ).properties.v;
+
+  assert.ok(Array.isArray(atLimit(200).enum), '200 values is within the limit and must be kept');
+  assert.equal(atLimit(201).enum, undefined, '201 values exceeds the limit and must be dropped');
+
+  // Char boundary: 100 values x 100 chars = 10000 (under), 120 x 110 = 13200 (over).
+  const under = Array.from({ length: 100 }, (_, i) => `v${i}`.padEnd(100, 'x'));
+  const over = Array.from({ length: 120 }, (_, i) => `v${i}`.padEnd(110, 'x'));
+  assert.equal(under.reduce((a, v) => a + v.length, 0), 10000);
+  assert.ok(over.reduce((a, v) => a + v.length, 0) > 12000);
+
+  const charLimited = (values) =>
+    parametersOf(
+      formatProviderTools(
+        [{ name: 'p', description: 'P', inputSchema: { type: 'object', properties: { v: { enum: values } } } }],
+        true,
+        false
+      ),
+      true
+    ).properties.v;
+
+  assert.ok(Array.isArray(charLimited(under).enum), 'under the char limit and must be kept');
+  assert.equal(charLimited(over).enum, undefined, 'over the char limit and must be dropped');
+});
+
+test('preserves legal enums and never aliases the caller schema', () => {
+  const schema = { type: 'object', properties: { v: { type: 'string', enum: ['a', 'b', 'c'] } } };
+  const tools = formatProviderTools([{ name: 'p', description: 'P', inputSchema: schema }], true, false);
+  const params = parametersOf(tools, true);
+
+  assert.deepEqual(params.properties.v.enum, ['a', 'b', 'c'], 'legal enum is preserved');
+  assert.notStrictEqual(params, schema, 'payload must not alias VS Code\'s inputSchema object');
+  assert.notStrictEqual(params.properties.v, schema.properties.v, 'nested nodes must be fresh too');
+});
+
+test('strips oversized enums at any nesting depth', () => {
+  const big = manyValues(300);
+  const schema = {
+    type: 'object',
+    properties: {
+      direct: { enum: big },
+      inItems: { type: 'array', items: { enum: big } },
+      inAnyOf: { anyOf: [{ enum: big }, { type: 'string' }] },
+    },
+    $defs: { hidden: { enum: big } },
+  };
+
+  const params = parametersOf(formatProviderTools([{ name: 'p', description: 'P', inputSchema: schema }], true, false), true);
+
+  assert.equal(params.properties.direct.enum, undefined);
+  assert.equal(params.properties.inItems.items.enum, undefined);
+  assert.equal(params.properties.inAnyOf.anyOf[0].enum, undefined);
+  assert.equal(params.$defs.hidden.enum, undefined);
+  // A sibling that never breached is left intact.
+  assert.equal(params.properties.inAnyOf.anyOf[1].type, 'string');
+});
+
+test('does not inject a type into ancestors that only lost a descendant enum', () => {
+  // `changed` propagates from children, so keying the type-injection off it would add
+  // `type: 'string'` to every untyped ancestor — turning $defs entries and untyped
+  // combinator branches into falsely-typed string constraints.
+  const schema = {
+    $defs: { wrapper: { properties: { inner: { enum: manyValues(300) } } } },
+    anyOf: [{ properties: { v: { enum: manyValues(300) } } }],
+  };
+  const params = parametersOf(formatProviderTools([{ name: 'p', description: 'P', inputSchema: schema }], true, false), true);
+
+  assert.equal('$defs' in params, true);
+  assert.equal(params.$defs.wrapper.type, undefined, 'an ancestor did not lose its own enum, so it gains no type');
+  assert.equal(params.anyOf[0].type, undefined, 'same for an untyped combinator branch');
+  assert.equal(params.$defs.wrapper.properties.inner.type, 'string', 'only the node that lost its enum gains a type');
+});
+
+test('does not impose a string type on dropped non-string enums', () => {
+  // A numeric enum constrained to numbers; type: 'string' would invalidate
+  // every originally-valid argument. Leaving it typeless keeps them valid.
+  const numeric = Array.from({ length: 300 }, (_, i) => i);
+  const params = parametersOf(
+    formatProviderTools(
+      [{ name: 'n', description: 'N', inputSchema: { type: 'object', properties: { level: { enum: numeric } } } }],
+      true,
+      false
+    ),
+    true
+  );
+  assert.equal(params.properties.level.enum, undefined, 'the oversized enum is still dropped');
+  assert.equal(params.properties.level.type, undefined, 'but no string type is imposed on a numeric enum');
+
+  // Mixed-type enums stay unconstrained too.
+  const mixed = [...manyValues(250), 42, true];
+  const mixedParams = parametersOf(
+    formatProviderTools(
+      [{ name: 'm', description: 'M', inputSchema: { type: 'object', properties: { v: { enum: mixed } } } }],
+      true,
+      false
+    ),
+    true
+  );
+  assert.equal(mixedParams.properties.v.enum, undefined);
+  assert.equal(mixedParams.properties.v.type, undefined);
+});
+
+test('does not descend into data keywords that merely contain an "enum" key', () => {
+  const big = manyValues(300);
+  const schema = {
+    type: 'object',
+    properties: { v: { type: 'string' } },
+    examples: [{ enum: big }],
+    default: { enum: big },
+    description: 'A tool',
+  };
+  const params = parametersOf(formatProviderTools([{ name: 'p', description: 'P', inputSchema: schema }], true, false), true);
+
+  assert.equal(params.examples[0].enum.length, 300, 'examples is data, not schema');
+  assert.equal(params.default.enum.length, 300, 'default is data, not schema');
+});
+
+test('visits named schemas even when the property name collides with a keyword', () => {
+  // Under properties/$defs, keys are author-chosen names — a property literally
+  // named `enum`, `default`, or `examples` still holds a schema that must be
+  // visited, or its oversized enum reaches the gateway and 400s the request.
+  const big = manyValues(300);
+  for (const name of ['enum', 'default', 'examples']) {
+    const params = parametersOf(
+      formatProviderTools(
+        [{
+          name: 'p',
+          description: 'P',
+          inputSchema: { type: 'object', properties: { [name]: { enum: big } } },
+        }],
+        true,
+        false
+      ),
+      true
+    );
+    assert.equal(
+      params.properties[name].enum,
+      undefined,
+      `oversized enum under a property named '${name}' must still be dropped`
+    );
+  }
+
+  const defParams = parametersOf(
+    formatProviderTools(
+      [{
+        name: 'p',
+        description: 'P',
+        inputSchema: { $defs: { default: { enum: big } } },
+      }],
+      true,
+      false
+    ),
+    true
+  );
+  assert.equal(defParams.$defs.default.enum, undefined, 'same for a $def named `default`');
+});
+
+test('strips only the breaching property and logs every drop', () => {
+  const logs = [];
+  const schema = {
+    type: 'object',
+    properties: {
+      bad: { type: 'string', enum: manyValues(300) },
+      good: { type: 'string', enum: ['keep', 'me'] },
+    },
+  };
+  const params = parametersOf(
+    formatProviderTools([{ name: 'picker', description: 'Pick', inputSchema: schema }], true, false, (m) => logs.push(m)),
+    true
+  );
+
+  assert.equal(params.properties.bad.enum, undefined);
+  assert.deepEqual(params.properties.good.enum, ['keep', 'me']);
+  assert.equal(logs.length, 1, 'exactly one drop should be reported');
+  assert.match(logs[0], /schema relaxed: dropped oversized enum on picker/);
+});
+
+test('falls back to the caller schema and logs when sanitization throws', () => {
+  const logs = [];
+  const throwing = {
+    type: 'object',
+    get properties() {
+      throw new Error('boom');
+    },
+  };
+  const params = parametersOf(
+    formatProviderTools([{ name: 'bad', description: 'Bad', inputSchema: throwing }], true, false, (m) => logs.push(m)),
+    true
+  );
+
+  assert.strictEqual(params, throwing, 'degrades to exactly the pre-change payload, not an empty schema');
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /schema sanitization failed for bad: boom; sending caller schema unchanged/);
+});
+
+test('schema-less tools keep the pre-change empty object schema', () => {
+  for (const isResponses of [true, false]) {
+    const tools = formatProviderTools([{ name: 'noschema', description: 'No schema' }], isResponses, false);
+    assert.deepEqual(
+      parametersOf(tools, isResponses),
+      { type: 'object', properties: {} },
+      `schema-less tool must send an empty object schema on the ${isResponses ? 'Responses' : 'Chat Completions'} branch`
+    );
+  }
+});
+
+test('survives a cyclic schema without hanging or throwing', () => {
+  const node = { type: 'string', enum: manyValues(300) };
+  const cyclic = { type: 'object', properties: { self: node } };
+  node.properties = { back: cyclic };
+
+  const params = parametersOf(
+    formatProviderTools([{ name: 'cyc', description: 'Cyc', inputSchema: cyclic }], true, false),
+    true
+  );
+
+  assert.ok(params && typeof params === 'object');
+  assert.equal(params.properties.self.enum, undefined, 'the reachable oversized enum is still stripped');
+});
+
 test('builds protocol-specific URLs and request bodies while sanitizing reasoning input', () => {
   const formattedMessages = [{ role: 'user', content: 'hello' }];
   const responses = createProviderRequest({

@@ -2,7 +2,7 @@ import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import * as vscode from 'vscode';
-import { OpenCodeChatProvider } from '../out/chat/infrastructure/vscode-chat-provider.js';
+import { OpenCodeChatProvider, classifyUpstreamAlert, isSchemaValidationError } from '../out/chat/infrastructure/vscode-chat-provider.js';
 import { startMockServer } from './helpers/mock-opencode-server.js';
 
 let mockServer;
@@ -191,6 +191,109 @@ test('Free Tier Verification: appends bash and read tools alongside caller tools
   assert.ok(toolNames.includes('customTool'), 'Expected caller customTool to be preserved');
   assert.ok(toolNames.includes('bash'), 'Expected bash tool to be appended');
   assert.ok(toolNames.includes('read'), 'Expected read tool to be appended');
+});
+
+test('Free Tier Verification: strips oversized enums from the wire payload in both protocols', async () => {
+  const many = Array.from({ length: 300 }, (_, i) => `mode-${i}`);
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+
+  for (const [model, path] of [
+    [MUSE_FREE_MODEL, '/zen/v1/responses'],
+    [MIMO_FREE_MODEL, '/zen/v1/chat/completions'],
+  ]) {
+    mockServer.requests.length = 0;
+
+    await provider.provideLanguageModelChatResponse(
+      model,
+      [createMockMessage('hello')],
+      {
+        tools: [
+          {
+            name: 'picker',
+            description: 'Pick a mode',
+            inputSchema: {
+              type: 'object',
+              properties: { mode: { type: 'string', enum: many } },
+            },
+          },
+        ],
+      },
+      createMockProgress(),
+      createMockToken()
+    );
+
+    const req = mockServer.requests[0];
+    assert.equal(req.pathname, path);
+    const tools = req.body.tools;
+    const schema = tools[0].parameters ?? tools[0].function.parameters;
+    assert.equal(
+      schema.properties.mode.enum,
+      undefined,
+      `oversized enum reached the wire on ${path} — the gateway would reject the whole request`
+    );
+    assert.equal(schema.properties.mode.type, 'string');
+  }
+});
+
+test('classifies upstream alerts without misattributing schema rejections', () => {
+  assert.equal(
+    classifyUpstreamAlert(
+      400,
+      'a single enum property with more than 250 values exceeds the maximum combined enum string length of 15000 characters',
+      false
+    ),
+    'tool schema rejected by upstream (an attached tool declares a constraint the gateway cannot accept; retry without that tool, or re-run sync)'
+  );
+  assert.equal(
+    classifyUpstreamAlert(404, 'not found', false),
+    'stale model ID (renamed or removed by a later sync; re-run sync and re-pick the model)'
+  );
+  assert.equal(classifyUpstreamAlert(403, 'FreeTierError: nope', true), 'upstream free-tier policy error');
+  assert.equal(classifyUpstreamAlert(500, 'boom', false), 'upstream server error');
+  // A 400 that is NOT a schema error stays a server error.
+  assert.equal(classifyUpstreamAlert(400, 'reasoning `encrypted_content` was not issued to this caller', false), 'upstream server error');
+  // A context-length 400 mentions exceeds + invalid_request but no schema term:
+  // misclassifying it would send the user to drop a tool instead of shortening input.
+  assert.equal(
+    classifyUpstreamAlert(400, 'invalid_request_error: context length exceeds the model limit', false),
+    'upstream server error'
+  );
+  assert.equal(
+    isSchemaValidationError(400, 'tool input failed schema validation: missing required property'),
+    true,
+    'explicit schema diagnostics still classify'
+  );
+});
+
+test('Free Tier Verification [400 schema error]: reports a tool schema rejection, not a server error', async () => {
+  mockServer.setScenario({
+    mode: 'fault',
+    status: 400,
+    message: JSON.stringify({
+      error: {
+        message:
+          'a single enum property with more than 250 values exceeds the maximum combined enum string length of 15000 characters',
+      },
+    }),
+  });
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+
+  await provider.provideLanguageModelChatResponse(
+    MUSE_FREE_MODEL,
+    [createMockMessage('hello')],
+    {},
+    progress,
+    createMockToken()
+  );
+
+  const text = progress.parts.map((p) => p.value ?? '').join('\n');
+  assert.match(text, /tool schema rejected by upstream/);
+  assert.doesNotMatch(text, /upstream server error/);
 });
 
 test('Free Tier Verification [403 FreeTierError]: streams alert card and does NOT throw NoPermissions', async () => {

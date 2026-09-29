@@ -27407,9 +27407,9 @@ __export(extension_exports, {
   deactivate: () => deactivate
 });
 module.exports = __toCommonJS(extension_exports);
-var vscode6 = __toESM(require("vscode"), 1);
+var vscode8 = __toESM(require("vscode"), 1);
 
-// src/auth.ts
+// src/infrastructure/vscode/secret-store.ts
 var vscode = __toESM(require("vscode"), 1);
 var SECRET_KEY = "opencode_api_key";
 async function resolveApiKey(secrets, promptIfMissing = true, vscodeWindow) {
@@ -27503,7 +27503,7 @@ async function promptAndSetApiKey(secrets, vscodeWindow) {
   return void 0;
 }
 
-// src/network.ts
+// src/infrastructure/http/proxy-routing.ts
 var proxyAgentCtor;
 var proxyAgentLoadAttempted = false;
 async function loadProxyAgentCtor() {
@@ -27522,9 +27522,6 @@ async function loadProxyAgentCtor() {
   return proxyAgentCtor;
 }
 var vscodeProxyUrl;
-function isOfflineMode() {
-  return process.env.OPENCODE_OFFLINE === "1";
-}
 function setVSCodeProxyUrl(url) {
   vscodeProxyUrl = url || void 0;
   cachedDispatcher = void 0;
@@ -27569,6 +27566,11 @@ async function getProxyDispatcher(targetUrl) {
 async function withProxy(url, init = {}) {
   const dispatcher = await getProxyDispatcher(url);
   return dispatcher ? { ...init, dispatcher } : init;
+}
+
+// src/infrastructure/http/fetch-policy.ts
+function isOfflineMode() {
+  return process.env.OPENCODE_OFFLINE === "1";
 }
 function sleep(ms, signal) {
   return new Promise((resolve, reject) => {
@@ -27694,7 +27696,8 @@ async function fetchWithRetry(url, init = {}, opts = {}) {
   throw lastErr;
 }
 
-// src/fetcher.ts
+// src/models/infrastructure/models-dev-client.ts
+var CATALOG_FETCH_TIMEOUT_MS = 5e3;
 async function fetchOpenCodeModels(apiKey, catalog = "go") {
   const url = catalog === "go" ? "https://opencode.ai/zen/go/v1/models" : "https://opencode.ai/zen/v1/models";
   const res = await fetchWithRetry(url, {
@@ -27702,7 +27705,8 @@ async function fetchOpenCodeModels(apiKey, catalog = "go") {
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "User-Agent": "vscode-copilot/1.0"
-    }
+    },
+    signal: AbortSignal.timeout(CATALOG_FETCH_TIMEOUT_MS)
   });
   if (!res.ok) {
     const errorText = await res.text();
@@ -27738,6 +27742,11 @@ async function fetchModelsDevMetadata() {
           result[mId] = mData;
         }
       }
+      if (data["opencode-go"]?.models) {
+        for (const [mId, mData] of Object.entries(data["opencode-go"].models)) {
+          result[mId] = mData;
+        }
+      }
       return result;
     } catch {
     }
@@ -27757,7 +27766,23 @@ function isFreeTierModel(modelId, devMeta) {
   return lower.includes("free") || lower.includes("community") || lower === "big-pickle";
 }
 
-// src/enricher.ts
+// src/models/domain/token-budget.ts
+var DEFAULT_CONTEXT_WINDOW = 1048576;
+var DEFAULT_MAX_OUTPUT_TOKENS = 65536;
+var MIN_SAFE_CONTEXT_WINDOW = 4;
+var MAX_OUTPUT_CONTEXT_RATIO = 0.25;
+function resolveModelTokenLimits(contextWindow, maxOutputTokens) {
+  const context = typeof contextWindow === "number" && Number.isSafeInteger(contextWindow) && contextWindow >= MIN_SAFE_CONTEXT_WINDOW ? contextWindow : DEFAULT_CONTEXT_WINDOW;
+  const output = typeof maxOutputTokens === "number" && Number.isSafeInteger(maxOutputTokens) && maxOutputTokens > 0 ? maxOutputTokens : DEFAULT_MAX_OUTPUT_TOKENS;
+  const safeOutput = Math.min(output, Math.floor(context * MAX_OUTPUT_CONTEXT_RATIO));
+  return {
+    contextWindow: context,
+    maxInputTokens: context - safeOutput,
+    maxOutputTokens: safeOutput
+  };
+}
+
+// src/models/infrastructure/model-enricher.ts
 function formatModelName(id, suffix = "(OpenCode)") {
   const normalized = id.replace(/-(\d+)-(\d+)(?=-|$)/g, "-$1.$2");
   const parts = normalized.split(/[-_]/);
@@ -27890,7 +27915,10 @@ function enrichModel(modelId, options = {}) {
       thinking = true;
     }
   }
-  const maxInputTokens = contextWindow - maxOutputTokens;
+  const tokenLimits = resolveModelTokenLimits(contextWindow, maxOutputTokens);
+  contextWindow = tokenLimits.contextWindow;
+  maxOutputTokens = tokenLimits.maxOutputTokens;
+  const maxInputTokens = tokenLimits.maxInputTokens;
   let supportsReasoningEffort = void 0;
   if (thinking) {
     const devEffortOpt = devMeta?.reasoning_options?.find((o) => o.type === "effort");
@@ -27910,7 +27938,8 @@ function enrichModel(modelId, options = {}) {
   const model = {
     id: modelId,
     name,
-    family: "gpt-5-5",
+    // Stable per-model family matching the VERIFIED_OPENCODE_MODELS convention (family = id).
+    family: modelId,
     url: modelUrl,
     apiType,
     toolCalling: true,
@@ -27933,80 +27962,6 @@ function enrichModel(modelId, options = {}) {
     };
   }
   return model;
-}
-
-// src/sync-catalog.ts
-async function fetchOpenCodeCatalogIds(apiKey, includeGo, includeZen) {
-  let goModelIds = [];
-  let zenModelIds = [];
-  if (includeGo) {
-    try {
-      const rawGoIds = await fetchOpenCodeModels(apiKey, "go");
-      goModelIds = rawGoIds.filter(Boolean);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Failed to fetch Go models: ${message}`);
-    }
-  }
-  if (includeZen) {
-    try {
-      const rawZenIds = await fetchOpenCodeModels(apiKey, "zen");
-      zenModelIds = rawZenIds.filter(Boolean);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Failed to fetch Zen models: ${message}`);
-    }
-  }
-  return { goModelIds, zenModelIds };
-}
-async function fetchOpenCodeModelMetadata() {
-  try {
-    return await fetchModelsDevMetadata();
-  } catch {
-    return {};
-  }
-}
-function firstModelMetadata(metadata, candidates) {
-  return candidates.map((id) => metadata[id]).find((item) => item !== void 0);
-}
-function getGoModelMetadata(modelId, metadata) {
-  return firstModelMetadata(metadata, [
-    modelId,
-    modelId.replace(/-contributor$/, ""),
-    modelId.replace(/-free$/, "")
-  ]);
-}
-function getZenModelMetadata(modelId, metadata) {
-  return firstModelMetadata(metadata, [
-    modelId,
-    modelId.replace(/-contributor-free$/, ""),
-    modelId.replace(/-free$/, "")
-  ]);
-}
-function buildGoModels(modelIds, metadata) {
-  return modelIds.map(
-    (id) => enrichModel(id, {
-      isGo: true,
-      suffix: "(OpenCode Go)",
-      modelsDevData: getGoModelMetadata(id, metadata)
-    })
-  );
-}
-function buildZenModels(modelIds, goModelIds, metadata) {
-  const goModelIdSet = new Set(goModelIds);
-  const models = [];
-  for (const id of modelIds) {
-    if (goModelIdSet.has(id)) continue;
-    const isFree = isFreeTierModel(id, metadata[id]);
-    const suffix = isFree ? "(OpenCode Free)" : "(OpenCode Zen)";
-    models.push(enrichModel(id, { isGo: false, isFree, suffix, modelsDevData: getZenModelMetadata(id, metadata) }));
-  }
-  return models;
-}
-function buildUnifiedModels(goModelIds, zenModelIds, metadata) {
-  const goModels = buildGoModels(goModelIds, metadata);
-  const zenModels = buildZenModels(zenModelIds, goModelIds, metadata);
-  return { models: [...goModels, ...zenModels], zenCount: zenModels.length };
 }
 
 // src/sync-writer.ts
@@ -28200,26 +28155,35 @@ function getChatLanguageModelsPath(activeExtensionStoragePath, context = {}) {
   }
   return getLinuxChatLanguageModelsPath(homeDir, context.isWsl ?? isWSLProcess(), pathOps);
 }
-function profileRootsForHome(homeDir, platform, appDataPath, isWslHome = false) {
-  const pathOps = pathApi(platform);
-  if (platform === "darwin" && !isWslHome) {
-    const appSupport = pathOps.join(homeDir, "Library", "Application Support");
-    return ["Code", "Code - Insiders"].map((variant) => ({
-      userDir: pathOps.join(appSupport, variant, "User")
-    }));
-  }
-  if (platform === "win32" && !isWslHome) {
-    const appData = appDataPath ?? process.env.APPDATA ?? pathOps.join(homeDir, "AppData", "Roaming");
-    return ["Code", "Code - Insiders"].map((variant) => ({
-      userDir: pathOps.join(appData, variant, "User")
-    }));
-  }
+function macProfileRoots(homeDir, pathOps) {
+  const appSupport = pathOps.join(homeDir, "Library", "Application Support");
+  return ["Code", "Code - Insiders"].map((variant) => ({
+    userDir: pathOps.join(appSupport, variant, "User")
+  }));
+}
+function windowsProfileRoots(appData, pathOps) {
+  return ["Code", "Code - Insiders"].map((variant) => ({
+    userDir: pathOps.join(appData, variant, "User")
+  }));
+}
+function linuxProfileRoots(homeDir, pathOps) {
   return [
     { userDir: pathOps.join(homeDir, ".vscode-server", "data", "User"), machineDir: pathOps.join(homeDir, ".vscode-server", "data", "Machine") },
     { userDir: pathOps.join(homeDir, ".vscode-server-insiders", "data", "User"), machineDir: pathOps.join(homeDir, ".vscode-server-insiders", "data", "Machine") },
     { userDir: pathOps.join(homeDir, ".config", "Code", "User") },
     { userDir: pathOps.join(homeDir, ".config", "Code - Insiders", "User") }
   ];
+}
+function profileRootsForHome(homeDir, platform, appDataPath, isWslHome = false) {
+  const pathOps = pathApi(platform);
+  if (!isWslHome) {
+    if (platform === "darwin") return macProfileRoots(homeDir, pathOps);
+    if (platform === "win32") {
+      const appData = appDataPath ?? process.env.APPDATA ?? pathOps.join(homeDir, "AppData", "Roaming");
+      return windowsProfileRoots(appData, pathOps);
+    }
+  }
+  return linuxProfileRoots(homeDir, pathOps);
 }
 function addProfileRootTargets(targets, root, source, primaryPath, platform) {
   const pathOps = pathApi(platform);
@@ -28626,12 +28590,90 @@ function writeProvidersToConfig(providers, targetPath, storagePath, options = {}
   };
 }
 
-// src/syncer.ts
+// src/models/application/synchronize-models.ts
+async function fetchOpenCodeCatalogIds(apiKey, includeGo, includeZen) {
+  const [goOutcome, zenOutcome] = await Promise.allSettled([
+    includeGo ? fetchOpenCodeModels(apiKey, "go") : Promise.resolve([]),
+    includeZen ? fetchOpenCodeModels(apiKey, "zen") : Promise.resolve([])
+  ]);
+  let goModelIds = [];
+  let zenModelIds = [];
+  if (goOutcome.status === "fulfilled") {
+    goModelIds = goOutcome.value.filter(Boolean);
+  } else {
+    const message = goOutcome.reason instanceof Error ? goOutcome.reason.message : String(goOutcome.reason);
+    console.error(`Failed to fetch Go models: ${message}`);
+  }
+  if (zenOutcome.status === "fulfilled") {
+    zenModelIds = zenOutcome.value.filter(Boolean);
+  } else {
+    const message = zenOutcome.reason instanceof Error ? zenOutcome.reason.message : String(zenOutcome.reason);
+    console.error(`Failed to fetch Zen models: ${message}`);
+  }
+  return { goModelIds, zenModelIds };
+}
+async function fetchOpenCodeModelMetadata() {
+  try {
+    return await fetchModelsDevMetadata();
+  } catch {
+    return {};
+  }
+}
+function firstModelMetadata(metadata, candidates) {
+  return candidates.map((id) => metadata[id]).find((item) => item !== void 0);
+}
+function getGoModelMetadata(modelId, metadata) {
+  return firstModelMetadata(metadata, [
+    modelId,
+    modelId.replace(/-contributor$/, ""),
+    modelId.replace(/-free$/, "")
+  ]);
+}
+function getZenModelMetadata(modelId, metadata) {
+  return firstModelMetadata(metadata, [
+    modelId,
+    modelId.replace(/-contributor-free$/, ""),
+    modelId.replace(/-free$/, "")
+  ]);
+}
+function buildGoModels(modelIds, metadata) {
+  return modelIds.map(
+    (id) => enrichModel(id, {
+      isGo: true,
+      suffix: "(OpenCode Go)",
+      modelsDevData: getGoModelMetadata(id, metadata)
+    })
+  );
+}
+function buildZenModels(modelIds, goModelIds, metadata) {
+  const goModelIdSet = new Set(goModelIds);
+  const models = [];
+  for (const id of modelIds) {
+    if (goModelIdSet.has(id)) continue;
+    const isFree = isFreeTierModel(id, metadata[id]);
+    const suffix = isFree ? "(OpenCode Free)" : "(OpenCode Zen)";
+    models.push(enrichModel(id, { isGo: false, isFree, suffix, modelsDevData: getZenModelMetadata(id, metadata) }));
+  }
+  return models;
+}
+function buildUnifiedModels(goModelIds, zenModelIds, metadata) {
+  const goModels = buildGoModels(goModelIds, metadata);
+  const zenModels = buildZenModels(zenModelIds, goModelIds, metadata);
+  return { models: [...goModels, ...zenModels], zenCount: zenModels.length };
+}
+function getModelFamily(model) {
+  return model.family || model.id;
+}
+function getModelCatalog(model) {
+  return model.url.includes("/go/") ? "go" : "zen";
+}
 async function syncOpenCodeModels(apiKey, options = {}) {
   const includeGo = options.includeGo ?? true;
   const includeZen = options.includeZen ?? true;
-  const catalogIds = await fetchOpenCodeCatalogIds(apiKey, includeGo, includeZen);
-  const metadata = await fetchOpenCodeModelMetadata();
+  const [catalogIds, metadata] = await Promise.all([
+    fetchOpenCodeCatalogIds(apiKey, includeGo, includeZen),
+    fetchOpenCodeModelMetadata()
+  ]);
   const { models, zenCount } = buildUnifiedModels(
     catalogIds.goModelIds,
     catalogIds.zenModelIds,
@@ -28705,7 +28747,10 @@ function shouldPromptForApiKey(interactive, isCI) {
   return interactive && !isCI;
 }
 
-// src/usage.ts
+// src/usage/application/refresh-usage.ts
+var vscode2 = __toESM(require("vscode"), 1);
+
+// src/usage/infrastructure/quota-client.ts
 var OPENCODE_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
 async function fetchOpenCodeUsage(apiKey, fetchFn = fetch) {
   if (!apiKey?.trim()) {
@@ -28734,6 +28779,17 @@ async function fetchOpenCodeUsage(apiKey, fetchFn = fetch) {
   } catch {
     return { ok: false, reason: "network" };
   }
+}
+
+// src/usage/domain/usage-snapshot.ts
+function toUsageDisplayState(res) {
+  if (res.ok) {
+    return { usage: res.usage };
+  }
+  if (res.reason === "no-subscription") {
+    return { usage: null, error: "No active Go subscription (Zen pay-as-you-go / free)" };
+  }
+  return { usage: null, error: `Unable to fetch usage (${res.reason})` };
 }
 function formatStatusBarText(usage) {
   const maxPercent = Math.max(usage.rolling.percent, usage.weekly.percent);
@@ -28772,28 +28828,187 @@ function formatUsageTooltip(usage) {
   ].join("\n");
 }
 
-// src/provider.ts
+// src/usage/application/refresh-usage.ts
+async function updateUsageMeter(statusBarItem, usageTreeProvider, secrets, apiKey) {
+  try {
+    const key = apiKey || await resolveApiKey(secrets, false);
+    if (!key) {
+      usageTreeProvider.setUsage(null, "No API key configured");
+      return;
+    }
+    const res = await fetchOpenCodeUsage(key);
+    if (res.ok) {
+      statusBarItem.text = formatStatusBarText(res.usage);
+      const md = new vscode2.MarkdownString(formatUsageTooltip(res.usage));
+      md.isTrusted = true;
+      statusBarItem.tooltip = md;
+      usageTreeProvider.setUsage(res.usage);
+      return;
+    }
+    if (res.reason === "no-subscription") {
+      statusBarItem.text = "$(hubot) OpenCode (Zen)";
+      statusBarItem.tooltip = "OpenCode Zen (Pay-as-you-go / Free tier). Click to sync models.";
+    }
+    const state = toUsageDisplayState(res);
+    usageTreeProvider.setUsage(state.usage, state.error);
+  } catch {
+    usageTreeProvider.setUsage(null, "Error fetching usage");
+  }
+}
+
+// src/chat/infrastructure/vscode-chat-provider.ts
+var vscode6 = __toESM(require("vscode"), 1);
+
+// src/models/infrastructure/model-cache.ts
 var fs4 = __toESM(require("node:fs"), 1);
 var path4 = __toESM(require("node:path"), 1);
-var vscode4 = __toESM(require("vscode"), 1);
+var MODEL_CACHE_FILE = "models_cache.json";
+function readModelCache(dir) {
+  try {
+    if (dir) {
+      const cacheFile = path4.join(dir, MODEL_CACHE_FILE);
+      if (fs4.existsSync(cacheFile)) {
+        const parsed = JSON.parse(fs4.readFileSync(cacheFile, "utf-8"));
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    }
+  } catch {
+  }
+  return void 0;
+}
+function writeModelCache(dir, models) {
+  try {
+    if (dir) {
+      if (!fs4.existsSync(dir)) {
+        fs4.mkdirSync(dir, { recursive: true });
+      }
+      fs4.writeFileSync(path4.join(dir, MODEL_CACHE_FILE), JSON.stringify(models), "utf-8");
+    }
+  } catch {
+  }
+}
 
-// src/provider-protocol.ts
-var vscode2 = __toESM(require("vscode"), 1);
-function isResponsesModel(modelId, apiType) {
-  if (apiType === "responses") return true;
-  if (apiType === "chat-completions" || apiType === "messages") return false;
-  const lower = modelId.toLowerCase();
-  return lower.includes("muse") || lower.includes("gpt-") || lower.includes("grok-");
-}
-function isFreeOrZenModel(modelId, meta) {
-  if (meta?.catalog === "zen" || meta?.isFree) {
-    return true;
+// src/chat/infrastructure/message-mapper.ts
+var vscode3 = __toESM(require("vscode"), 1);
+function formatProviderMessages(messages) {
+  const formattedMessages = [];
+  for (const msg of messages) {
+    const role = msg.role === vscode3.LanguageModelChatMessageRole.User ? "user" : "assistant";
+    let textContent = "";
+    const toolCalls = [];
+    for (const part of msg.content) {
+      const ThinkingPart = vscode3.LanguageModelThinkingPart;
+      const isThinkingPart = ThinkingPart && part instanceof ThinkingPart || part?.constructor?.name === "LanguageModelThinkingPart" || part?.type === "thinking" || part?.type === "reasoning";
+      if (isThinkingPart) {
+        continue;
+      }
+      if (part instanceof vscode3.LanguageModelTextPart) {
+        textContent += part.value;
+      } else if (part instanceof vscode3.LanguageModelToolCallPart) {
+        toolCalls.push({
+          id: part.callId,
+          type: "function",
+          function: {
+            name: part.name,
+            arguments: typeof part.input === "string" ? part.input : JSON.stringify(part.input)
+          }
+        });
+      } else if (part instanceof vscode3.LanguageModelToolResultPart) {
+        let resultStr = "";
+        if (typeof part.content === "string") {
+          resultStr = part.content;
+        } else if (Array.isArray(part.content)) {
+          resultStr = part.content.map((p) => {
+            if (typeof p === "string") return p;
+            if (p && typeof p.value === "string") return p.value;
+            return JSON.stringify(p ?? "") ?? "";
+          }).join("\n");
+        } else if (part.content !== void 0 && part.content !== null) {
+          resultStr = JSON.stringify(part.content) ?? "";
+        } else {
+          resultStr = "";
+        }
+        formattedMessages.push({
+          role: "tool",
+          tool_call_id: part.callId,
+          content: resultStr
+        });
+      }
+    }
+    if (textContent || toolCalls.length > 0) {
+      const entry = { role, content: textContent };
+      if (toolCalls.length > 0) {
+        entry.tool_calls = toolCalls;
+      }
+      formattedMessages.push(entry);
+    }
   }
-  if (meta?.catalog === "go") {
-    return false;
-  }
-  return isFreeTierModel(modelId);
+  return formattedMessages;
 }
+function sanitizeResponsesInput(input) {
+  const result = [];
+  for (const item of input) {
+    if (typeof item !== "object" || item === null) continue;
+    const rec = item;
+    if (rec.type === "reasoning" || rec.type === "thought" || rec.type === "thinking" || typeof rec.encrypted_content === "string") {
+      continue;
+    }
+    if (Array.isArray(rec.content)) {
+      const contentArr = rec.content;
+      const filteredParts = contentArr.filter((part) => {
+        if (typeof part !== "object" || part === null) return true;
+        const p = part;
+        return p.type !== "reasoning" && p.type !== "thought" && p.type !== "thinking" && typeof p.encrypted_content !== "string";
+      });
+      if (filteredParts.length === 0 && !rec.tool_calls) {
+        continue;
+      }
+      result.push({ ...rec, content: filteredParts });
+      continue;
+    }
+    result.push(item);
+  }
+  return result;
+}
+function buildResponsesInput(formattedMessages) {
+  const responsesInput = [];
+  for (const msg of formattedMessages) {
+    if (msg.role === "user") {
+      responsesInput.push({ role: "user", content: msg.content ?? "" });
+    } else if (msg.role === "assistant") {
+      if (msg.content) {
+        responsesInput.push({
+          role: "assistant",
+          content: [{ type: "output_text", text: msg.content }]
+        });
+      }
+      if (msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          const rawId = tc.id ?? "";
+          const callId = rawId.length > 0 ? rawId : `call_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          responsesInput.push({
+            type: "function_call",
+            id: callId,
+            call_id: callId,
+            name: tc.function?.name ?? "",
+            arguments: tc.function?.arguments ?? ""
+          });
+        }
+      }
+    } else if (msg.role === "tool") {
+      responsesInput.push({
+        type: "function_call_output",
+        call_id: msg.tool_call_id ?? "",
+        output: msg.content ?? ""
+      });
+    }
+  }
+  return sanitizeResponsesInput(responsesInput);
+}
+
+// src/chat/infrastructure/tool-mapper.ts
 var OPENCODE_CLIENT_VERIFICATION_TOOLS_RESPONSES = [
   {
     type: "function",
@@ -28864,7 +29079,127 @@ function injectOpenCodeVerificationTools(toolsPayload, isResponses) {
 function clampToolName(name) {
   return name.length > 64 ? name.slice(0, 64) : name;
 }
-function formatProviderTools(tools, isResponses, injectVerificationTools) {
+var OPENCODE_MAX_ENUM_VALUES = 200;
+var OPENCODE_MAX_ENUM_CHARS = 12e3;
+var NON_SCHEMA_DATA_KEYS = /* @__PURE__ */ new Set([
+  "enum",
+  "const",
+  "default",
+  "example",
+  "examples",
+  "description",
+  "title",
+  "$comment"
+]);
+var NAMED_SCHEMA_MAPS = /* @__PURE__ */ new Set([
+  "properties",
+  "patternProperties",
+  "$defs",
+  "definitions",
+  "dependentSchemas"
+]);
+function exceedsEnumLimits(values) {
+  if (values.length > OPENCODE_MAX_ENUM_VALUES) return true;
+  let total = 0;
+  for (const value of values) {
+    total += String(value).length;
+    if (total > OPENCODE_MAX_ENUM_CHARS) return true;
+  }
+  return false;
+}
+function shouldDropEnum(value) {
+  return Array.isArray(value) && exceedsEnumLimits(value);
+}
+function stripArrayItems(items, path5, onDrop, inProgress) {
+  if (inProgress.has(items)) return { node: items, changed: false };
+  inProgress.add(items);
+  let changed = false;
+  const out = [];
+  for (const item of items) {
+    const result = stripOversizedEnums(item, path5, onDrop, inProgress);
+    if (result.changed) changed = true;
+    out.push(result.node);
+  }
+  inProgress.delete(items);
+  return { node: out, changed };
+}
+function stripMapEntries(entries, path5, onDrop, inProgress) {
+  const out = {};
+  let changed = false;
+  for (const [name, subschema] of Object.entries(entries)) {
+    const result = stripOversizedEnums(subschema, `${path5}.${name}`, onDrop, inProgress);
+    if (result.changed) changed = true;
+    out[name] = result.node;
+  }
+  return { out, changed };
+}
+function stripEntry(key, value, childPath, parentPath, onDrop, inProgress) {
+  if (key === "enum") {
+    if (shouldDropEnum(value)) {
+      onDrop(parentPath, value.length);
+      return { value: void 0, changed: true, dropped: true };
+    }
+    return { value, changed: false, dropped: false };
+  }
+  if (typeof value === "object" && value !== null && NAMED_SCHEMA_MAPS.has(key)) {
+    const result2 = stripMapEntries(value, childPath, onDrop, inProgress);
+    return { value: result2.out, changed: result2.changed, dropped: false };
+  }
+  if (NON_SCHEMA_DATA_KEYS.has(key)) {
+    return { value, changed: false, dropped: false };
+  }
+  const result = stripOversizedEnums(value, childPath, onDrop, inProgress);
+  return { value: result.node, changed: result.changed, dropped: false };
+}
+function needsStringType(droppedOwnEnum, droppedValues, out) {
+  return droppedOwnEnum && !("type" in out) && !("$ref" in out) && droppedValues.length > 0 && droppedValues.every((value) => typeof value === "string");
+}
+function stripObjectSchema(source, path5, onDrop, inProgress) {
+  if (inProgress.has(source)) return { node: source, changed: false };
+  inProgress.add(source);
+  const out = {};
+  let changed = false;
+  let droppedValues;
+  for (const [key, value] of Object.entries(source)) {
+    const entry = stripEntry(key, value, `${path5}.${key}`, path5, onDrop, inProgress);
+    if (entry.dropped) {
+      changed = true;
+      droppedValues = Array.isArray(value) ? value : [];
+      continue;
+    }
+    if (entry.changed) changed = true;
+    out[key] = entry.value;
+  }
+  if (needsStringType(droppedValues !== void 0, droppedValues ?? [], out)) {
+    out.type = "string";
+  }
+  inProgress.delete(source);
+  return { node: out, changed };
+}
+function stripOversizedEnums(node, path5, onDrop, inProgress) {
+  if (Array.isArray(node)) {
+    return stripArrayItems(node, path5, onDrop, inProgress);
+  }
+  if (typeof node !== "object" || node === null) {
+    return { node, changed: false };
+  }
+  return stripObjectSchema(node, path5, onDrop, inProgress);
+}
+function sanitizeToolParameters(schema, toolName, log) {
+  const effective = schema && typeof schema === "object" ? schema : { type: "object", properties: {} };
+  try {
+    const { node } = stripOversizedEnums(effective, "root", (path5, count) => {
+      log(`schema relaxed: dropped oversized enum on ${toolName}${path5} (${count} values)`);
+    }, /* @__PURE__ */ new Set());
+    return node;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    log(`schema sanitization failed for ${toolName}: ${detail}; sending caller schema unchanged`);
+    return effective;
+  }
+}
+var discardLog = () => void 0;
+function formatProviderTools(tools, isResponses, injectVerificationTools, log = discardLog) {
   let toolsPayload;
   if (tools && tools.length > 0) {
     if (isResponses) {
@@ -28872,7 +29207,7 @@ function formatProviderTools(tools, isResponses, injectVerificationTools) {
         type: "function",
         name: clampToolName(tool.name),
         description: tool.description,
-        parameters: tool.inputSchema || { type: "object", properties: {} }
+        parameters: sanitizeToolParameters(tool.inputSchema, tool.name, log)
       }));
     } else {
       toolsPayload = tools.map((tool) => ({
@@ -28880,7 +29215,7 @@ function formatProviderTools(tools, isResponses, injectVerificationTools) {
         function: {
           name: clampToolName(tool.name),
           description: tool.description,
-          parameters: tool.inputSchema || { type: "object", properties: {} }
+          parameters: sanitizeToolParameters(tool.inputSchema, tool.name, log)
         }
       }));
     }
@@ -28896,6 +29231,8 @@ function isSyntheticVerificationTool(toolName, callerTools) {
   }
   return !callerTools.some((tool) => clampToolName(tool.name) === toolName);
 }
+
+// src/chat/infrastructure/reasoning-controls.ts
 var VALID_REASONING_EFFORTS = /* @__PURE__ */ new Set(["minimal", "low", "medium", "high", "xhigh"]);
 function normalizeReasoningEffort(effort, isResponses) {
   if (!effort) return {};
@@ -28912,6 +29249,73 @@ function normalizeReasoningEffort(effort, isResponses) {
 function getReasoningEffort(options) {
   return options?.modelConfiguration?.reasoningEffort || options?.modelConfiguration?.thinkingLevel || options?.configuration?.reasoningEffort || options?.configuration?.thinkingLevel || options?.reasoningEffort || options?.thinkingLevel;
 }
+function isStaleReasoningInput(item) {
+  if (typeof item !== "object" || item === null) return false;
+  const rec = item;
+  if (rec.type === "reasoning" || rec.type === "thought" || rec.type === "thinking" || typeof rec.encrypted_content === "string") {
+    return true;
+  }
+  if (Array.isArray(rec.content)) {
+    return rec.content.some((part) => {
+      if (typeof part !== "object" || part === null) return false;
+      const p = part;
+      return p.type === "reasoning" || p.type === "thought" || p.type === "thinking" || typeof p.encrypted_content === "string";
+    });
+  }
+  return false;
+}
+
+// src/chat/infrastructure/request-factory.ts
+function isResponsesModel(modelId, apiType) {
+  if (apiType === "responses") return true;
+  if (apiType === "chat-completions" || apiType === "messages") return false;
+  const lower = modelId.toLowerCase();
+  return lower.includes("muse") || lower.includes("gpt-") || lower.includes("grok-");
+}
+function isFreeOrZenModel(modelId, meta) {
+  if (meta?.catalog === "zen" || meta?.isFree) {
+    return true;
+  }
+  if (meta?.catalog === "go") {
+    return false;
+  }
+  return isFreeTierModel(modelId);
+}
+function createProviderRequest(input) {
+  const baseUrl = input.isFreeOrZen ? "https://opencode.ai/zen/v1" : "https://opencode.ai/zen/go/v1";
+  const url = input.isResponses ? `${baseUrl}/responses` : `${baseUrl}/chat/completions`;
+  const reasoningPayload = normalizeReasoningEffort(input.reasoningEffort, input.isResponses);
+  const sanitizedInput = sanitizeResponsesInput(input.responsesInput);
+  const body = input.isResponses ? {
+    model: input.modelId,
+    input: sanitizedInput.length > 0 ? sanitizedInput : input.formattedMessages.filter((message) => !isStaleReasoningInput(message)),
+    tools: input.toolsPayload,
+    stream: true,
+    ...reasoningPayload
+  } : {
+    model: input.modelId,
+    messages: input.formattedMessages,
+    tools: input.toolsPayload,
+    stream: true,
+    ...reasoningPayload
+  };
+  return { url, body };
+}
+function createOpenCodeRequestHeaders(apiKey, sessionId, requestId) {
+  return {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+    "User-Agent": "opencode/1.18.31",
+    "x-opencode-client": "cli",
+    "x-opencode-session": sessionId,
+    "x-opencode-request": requestId
+  };
+}
+
+// src/chat/application/send-chat-message.ts
+var vscode5 = __toESM(require("vscode"), 1);
+
+// src/chat/infrastructure/sse-reader.ts
 var ThinkTagStreamParser = class _ThinkTagStreamParser {
   buffer = "";
   inThink = false;
@@ -28967,169 +29371,232 @@ var ThinkTagStreamParser = class _ThinkTagStreamParser {
     return this.inThink ? { text: "", thinking: remaining } : { text: remaining, thinking: "" };
   }
 };
-function formatProviderMessages(messages) {
-  const formattedMessages = [];
-  for (const msg of messages) {
-    const role = msg.role === vscode2.LanguageModelChatMessageRole.User ? "user" : "assistant";
-    let textContent = "";
-    const toolCalls = [];
-    for (const part of msg.content) {
-      const ThinkingPart = vscode2.LanguageModelThinkingPart;
-      const isThinkingPart = ThinkingPart && part instanceof ThinkingPart || part?.constructor?.name === "LanguageModelThinkingPart" || part?.type === "thinking" || part?.type === "reasoning";
-      if (isThinkingPart) {
-        continue;
-      }
-      if (part instanceof vscode2.LanguageModelTextPart) {
-        textContent += part.value;
-      } else if (part instanceof vscode2.LanguageModelToolCallPart) {
-        toolCalls.push({
-          id: part.callId,
-          type: "function",
-          function: {
-            name: part.name,
-            arguments: typeof part.input === "string" ? part.input : JSON.stringify(part.input)
-          }
-        });
-      } else if (part instanceof vscode2.LanguageModelToolResultPart) {
-        let resultStr = "";
-        if (typeof part.content === "string") {
-          resultStr = part.content;
-        } else if (Array.isArray(part.content)) {
-          resultStr = part.content.map((p) => {
-            if (typeof p === "string") return p;
-            if (p && typeof p.value === "string") return p.value;
-            return JSON.stringify(p ?? "") ?? "";
-          }).join("\n");
-        } else if (part.content !== void 0 && part.content !== null) {
-          resultStr = JSON.stringify(part.content) ?? "";
-        } else {
-          resultStr = "";
-        }
-        formattedMessages.push({
-          role: "tool",
-          tool_call_id: part.callId,
-          content: resultStr
-        });
-      }
-    }
-    if (textContent || toolCalls.length > 0) {
-      const entry = { role, content: textContent };
-      if (toolCalls.length > 0) {
-        entry.tool_calls = toolCalls;
-      }
-      formattedMessages.push(entry);
-    }
+function readEventType(data) {
+  if (data !== null && typeof data === "object" && "type" in data && typeof data.type === "string") {
+    return data.type;
   }
-  return formattedMessages;
+  return "";
 }
-function isStaleReasoningInput(item) {
-  if (typeof item !== "object" || item === null) return false;
-  const rec = item;
-  if (rec.type === "reasoning" || rec.type === "thought" || rec.type === "thinking" || typeof rec.encrypted_content === "string") {
-    return true;
+function parseSseLine(line) {
+  const trimmed = line.trim();
+  if (trimmed === "" || trimmed.startsWith(":")) return { kind: "skip" };
+  if (trimmed === "data: [DONE]") return { kind: "done" };
+  if (!trimmed.startsWith("data: ")) return { kind: "skip" };
+  try {
+    const data = JSON.parse(trimmed.slice(6));
+    return { kind: "event", event: { type: readEventType(data), data } };
+  } catch {
+    return { kind: "skip" };
   }
-  if (Array.isArray(rec.content)) {
-    return rec.content.some((part) => {
-      if (typeof part !== "object" || part === null) return false;
-      const p = part;
-      return p.type === "reasoning" || p.type === "thought" || p.type === "thinking" || typeof p.encrypted_content === "string";
+}
+
+// src/chat/infrastructure/chat-completions-parser.ts
+function processChatCompletionsEvent(event, sink) {
+  const data = event.data;
+  const choice = data.choices?.[0];
+  if (!choice) return false;
+  const rawReasoning = choice.delta?.reasoning_content || choice.delta?.thought || choice.delta?.reasoning || (Array.isArray(choice.delta?.reasoning_details) ? choice.delta.reasoning_details.map((d) => d.text || "").join("") : void 0);
+  if (rawReasoning && rawReasoning.length > 0) {
+    sink.emitThinking(rawReasoning, sink.thinkingId);
+  }
+  const content = choice.delta?.content;
+  if (content) {
+    const { text, thinking } = sink.feedThinkTags(content);
+    if (thinking) {
+      sink.emitThinking(thinking, sink.thinkingId);
+    }
+    if (text) {
+      sink.emitText(text);
+    }
+  }
+  if (choice.delta?.tool_calls) {
+    choice.delta.tool_calls.forEach((tc, i) => {
+      const idx = tc.index ?? i;
+      const current = sink.queuedToolCall(idx) || { id: "", name: "", args: "" };
+      if (tc.id) current.id = tc.id;
+      if (tc.function?.name) current.name += tc.function.name;
+      if (tc.function?.arguments) current.args += tc.function.arguments;
+      sink.queueToolCall({ ...current, index: idx });
     });
+  }
+  if (choice.finish_reason === "tool_calls" || choice.finish_reason === "stop" && sink.queuedToolCallCount() > 0) {
+    sink.flushToolCalls();
+  }
+  if (choice.finish_reason === "stop") {
+    return true;
   }
   return false;
 }
-function sanitizeResponsesInput(input) {
-  const result = [];
-  for (const item of input) {
-    if (typeof item !== "object" || item === null) continue;
-    const rec = item;
-    if (rec.type === "reasoning" || rec.type === "thought" || rec.type === "thinking" || typeof rec.encrypted_content === "string") {
-      continue;
-    }
-    if (Array.isArray(rec.content)) {
-      const contentArr = rec.content;
-      const filteredParts = contentArr.filter((part) => {
-        if (typeof part !== "object" || part === null) return true;
-        const p = part;
-        return p.type !== "reasoning" && p.type !== "thought" && p.type !== "thinking" && typeof p.encrypted_content !== "string";
-      });
-      if (filteredParts.length === 0 && !rec.tool_calls) {
-        continue;
-      }
-      result.push({ ...rec, content: filteredParts });
-      continue;
-    }
-    result.push(item);
-  }
-  return result;
-}
-function buildResponsesInput(formattedMessages) {
-  const responsesInput = [];
-  for (const msg of formattedMessages) {
-    if (msg.role === "user") {
-      responsesInput.push({ role: "user", content: msg.content ?? "" });
-    } else if (msg.role === "assistant") {
-      if (msg.content) {
-        responsesInput.push({
-          role: "assistant",
-          content: [{ type: "output_text", text: msg.content }]
-        });
-      }
-      if (msg.tool_calls) {
-        for (const tc of msg.tool_calls) {
-          const rawId = tc.id ?? "";
-          const callId = rawId.length > 0 ? rawId : `call_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-          responsesInput.push({
-            type: "function_call",
-            id: callId,
-            call_id: callId,
-            name: tc.function?.name ?? "",
-            arguments: tc.function?.arguments ?? ""
-          });
+
+// src/chat/infrastructure/responses-parser.ts
+function processResponsesEvent(event, sink) {
+  const data = event.data;
+  if (data.type === "response.completed") {
+    sink.reasoningActive = false;
+    sink.reportUsage(data);
+    if (Array.isArray(data.response?.output)) {
+      for (const item of data.response.output) {
+        if (item?.type === "function_call") {
+          const callId = item.call_id || item.id || `call_${Date.now()}`;
+          const idx = typeof item.output_index === "number" ? item.output_index : sink.queuedToolCallCount();
+          const existing = sink.queuedToolCall(idx) || { id: callId, name: item.name || "", args: "" };
+          if (item.arguments) {
+            existing.args = typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments);
+          }
+          sink.queueToolCall({ ...existing, index: idx });
         }
       }
-    } else if (msg.role === "tool") {
-      responsesInput.push({
-        type: "function_call_output",
-        call_id: msg.tool_call_id ?? "",
-        output: msg.content ?? ""
+    }
+    return true;
+  }
+  if (data.type === "response.output_text.delta") {
+    const delta = typeof data.delta === "string" ? data.delta : data.delta?.text || data.delta?.value || "";
+    if (delta) {
+      sink.emitText(delta);
+    }
+    return false;
+  }
+  if (data.type === "response.output_item.added") {
+    if (data.item?.type === "reasoning") {
+      sink.reasoningActive = true;
+      if (data.item.id) {
+        sink.thinkingId = data.item.id;
+      }
+      sink.emitThinking(data.item.text || "", sink.thinkingId);
+      return false;
+    }
+    if (data.item?.type === "function_call") {
+      const idx = typeof data.output_index === "number" ? data.output_index : 0;
+      sink.queueToolCall({
+        index: idx,
+        id: data.item.call_id || data.item.id || `call_${Date.now()}`,
+        name: data.item.name || "",
+        args: data.item.arguments || ""
       });
+      return false;
     }
   }
-  return sanitizeResponsesInput(responsesInput);
-}
-function createProviderRequest(input) {
-  const baseUrl = input.isFreeOrZen ? "https://opencode.ai/zen/v1" : "https://opencode.ai/zen/go/v1";
-  const url = input.isResponses ? `${baseUrl}/responses` : `${baseUrl}/chat/completions`;
-  const reasoningPayload = normalizeReasoningEffort(input.reasoningEffort, input.isResponses);
-  const sanitizedInput = sanitizeResponsesInput(input.responsesInput);
-  const body = input.isResponses ? {
-    model: input.modelId,
-    input: sanitizedInput.length > 0 ? sanitizedInput : input.formattedMessages.filter((message) => !isStaleReasoningInput(message)),
-    tools: input.toolsPayload,
-    stream: true,
-    ...reasoningPayload
-  } : {
-    model: input.modelId,
-    messages: input.formattedMessages,
-    tools: input.toolsPayload,
-    stream: true,
-    ...reasoningPayload
-  };
-  return { url, body };
-}
-function createOpenCodeRequestHeaders(apiKey, sessionId, requestId) {
-  return {
-    Authorization: `Bearer ${apiKey}`,
-    "Content-Type": "application/json",
-    "User-Agent": "opencode/1.18.31",
-    "x-opencode-client": "cli",
-    "x-opencode-session": sessionId,
-    "x-opencode-request": requestId
-  };
+  if (data.type === "response.reasoning_text.delta") {
+    const delta = typeof data.delta === "string" ? data.delta : data.delta?.text || data.delta?.value || "";
+    if (delta && delta.length > 0) {
+      sink.reasoningDeltasEmitted = true;
+      sink.emitThinking(delta, sink.thinkingId);
+    }
+    return false;
+  }
+  if (data.type === "response.function_call_arguments.delta") {
+    const idx = typeof data.output_index === "number" ? data.output_index : 0;
+    const current = sink.queuedToolCall(idx) || { id: "", name: "", args: "" };
+    const delta = typeof data.delta === "string" ? data.delta : data.delta?.arguments || "";
+    current.args += delta;
+    sink.queueToolCall({ ...current, index: idx });
+    return false;
+  }
+  if (data.type === "response.output_item.done") {
+    if (data.item?.type === "reasoning") {
+      sink.reasoningActive = false;
+      if (!sink.reasoningDeltasEmitted && typeof data.item.text === "string" && data.item.text.length > 0) {
+        sink.emitThinking(data.item.text, sink.thinkingId);
+      }
+      return false;
+    }
+    if (data.item?.type === "function_call") {
+      const idx = typeof data.output_index === "number" ? data.output_index : 0;
+      const call = sink.queuedToolCall(idx) || {
+        id: data.item.call_id || data.item.id || `call_${Date.now()}`,
+        name: data.item.name || "",
+        args: ""
+      };
+      if (data.item.name && !call.name) call.name = data.item.name;
+      if (data.item.call_id && !call.id) call.id = data.item.call_id;
+      const itemArgsRaw = data.item.arguments;
+      if (itemArgsRaw !== void 0 && itemArgsRaw !== null) {
+        const itemArgsStr = typeof itemArgsRaw === "string" ? itemArgsRaw : JSON.stringify(itemArgsRaw);
+        if (!call.args || !call.args.trim()) {
+          call.args = itemArgsStr;
+        } else {
+          let callValid = false;
+          let parsedCallArgs = null;
+          try {
+            parsedCallArgs = JSON.parse(call.args);
+            callValid = true;
+          } catch {
+          }
+          if (!callValid) {
+            call.args = itemArgsStr;
+          } else {
+            try {
+              const parsedItemArgs = typeof itemArgsRaw === "object" ? itemArgsRaw : JSON.parse(itemArgsStr);
+              if (parsedItemArgs && typeof parsedItemArgs === "object" && !Array.isArray(parsedItemArgs) && parsedCallArgs && typeof parsedCallArgs === "object" && !Array.isArray(parsedCallArgs)) {
+                call.args = JSON.stringify({ ...parsedCallArgs, ...parsedItemArgs });
+              }
+            } catch {
+            }
+          }
+        }
+      }
+      sink.emitToolCall(call.id, call.name, call.args);
+      sink.forgetQueuedToolCall(idx);
+      return false;
+    }
+  }
+  return false;
 }
 
-// src/provider-stream.ts
-var vscode3 = __toESM(require("vscode"), 1);
+// src/chat/infrastructure/token-usage-reporter.ts
+function isRecord2(value) {
+  return value !== null && typeof value === "object";
+}
+function isTokenCount(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+function readReasoningTokens(details) {
+  if (!isRecord2(details)) return void 0;
+  return isTokenCount(details.reasoning_tokens) ? details.reasoning_tokens : void 0;
+}
+function buildUsagePayload(event) {
+  if (!isRecord2(event) || !isRecord2(event.response) || !isRecord2(event.response.usage)) return void 0;
+  const usage = event.response.usage;
+  if (!isTokenCount(usage.input_tokens) || !isTokenCount(usage.output_tokens)) return void 0;
+  const payload = {
+    prompt_tokens: usage.input_tokens,
+    completion_tokens: usage.output_tokens
+  };
+  const details = isRecord2(usage.output_tokens_details) ? usage.output_tokens_details : usage.completion_tokens_details;
+  const reasoningTokens = readReasoningTokens(details);
+  if (reasoningTokens !== void 0) {
+    payload.completion_tokens_details = { reasoning_tokens: reasoningTokens };
+  }
+  return payload;
+}
+
+// src/chat/application/recover-stream.ts
+var vscode4 = __toESM(require("vscode"), 1);
+var STREAM_IDLE_TIMEOUT_MS = Number(process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS) || 9e4;
+function getStreamIdleTimeoutMs() {
+  if (process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS) {
+    const envVal = Number(process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS);
+    if (!isNaN(envVal) && envVal > 0) return envVal;
+  }
+  try {
+    const configSec = vscode4.workspace.getConfiguration("opencode").get("streamIdleTimeoutSeconds");
+    if (typeof configSec === "number" && configSec > 0) {
+      return configSec * 1e3;
+    }
+  } catch {
+  }
+  return STREAM_IDLE_TIMEOUT_MS;
+}
+function shouldRetryStall(attempt, maxRetries) {
+  return attempt < maxRetries;
+}
+function stallInterruptionMessage(detail) {
+  return `
+
+*(Response stream interrupted: ${detail || "Connection closed by upstream OpenCode service"})*`;
+}
+
+// src/chat/application/send-chat-message.ts
 async function consumeProviderStream(options) {
   if (!options.response.body) {
     throw new Error("OpenCode API returned empty body");
@@ -29148,208 +29615,98 @@ async function consumeProviderStream(options) {
   let isReasoningActive = false;
   let reasoningDeltasEmitted = false;
   let isStallRetry = false;
-  const emitThinking = (thinking) => {
-    if (!thinking) return;
+  let usageReported = false;
+  const emitThinkingPart = (thinking, id) => {
     partsReportedCount++;
-    const ThinkingPart = vscode3.LanguageModelThinkingPart;
+    const ThinkingPart = vscode5.LanguageModelThinkingPart;
     if (ThinkingPart) {
-      options.progress.report(new ThinkingPart(thinking, currentThinkingId));
+      options.progress.report(new ThinkingPart(thinking, id));
     } else {
-      options.progress.report(new vscode3.LanguageModelTextPart(thinking));
+      options.progress.report(new vscode5.LanguageModelTextPart(thinking));
     }
   };
-  const flushPendingToolCalls = () => {
+  const emitSingleToolCall = (id, name, args) => {
+    let parsedArgs = {};
+    try {
+      parsedArgs = JSON.parse(args);
+    } catch {
+      parsedArgs = { raw: args };
+    }
+    if (!emittedToolCallIds.has(id) && !isSyntheticVerificationTool(name, options.tools)) {
+      partsReportedCount++;
+      emittedToolCallIds.add(id);
+      options.progress.report(new vscode5.LanguageModelToolCallPart(id, name, parsedArgs));
+    }
+  };
+  const flushQueuedToolCalls = () => {
     if (pendingToolCalls.size === 0) return;
     for (const [, call] of pendingToolCalls) {
-      if (emittedToolCallIds.has(call.id)) continue;
-      let parsedArgs = {};
-      try {
-        parsedArgs = JSON.parse(call.args);
-      } catch {
-        parsedArgs = { raw: call.args };
-      }
-      if (!isSyntheticVerificationTool(call.name, options.tools)) {
-        partsReportedCount++;
-        emittedToolCallIds.add(call.id);
-        options.progress.report(new vscode3.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
-      }
+      emitSingleToolCall(call.id, call.name, call.args);
     }
     pendingToolCalls.clear();
   };
+  const reportUsagePayload = (event) => {
+    if (usageReported) return;
+    const payload = buildUsagePayload(event);
+    if (!payload) return;
+    usageReported = true;
+    partsReportedCount++;
+    options.progress.report(vscode5.LanguageModelDataPart.json(payload, "usage"));
+  };
+  const sink = {
+    emitText: (text) => {
+      partsReportedCount++;
+      options.progress.report(new vscode5.LanguageModelTextPart(text));
+    },
+    emitThinking: (thinking, id) => {
+      emitThinkingPart(thinking, id);
+    },
+    emitToolCall: (id, name, args) => {
+      emitSingleToolCall(id, name, args);
+    },
+    queueToolCall: (call) => {
+      pendingToolCalls.set(call.index, { index: call.index, id: call.id, name: call.name, args: call.args });
+    },
+    queuedToolCall: (index) => pendingToolCalls.get(index),
+    forgetQueuedToolCall: (index) => {
+      pendingToolCalls.delete(index);
+    },
+    queuedToolCallCount: () => pendingToolCalls.size,
+    flushToolCalls: () => {
+      flushQueuedToolCalls();
+    },
+    reportUsage: (event) => {
+      reportUsagePayload(event);
+    },
+    complete: () => {
+      flushQueuedToolCalls();
+    },
+    get thinkingId() {
+      return currentThinkingId;
+    },
+    set thinkingId(id) {
+      currentThinkingId = id;
+    },
+    get reasoningActive() {
+      return isReasoningActive;
+    },
+    set reasoningActive(active) {
+      isReasoningActive = active;
+    },
+    get reasoningDeltasEmitted() {
+      return reasoningDeltasEmitted;
+    },
+    set reasoningDeltasEmitted(emitted) {
+      reasoningDeltasEmitted = emitted;
+    },
+    feedThinkTags: (chunk) => thinkParser.feed(chunk),
+    flushThinkTags: () => thinkParser.flush()
+  };
   const processLine = (line) => {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith(":")) return false;
-    if (trimmed === "data: [DONE]") {
-      return true;
-    }
-    if (trimmed.startsWith("data: ")) {
-      try {
-        const data = JSON.parse(trimmed.slice(6));
-        if (data.type === "response.completed") {
-          isReasoningActive = false;
-          if (Array.isArray(data.response?.output)) {
-            for (const item of data.response.output) {
-              if (item?.type === "function_call") {
-                const callId = item.call_id || item.id || `call_${Date.now()}`;
-                const idx = typeof item.output_index === "number" ? item.output_index : pendingToolCalls.size;
-                const existing = pendingToolCalls.get(idx) || { id: callId, name: item.name || "", args: "" };
-                if (item.arguments) {
-                  existing.args = typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments);
-                }
-                pendingToolCalls.set(idx, existing);
-              }
-            }
-          }
-          return true;
-        }
-        if (data.type === "response.output_text.delta") {
-          const delta = typeof data.delta === "string" ? data.delta : data.delta?.text || data.delta?.value || "";
-          if (delta) {
-            partsReportedCount++;
-            options.progress.report(new vscode3.LanguageModelTextPart(delta));
-          }
-          return false;
-        }
-        if (data.type === "response.output_item.added") {
-          if (data.item?.type === "reasoning") {
-            isReasoningActive = true;
-            if (data.item.id) {
-              currentThinkingId = data.item.id;
-            }
-            partsReportedCount++;
-            const ThinkingPart = vscode3.LanguageModelThinkingPart;
-            if (ThinkingPart) {
-              options.progress.report(new ThinkingPart(data.item.text || "", currentThinkingId));
-            }
-            return false;
-          }
-          if (data.item?.type === "function_call") {
-            const idx = typeof data.output_index === "number" ? data.output_index : 0;
-            pendingToolCalls.set(idx, {
-              id: data.item.call_id || data.item.id || `call_${Date.now()}`,
-              name: data.item.name || "",
-              args: data.item.arguments || ""
-            });
-            return false;
-          }
-        }
-        if (data.type === "response.reasoning_text.delta") {
-          const delta = typeof data.delta === "string" ? data.delta : data.delta?.text || data.delta?.value || "";
-          if (delta && delta.length > 0) {
-            reasoningDeltasEmitted = true;
-            partsReportedCount++;
-            const ThinkingPart = vscode3.LanguageModelThinkingPart;
-            if (ThinkingPart) {
-              options.progress.report(new ThinkingPart(delta, currentThinkingId));
-            }
-          }
-          return false;
-        }
-        if (data.type === "response.function_call_arguments.delta") {
-          const idx = typeof data.output_index === "number" ? data.output_index : 0;
-          const current = pendingToolCalls.get(idx) || { id: "", name: "", args: "" };
-          const delta = typeof data.delta === "string" ? data.delta : data.delta?.arguments || "";
-          current.args += delta;
-          pendingToolCalls.set(idx, current);
-          return false;
-        }
-        if (data.type === "response.output_item.done") {
-          if (data.item?.type === "reasoning") {
-            isReasoningActive = false;
-            if (!reasoningDeltasEmitted && typeof data.item.text === "string" && data.item.text.length > 0) {
-              partsReportedCount++;
-              const ThinkingPart = vscode3.LanguageModelThinkingPart;
-              if (ThinkingPart) {
-                options.progress.report(new ThinkingPart(data.item.text, currentThinkingId));
-              }
-            }
-            return false;
-          }
-          if (data.item?.type === "function_call") {
-            const idx = typeof data.output_index === "number" ? data.output_index : 0;
-            const call = pendingToolCalls.get(idx) || {
-              id: data.item.call_id || data.item.id || `call_${Date.now()}`,
-              name: data.item.name || "",
-              args: ""
-            };
-            if (data.item.name && !call.name) call.name = data.item.name;
-            if (data.item.call_id && !call.id) call.id = data.item.call_id;
-            const itemArgsRaw = data.item.arguments;
-            if (itemArgsRaw !== void 0 && itemArgsRaw !== null) {
-              const itemArgsStr = typeof itemArgsRaw === "string" ? itemArgsRaw : JSON.stringify(itemArgsRaw);
-              if (!call.args || !call.args.trim()) {
-                call.args = itemArgsStr;
-              } else {
-                let callValid = false;
-                let parsedCallArgs = null;
-                try {
-                  parsedCallArgs = JSON.parse(call.args);
-                  callValid = true;
-                } catch {
-                }
-                if (!callValid) {
-                  call.args = itemArgsStr;
-                } else {
-                  try {
-                    const parsedItemArgs = typeof itemArgsRaw === "object" ? itemArgsRaw : JSON.parse(itemArgsStr);
-                    if (parsedItemArgs && typeof parsedItemArgs === "object" && !Array.isArray(parsedItemArgs) && parsedCallArgs && typeof parsedCallArgs === "object" && !Array.isArray(parsedCallArgs)) {
-                      call.args = JSON.stringify({ ...parsedCallArgs, ...parsedItemArgs });
-                    }
-                  } catch {
-                  }
-                }
-              }
-            }
-            let parsedArgs = {};
-            try {
-              parsedArgs = JSON.parse(call.args);
-            } catch {
-              parsedArgs = { raw: call.args };
-            }
-            if (!emittedToolCallIds.has(call.id) && !isSyntheticVerificationTool(call.name, options.tools)) {
-              partsReportedCount++;
-              emittedToolCallIds.add(call.id);
-              options.progress.report(new vscode3.LanguageModelToolCallPart(call.id, call.name, parsedArgs));
-            }
-            pendingToolCalls.delete(idx);
-            return false;
-          }
-        }
-        const choice = data.choices?.[0];
-        if (!choice) return false;
-        const rawReasoning = choice.delta?.reasoning_content || choice.delta?.thought || choice.delta?.reasoning || (Array.isArray(choice.delta?.reasoning_details) ? choice.delta.reasoning_details.map((d) => d.text || "").join("") : void 0);
-        if (rawReasoning && rawReasoning.length > 0) {
-          emitThinking(rawReasoning);
-        }
-        const content = choice.delta?.content;
-        if (content) {
-          const { text, thinking } = thinkParser.feed(content);
-          emitThinking(thinking);
-          if (text) {
-            partsReportedCount++;
-            options.progress.report(new vscode3.LanguageModelTextPart(text));
-          }
-        }
-        if (choice.delta?.tool_calls) {
-          choice.delta.tool_calls.forEach((tc, i) => {
-            const idx = tc.index ?? i;
-            const current = pendingToolCalls.get(idx) || { id: "", name: "", args: "" };
-            if (tc.id) current.id = tc.id;
-            if (tc.function?.name) current.name += tc.function.name;
-            if (tc.function?.arguments) current.args += tc.function.arguments;
-            pendingToolCalls.set(idx, current);
-          });
-        }
-        if (choice.finish_reason === "tool_calls" || choice.finish_reason === "stop" && pendingToolCalls.size > 0) {
-          flushPendingToolCalls();
-        }
-        if (choice.finish_reason === "stop") {
-          return true;
-        }
-      } catch {
-      }
-    }
-    return false;
+    const parsed = parseSseLine(line);
+    if (parsed.kind === "skip") return false;
+    if (parsed.kind === "done") return true;
+    return processResponsesEvent(parsed.event, sink) || processChatCompletionsEvent(parsed.event, sink);
   };
   try {
     while (true) {
@@ -29392,7 +29749,7 @@ async function consumeProviderStream(options) {
               processLine(remLine);
             }
           }
-          flushPendingToolCalls();
+          sink.complete();
           isDone = true;
           break;
         }
@@ -29405,23 +29762,23 @@ async function consumeProviderStream(options) {
             processLine(remLine);
           }
         }
-        flushPendingToolCalls();
+        sink.complete();
         break;
       }
       if (isDone) break;
     }
-    const flushed = thinkParser.flush();
-    if (flushed.thinking) emitThinking(flushed.thinking);
+    const flushed = sink.flushThinkTags();
+    if (flushed.thinking) emitThinkingPart(flushed.thinking, currentThinkingId);
     if (flushed.text) {
       partsReportedCount++;
-      options.progress.report(new vscode3.LanguageModelTextPart(flushed.text));
+      options.progress.report(new vscode5.LanguageModelTextPart(flushed.text));
     }
   } catch (streamErr) {
     void reader.cancel().catch(() => {
     });
     const errMsg = streamErr instanceof Error ? streamErr.message : String(streamErr);
     const isIdleTimeout = errMsg.includes("Stream idle for over");
-    if (isIdleTimeout && partsReportedCount === 0 && !isReasoningActive && options.stallAttempt < options.maxStallRetries && !options.token.isCancellationRequested && !options.abortSignal.aborted) {
+    if (isIdleTimeout && partsReportedCount === 0 && !isReasoningActive && shouldRetryStall(options.stallAttempt, options.maxStallRetries) && !options.token.isCancellationRequested && !options.abortSignal.aborted) {
       isStallRetry = true;
       options.log(
         `Stream stalled with 0 bytes received for model=${options.modelId}; initiating automatic recovery retry (${options.stallAttempt + 1}/${options.maxStallRetries})...`
@@ -29434,10 +29791,8 @@ async function consumeProviderStream(options) {
       }
       options.log(`Stream interrupted for model=${options.modelId}: ${errMsg}`);
       options.progress.report(
-        new vscode3.LanguageModelTextPart(
-          `
-
-*(Response stream interrupted: ${errMsg || "Connection closed by upstream OpenCode service"})*`
+        new vscode5.LanguageModelTextPart(
+          stallInterruptionMessage(errMsg)
         )
       );
       return "done";
@@ -29445,7 +29800,7 @@ async function consumeProviderStream(options) {
   } finally {
     if (!isStallRetry) {
       if (!hasStreamError && !options.token.isCancellationRequested && !options.abortSignal.aborted && pendingToolCalls.size > 0) {
-        flushPendingToolCalls();
+        flushQueuedToolCalls();
       }
       if (!hasStreamError && !options.token.isCancellationRequested && !options.abortSignal.aborted) {
         options.log(`Stream completed for model=${options.modelId}`);
@@ -29455,7 +29810,7 @@ async function consumeProviderStream(options) {
   return isStallRetry ? "retry" : "done";
 }
 
-// src/provider.ts
+// src/models/infrastructure/verified-catalog.ts
 var VERIFIED_OPENCODE_MODELS = [
   { id: "minimax-m3", name: "MiniMax M3 (OpenCode Go)", family: "minimax-m3", catalog: "go", contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: false },
   { id: "minimax-m2.5", name: "MiniMax M2.5 (OpenCode Go)", family: "minimax-m2.5", catalog: "go", contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true },
@@ -29493,21 +29848,9 @@ var VERIFIED_OPENCODE_MODELS = [
   { id: "muse-spark-1.3-contributor-free", name: "Muse Spark 1.3 Contributor (OpenCode Free)", family: "muse-spark-1.3-contributor-free", catalog: "zen", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true, supportsReasoningEffort: ["minimal", "low", "medium", "high", "xhigh"] },
   { id: "muse-spark-1.2-contributor-free", name: "Muse Spark 1.2 Contributor (OpenCode Free)", family: "muse-spark-1.2-contributor-free", catalog: "zen", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true, supportsReasoningEffort: ["minimal", "low", "medium", "high", "xhigh"] }
 ];
-var STREAM_IDLE_TIMEOUT_MS = Number(process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS) || 9e4;
-function getStreamIdleTimeoutMs() {
-  if (process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS) {
-    const envVal = Number(process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS);
-    if (!isNaN(envVal) && envVal > 0) return envVal;
-  }
-  try {
-    const configSec = vscode4.workspace.getConfiguration("opencode").get("streamIdleTimeoutSeconds");
-    if (typeof configSec === "number" && configSec > 0) {
-      return configSec * 1e3;
-    }
-  } catch {
-  }
-  return STREAM_IDLE_TIMEOUT_MS;
-}
+
+// src/chat/domain/chat-session.ts
+var import_vscode = require("vscode");
 function djb2Hash(str) {
   let hash = 5381;
   for (let i = 0; i < str.length; i++) {
@@ -29520,7 +29863,7 @@ function fingerprintMessage(msg) {
   let text = "";
   try {
     for (const part of msg.content) {
-      if (part instanceof vscode4.LanguageModelTextPart) {
+      if (part instanceof import_vscode.LanguageModelTextPart) {
         text += part.value;
       } else if (part && typeof part === "object") {
         text += JSON.stringify(part);
@@ -29529,6 +29872,16 @@ function fingerprintMessage(msg) {
   } catch {
   }
   return `${msg.role}:${djb2Hash(text)}`;
+}
+function fingerprintConversation(messages) {
+  return messages.map((msg) => fingerprintMessage(msg));
+}
+function isChainContinuation(cachedChain, incomingChain) {
+  if (cachedChain.length > incomingChain.length) return false;
+  for (let i = 0; i < cachedChain.length; i++) {
+    if (cachedChain[i] !== incomingChain[i]) return false;
+  }
+  return true;
 }
 var OPENCODE_ID_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 function generateOpenCodeDescendingId() {
@@ -29547,6 +29900,375 @@ function generateOpenCodeSessionId() {
 }
 function generateOpenCodeRequestId() {
   return `msg_${generateOpenCodeDescendingId()}`;
+}
+var ChatSessionCache = class _ChatSessionCache {
+  sessions = /* @__PURE__ */ new Map();
+  static MAX_SIZE = 50;
+  static TTL_MS = 4 * 60 * 60 * 1e3;
+  // 4 hours
+  get(key) {
+    const entry = this.sessions.get(key);
+    if (!entry) return void 0;
+    if (Date.now() - entry.lastUsedAt >= _ChatSessionCache.TTL_MS) {
+      this.sessions.delete(key);
+      return void 0;
+    }
+    return entry;
+  }
+  set(key, value, now) {
+    this.evictStaleSessions(now);
+    this.evictSessionIfFull();
+    this.sessions.set(key, value);
+  }
+  /**
+   * Returns a stable x-opencode-session id for this conversation, reused across all
+   * turns so OpenCode's routing/prompt caching sees one session instead of a fresh
+   * one per request. Conversations are bucketed by the fingerprint of their first
+   * message and continued by full-chain prefix match (see `fingerprintConversation`),
+   * since VS Code's API exposes no session id.
+   *
+   * Same-opener chats fork on divergence: when the incoming fingerprint chain
+   * extends the cached chain it is a continuation; when it shares only the root
+   * (or a shorter common prefix) with a different next fingerprint it is a
+   * distinct chat that happens to share an opener, and it gets its own session.
+   */
+  getConversationSessionId(messages) {
+    const chain = fingerprintConversation(messages);
+    const rootKey = chain[0] ?? "empty";
+    const now = Date.now();
+    const cached = this.get(rootKey);
+    if (cached) {
+      if (isChainContinuation(cached.chain, chain)) {
+        return _ChatSessionCache.trackContinuation(cached, chain, now);
+      }
+      const forkedSessionId = this.findContinuingFork(rootKey, chain, now);
+      if (forkedSessionId !== void 0) {
+        return forkedSessionId;
+      }
+      const sessionId2 = generateOpenCodeSessionId();
+      this.set(`${rootKey}::${djb2Hash(chain.join("|"))}`, { sessionId: sessionId2, lastUsedAt: now, chain }, now);
+      return sessionId2;
+    }
+    const sessionId = generateOpenCodeSessionId();
+    this.set(rootKey, { sessionId, lastUsedAt: now, chain }, now);
+    return sessionId;
+  }
+  /**
+   * Records a continued conversation: extends the cached chain and refreshes
+   * last use. Returns the reused session id.
+   */
+  static trackContinuation(entry, chain, now) {
+    entry.lastUsedAt = now;
+    entry.chain = chain;
+    return entry.sessionId;
+  }
+  /**
+   * Finds the forked session under `rootKey` with the longest fingerprint chain
+   * that the incoming chain continues. Expired forks are deleted on sight.
+   * Returns its session id, or undefined when no fork matches (caller mints
+   * a new forked session).
+   */
+  findContinuingFork(rootKey, chain, now) {
+    const prefix = `${rootKey}::`;
+    let best;
+    for (const [forkKey, fork] of this.sessions) {
+      if (!forkKey.startsWith(prefix)) {
+        continue;
+      }
+      if (now - fork.lastUsedAt >= _ChatSessionCache.TTL_MS) {
+        this.sessions.delete(forkKey);
+        continue;
+      }
+      if (isChainContinuation(fork.chain, chain) && (best === void 0 || fork.chain.length > best.chain.length)) {
+        best = fork;
+      }
+    }
+    if (best === void 0) {
+      return void 0;
+    }
+    return _ChatSessionCache.trackContinuation(best, chain, now);
+  }
+  evictStaleSessions(now) {
+    for (const [k, v] of this.sessions) {
+      if (now - v.lastUsedAt >= _ChatSessionCache.TTL_MS) {
+        this.sessions.delete(k);
+      }
+    }
+  }
+  evictSessionIfFull() {
+    if (this.sessions.size >= _ChatSessionCache.MAX_SIZE) {
+      let oldestKey;
+      let oldestAt = Infinity;
+      for (const [k, v] of this.sessions) {
+        if (v.lastUsedAt < oldestAt) {
+          oldestAt = v.lastUsedAt;
+          oldestKey = k;
+        }
+      }
+      if (oldestKey !== void 0) {
+        this.sessions.delete(oldestKey);
+      }
+    }
+  }
+};
+
+// src/chat/infrastructure/vscode-chat-provider.ts
+function resolveValidEfforts(model) {
+  const supportsReasoning = model.thinking !== false;
+  const rawEfforts = model.supportsReasoningEffort;
+  if (supportsReasoning && Array.isArray(rawEfforts) && rawEfforts.length > 0) {
+    return rawEfforts.filter((e) => e !== "none");
+  }
+  return void 0;
+}
+function buildConfigurationSchema(validEfforts, contextWindow) {
+  const properties = {};
+  if (validEfforts && validEfforts.length > 0) {
+    properties.reasoningEffort = {
+      type: "string",
+      title: "Thinking Effort",
+      enum: validEfforts,
+      enumItemLabels: validEfforts.map(effortLabel),
+      enumDescriptions: validEfforts.map(effortDescription),
+      default: validEfforts.includes("medium") ? "medium" : validEfforts[0],
+      group: "navigation"
+    };
+  }
+  if (contextWindow > 256e3) {
+    properties.contextTier = {
+      type: "string",
+      title: "Context Size",
+      enum: ["default", "long_context"],
+      enumItemLabels: ["Standard (128K)", "Extended (1M)"],
+      enumDescriptions: [
+        "Standard context window for faster generation and lower token usage",
+        "Full extended context window for large codebase analysis"
+      ],
+      default: "default",
+      group: "tokens"
+    };
+  }
+  return Object.keys(properties).length > 0 ? { properties } : void 0;
+}
+function describeModel(model) {
+  const validEfforts = resolveValidEfforts(model);
+  const tokenLimits = resolveModelTokenLimits(model.contextWindow, model.maxOutputTokens);
+  return {
+    id: model.id,
+    name: model.name,
+    family: model.family,
+    version: "1.0.0",
+    maxInputTokens: tokenLimits.maxInputTokens,
+    maxOutputTokens: tokenLimits.maxOutputTokens,
+    capabilities: {
+      imageInput: model.vision,
+      vision: model.vision,
+      toolCalling: true,
+      thinking: model.thinking !== false
+    },
+    supportsReasoningEffort: validEfforts,
+    supportedReasoningEfforts: validEfforts,
+    defaultReasoningEffort: validEfforts?.includes("medium") ? "medium" : validEfforts?.[0],
+    configurationSchema: buildConfigurationSchema(validEfforts, model.contextWindow),
+    isBYOK: true
+  };
+}
+async function tryRepairReasoningEcho(res, userDetail, attempt, input, ctx, log) {
+  if (res.status !== 400 || !ctx.isResponses || !userDetail.includes("encrypted_content")) {
+    return void 0;
+  }
+  log(`Detected reasoning echo error for model=${ctx.model.id}, retrying without stale reasoning...`);
+  const resanitized = sanitizeResponsesInput(input.responsesInput).filter((item) => !isStaleReasoningInput(item));
+  const retryBody = {
+    ...input.requestBody,
+    input: resanitized.length > 0 ? resanitized : input.formattedMessages.filter((m) => !isStaleReasoningInput(m))
+  };
+  try {
+    const retryRes = await fetchWithRetry(
+      attempt.url,
+      {
+        method: "POST",
+        headers: { ...attempt.clientHeaders, "x-opencode-request": generateOpenCodeRequestId() },
+        body: JSON.stringify(retryBody),
+        signal: attempt.abortSignal
+      },
+      { retries: 0 }
+    );
+    return retryRes;
+  } catch {
+    return void 0;
+  }
+}
+function throwForAuthError(input) {
+  if (input.isFreeTierError || input.res.status !== 401 && input.res.status !== 403) {
+    return;
+  }
+  const LMError = vscode6.LanguageModelError;
+  const cleanDetail = input.userDetail.replace(/^OpenCode authentication failed:\s*/i, "").trim();
+  const errMessage = cleanDetail ? `OpenCode authentication failed: ${cleanDetail}` : "OpenCode authentication failed: Invalid or expired API key.";
+  if (LMError?.NoPermissions) {
+    throw LMError.NoPermissions(errMessage);
+  }
+  throw new Error(errMessage);
+}
+function buildAlertNotice(res, model, reason, userDetail) {
+  return [
+    `> \u26A0\uFE0F **OpenCode Model Alert (${res.status} ${res.statusText || "Service Error"})**`,
+    `>`,
+    `> Unable to reach **${model.name}** (\`${model.id}\`): ${reason}.`,
+    `>`,
+    `> **Upstream detail:** \`${userDetail.slice(0, 300) || "Internal server error"}\``
+  ].join("\n");
+}
+async function handleUpstreamError(res, errText, attempt, input, ctx, progress, log) {
+  let userDetail = extractErrorMessage(errText);
+  log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`);
+  const repaired = await tryRepairReasoningEcho(res, userDetail, attempt, input, ctx, log);
+  if (repaired) {
+    if (repaired.ok) {
+      return { outcome: "stream", res: repaired, userDetail };
+    }
+    errText = await repaired.text().catch(() => "");
+    userDetail = extractErrorMessage(errText);
+    res = repaired;
+  }
+  if (!res.ok) {
+    const isFreeTierError = userDetail.includes("FreeTierError") || userDetail.toLowerCase().includes("free tier");
+    throwForAuthError({ res, userDetail, isFreeTierError });
+    const reason = classifyUpstreamAlert(res.status, userDetail, isFreeTierError);
+    progress.report(new vscode6.LanguageModelTextPart(buildAlertNotice(res, ctx.model, reason, userDetail)));
+    return { outcome: "handled", res, userDetail };
+  }
+  return { outcome: "stream", res, userDetail };
+}
+var TRANSIENT_RETRY_POLICY = {
+  // 5xx / network errors: treated as a likely-dead upstream, so we only give
+  // it one quick courtesy retry before surfacing the alert.
+  retries: 1,
+  baseDelayMs: 300,
+  maxDelayMs: 1e3,
+  // 429: a rate-limit cooldown is a "come back later" signal, not a dead
+  // upstream, so it gets its own much more patient budget — 3 back-to-back
+  // attempts, then 7 more spaced 1s apart (10 retries total), honoring
+  // Retry-After up to a 3s cap per wait so a long server-requested cooldown
+  // can't block the user for a full minute.
+  rateLimitRetries: 10,
+  rateLimitImmediateAttempts: 3,
+  rateLimitDelayMs: 1e3,
+  rateLimitMaxWaitMs: 3e3
+};
+async function postUpstreamRequest(input, token, log) {
+  const clientHeaders = createOpenCodeRequestHeaders(
+    input.apiKey,
+    input.sessionId,
+    generateOpenCodeRequestId()
+  );
+  let res;
+  try {
+    res = await fetchWithRetry(
+      input.url,
+      {
+        method: "POST",
+        headers: clientHeaders,
+        body: JSON.stringify(input.requestBody),
+        signal: input.abortSignal
+      },
+      TRANSIENT_RETRY_POLICY
+    );
+    return { res, clientHeaders };
+  } catch (err) {
+    if (token.isCancellationRequested || input.abortSignal.aborted) {
+      return "cancelled";
+    }
+    log(`Request failed before receiving a response: ${err?.message || err}`);
+    throw err;
+  }
+}
+async function runStallAttempt(input, stallAttempt, log) {
+  const posted = await postUpstreamRequest(
+    {
+      url: input.url,
+      requestBody: input.requestBody,
+      apiKey: input.apiKey,
+      sessionId: input.sessionId,
+      abortSignal: input.abortSignal
+    },
+    input.token,
+    log
+  );
+  if (posted === "cancelled") {
+    return "done";
+  }
+  let res = posted.res;
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    const handled = await handleUpstreamError(
+      res,
+      errText,
+      { url: input.url, clientHeaders: posted.clientHeaders, abortSignal: input.abortSignal },
+      {
+        responsesInput: input.responsesInput,
+        formattedMessages: input.formattedMessages,
+        requestBody: input.requestBody
+      },
+      { model: input.model, isResponses: input.isResponses },
+      input.progress,
+      log
+    );
+    if (handled.outcome === "handled") {
+      return "done";
+    }
+    res = handled.res;
+  }
+  const streamResult = await consumeProviderStream({
+    response: res,
+    modelId: input.model.id,
+    tools: input.options.tools,
+    progress: input.progress,
+    token: input.token,
+    abortSignal: input.abortSignal,
+    idleTimeoutMs: input.idleTimeoutMs,
+    stallAttempt,
+    maxStallRetries: input.maxStallRetries,
+    log
+  });
+  return streamResult;
+}
+function effortLabel(effort) {
+  switch (effort) {
+    case "minimal":
+      return "Minimal";
+    case "low":
+      return "Low";
+    case "medium":
+      return "Medium";
+    case "high":
+      return "High";
+    case "xhigh":
+      return "Extra High";
+    case "max":
+      return "Max";
+    default:
+      return effort.charAt(0).toUpperCase() + effort.slice(1);
+  }
+}
+function effortDescription(effort) {
+  switch (effort) {
+    case "minimal":
+      return "Minimal reasoning";
+    case "low":
+      return "Faster responses with light reasoning";
+    case "medium":
+      return "Balanced reasoning and speed";
+    case "high":
+      return "Deep reasoning";
+    case "xhigh":
+      return "Extra deep reasoning";
+    case "max":
+      return "Maximum reasoning depth";
+    default:
+      return `${effort} reasoning`;
+  }
 }
 function extractErrorMessage(rawJson) {
   try {
@@ -29567,71 +30289,50 @@ function extractErrorMessage(rawJson) {
   }
   return rawJson;
 }
-var OpenCodeChatProvider = class _OpenCodeChatProvider {
-  // 4 hours
+function isSchemaValidationError(status, detail) {
+  if (status !== 400) return false;
+  if (/single enum property/i.test(detail)) return true;
+  const hasSchemaNoun = /\bschema\b|\benum\b/i.test(detail);
+  const hasViolationVerb = /exceeds|too many|invalid|failed|rejected|not allowed/i.test(detail);
+  return hasSchemaNoun && hasViolationVerb;
+}
+function classifyUpstreamAlert(status, detail, isFreeTierError) {
+  if (status === 404) {
+    return "stale model ID (renamed or removed by a later sync; re-run sync and re-pick the model)";
+  }
+  if (isFreeTierError) {
+    return "upstream free-tier policy error";
+  }
+  if (isSchemaValidationError(status, detail)) {
+    return "tool schema rejected by upstream (an attached tool declares a constraint the gateway cannot accept; retry without that tool, or re-run sync)";
+  }
+  return "upstream server error";
+}
+var OpenCodeChatProvider = class {
   constructor(context, outputChannel) {
     this.context = context;
     this.outputChannel = outputChannel;
     try {
-      if (this.context.globalStorageUri.fsPath) {
-        const cacheFile = path4.join(this.context.globalStorageUri.fsPath, "models_cache.json");
-        if (fs4.existsSync(cacheFile)) {
-          const parsed = JSON.parse(fs4.readFileSync(cacheFile, "utf-8"));
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            this._models = parsed;
-          }
-        }
+      const cached = readModelCache(this.context.globalStorageUri.fsPath);
+      if (cached) {
+        this._models = cached;
       }
     } catch {
     }
   }
-  _onDidChange = new vscode4.EventEmitter();
+  _onDidChange = new vscode6.EventEmitter();
   onDidChangeLanguageModelChatInformation = this._onDidChange.event;
   _models = [...VERIFIED_OPENCODE_MODELS];
   // Copilot resends full conversation history each turn, so a conversation's first message
-  // stays constant across its turns. We use that as a cheap, heuristic conversation identity
-  // since VS Code's chat provider API exposes no native conversation/session id.
-  sessionCache = /* @__PURE__ */ new Map();
-  static SESSION_CACHE_MAX_SIZE = 50;
-  static SESSION_CACHE_TTL_MS = 4 * 60 * 60 * 1e3;
+  // stays constant across its turns. Conversations are bucketed by a fingerprint of that
+  // first message, since VS Code's chat provider API exposes no native conversation/session id.
+  //
+  // Same-opener chats fork on divergence: entries track the longest fingerprint chain
+  // seen so far, and a new chain that extends a different branch of the same root
+  // gets its own session instead of bleeding into the first chat's upstream context.
+  sessionCache = new ChatSessionCache();
   log(message) {
     this.outputChannel?.appendLine(`[Provider] ${message}`);
-  }
-  /**
-   * Returns a stable x-opencode-session id for this conversation, reused across all
-   * turns so OpenCode's routing/prompt caching sees one session instead of a fresh
-   * one per request. Conversations are identified by fingerprinting their first
-   * message (see `fingerprintMessage`), since VS Code's API exposes no session id.
-   */
-  getConversationSessionId(messages) {
-    const key = fingerprintMessage(messages[0]);
-    const now = Date.now();
-    const cached = this.sessionCache.get(key);
-    if (cached && now - cached.lastUsedAt < _OpenCodeChatProvider.SESSION_CACHE_TTL_MS) {
-      cached.lastUsedAt = now;
-      return cached.sessionId;
-    }
-    for (const [k, v] of this.sessionCache) {
-      if (now - v.lastUsedAt >= _OpenCodeChatProvider.SESSION_CACHE_TTL_MS) {
-        this.sessionCache.delete(k);
-      }
-    }
-    if (this.sessionCache.size >= _OpenCodeChatProvider.SESSION_CACHE_MAX_SIZE) {
-      let oldestKey;
-      let oldestAt = Infinity;
-      for (const [k, v] of this.sessionCache) {
-        if (v.lastUsedAt < oldestAt) {
-          oldestAt = v.lastUsedAt;
-          oldestKey = k;
-        }
-      }
-      if (oldestKey !== void 0) {
-        this.sessionCache.delete(oldestKey);
-      }
-    }
-    const sessionId = generateOpenCodeSessionId();
-    this.sessionCache.set(key, { sessionId, lastUsedAt: now });
-    return sessionId;
   }
   refresh() {
     this._onDidChange.fire();
@@ -29641,88 +30342,13 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
       this._models = models;
       this.refresh();
       try {
-        if (this.context.globalStorageUri.fsPath) {
-          const cacheDir = this.context.globalStorageUri.fsPath;
-          if (!fs4.existsSync(cacheDir)) {
-            fs4.mkdirSync(cacheDir, { recursive: true });
-          }
-          fs4.writeFileSync(path4.join(cacheDir, "models_cache.json"), JSON.stringify(models), "utf-8");
-        }
+        writeModelCache(this.context.globalStorageUri.fsPath, models);
       } catch {
       }
     }
   }
   async provideLanguageModelChatInformation(_options, _token) {
-    return this._models.map((m) => {
-      const supportsReasoning = m.thinking !== false;
-      const properties = {};
-      const rawEfforts = m.supportsReasoningEffort;
-      const validEfforts = supportsReasoning && Array.isArray(rawEfforts) && rawEfforts.length > 0 ? rawEfforts.filter((e) => e !== "none") : void 0;
-      const defaultReasoningEffort = validEfforts?.includes("medium") ? "medium" : validEfforts?.[0];
-      if (validEfforts && validEfforts.length > 0) {
-        const enumItemLabels = validEfforts.map((e) => {
-          if (e === "minimal") return "Minimal";
-          if (e === "low") return "Low";
-          if (e === "medium") return "Medium";
-          if (e === "high") return "High";
-          if (e === "xhigh") return "Extra High";
-          if (e === "max") return "Max";
-          return e.charAt(0).toUpperCase() + e.slice(1);
-        });
-        const enumDescriptions = validEfforts.map((e) => {
-          if (e === "minimal") return "Minimal reasoning";
-          if (e === "low") return "Faster responses with light reasoning";
-          if (e === "medium") return "Balanced reasoning and speed";
-          if (e === "high") return "Deep reasoning";
-          if (e === "xhigh") return "Extra deep reasoning";
-          if (e === "max") return "Maximum reasoning depth";
-          return `${e} reasoning`;
-        });
-        properties.reasoningEffort = {
-          type: "string",
-          title: "Thinking Effort",
-          enum: validEfforts,
-          enumItemLabels,
-          enumDescriptions,
-          default: defaultReasoningEffort,
-          group: "navigation"
-        };
-      }
-      if (m.contextWindow > 256e3) {
-        properties.contextTier = {
-          type: "string",
-          title: "Context Size",
-          enum: ["default", "long_context"],
-          enumItemLabels: ["Standard (128K)", "Extended (1M)"],
-          enumDescriptions: [
-            "Standard context window for faster generation and lower token usage",
-            "Full extended context window for large codebase analysis"
-          ],
-          default: "default",
-          group: "tokens"
-        };
-      }
-      const configurationSchema = Object.keys(properties).length > 0 ? { properties } : void 0;
-      return {
-        id: m.id,
-        name: m.name,
-        family: m.family,
-        version: "1.0.0",
-        maxInputTokens: m.contextWindow - m.maxOutputTokens,
-        maxOutputTokens: m.maxOutputTokens,
-        capabilities: {
-          imageInput: m.vision,
-          vision: m.vision,
-          toolCalling: true,
-          thinking: supportsReasoning
-        },
-        supportsReasoningEffort: validEfforts,
-        supportedReasoningEfforts: validEfforts,
-        defaultReasoningEffort,
-        configurationSchema,
-        isBYOK: true
-      };
-    });
+    return this._models.map((m) => describeModel(m));
   }
   async provideLanguageModelChatResponse(model, messages, options, progress, token) {
     const apiKey = await this.context.secrets.get("opencode_api_key") || (process.env.OPENCODE_API_KEY && process.env.OPENCODE_API_KEY.trim().length > 0 ? process.env.OPENCODE_API_KEY.trim() : void 0);
@@ -29732,17 +30358,18 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
       );
     }
     const formattedMessages = formatProviderMessages(messages);
-    const lowerId = model.id.toLowerCase();
     const meta = this._models.find((m) => m.id === model.id || model.id.endsWith("/" + m.id));
     const isResponses = isResponsesModel(model.id, meta?.apiType);
     const isFreeOrZen = isFreeOrZenModel(model.id, meta);
-    const toolsPayload = formatProviderTools(options.tools, isResponses, isFreeOrZen);
+    const toolsPayload = formatProviderTools(options.tools, isResponses, isFreeOrZen, (message) => {
+      this.log(message);
+    });
     const responsesInput = isResponses ? buildResponsesInput(formattedMessages) : [];
     const abortController = new AbortController();
     const cancelListener = token.onCancellationRequested(() => {
       abortController.abort();
     });
-    const sessionId = this.getConversationSessionId(messages);
+    const sessionId = this.sessionCache.getConversationSessionId(messages);
     try {
       await this.streamResponse(
         model,
@@ -29752,7 +30379,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
         abortController,
         meta,
         isResponses,
-        lowerId,
+        isFreeOrZen,
         formattedMessages,
         toolsPayload,
         responsesInput,
@@ -29764,8 +30391,7 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
       cancelListener.dispose();
     }
   }
-  async streamResponse(model, options, progress, token, abortController, meta, isResponses, lowerId, formattedMessages, toolsPayload, responsesInput, apiKey, sessionId) {
-    const isFreeOrZen = isFreeOrZenModel(model.id, meta);
+  async streamResponse(model, options, progress, token, abortController, meta, isResponses, isFreeOrZen, formattedMessages, toolsPayload, responsesInput, apiKey, sessionId) {
     const reasoningEffort = getReasoningEffort(options);
     const { url, body: requestBody } = createProviderRequest({
       modelId: model.id,
@@ -29777,128 +30403,32 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
       reasoningEffort
     });
     this.log(
-      `Request: model=${model.id} protocol=${isResponses ? "responses" : "chat-completions"} url=${url} reasoningEffort=${reasoningEffort || "none"} tools=${toolsPayload?.length ?? 0}`
+      `Request: model=${model.id} protocol=${isResponses ? "responses" : "chat-completions"} url=${url} reasoningEffort=${reasoningEffort || "none"} tools=${toolsPayload?.length ?? 0} session=${sessionId.slice(0, 12)}`
     );
     const maxStallRetries = 1;
     const idleTimeoutMs = getStreamIdleTimeoutMs();
+    const logger = (message) => {
+      this.log(message);
+    };
+    const loopInput = {
+      url,
+      requestBody,
+      apiKey,
+      sessionId,
+      model,
+      options,
+      progress,
+      token,
+      abortSignal: abortController.signal,
+      isResponses,
+      formattedMessages,
+      responsesInput,
+      idleTimeoutMs,
+      maxStallRetries
+    };
     for (let stallAttempt = 0; stallAttempt <= maxStallRetries; stallAttempt++) {
-      const clientHeaders = createOpenCodeRequestHeaders(
-        apiKey,
-        sessionId,
-        generateOpenCodeRequestId()
-      );
-      let res;
-      try {
-        res = await fetchWithRetry(
-          url,
-          {
-            method: "POST",
-            headers: clientHeaders,
-            body: JSON.stringify(requestBody),
-            signal: abortController.signal
-          },
-          {
-            // 5xx / network errors: treated as a likely-dead upstream, so we
-            // only give it one quick courtesy retry before surfacing the alert.
-            retries: 1,
-            baseDelayMs: 300,
-            maxDelayMs: 1e3,
-            // 429: a rate-limit cooldown is a "come back later" signal, not a
-            // dead upstream, so it gets its own much more patient budget — 3
-            // back-to-back attempts, then 7 more spaced 1s apart (10 retries
-            // total), honoring Retry-After up to a 3s cap per wait so a long
-            // server-requested cooldown can't block the user for a full minute.
-            rateLimitRetries: 10,
-            rateLimitImmediateAttempts: 3,
-            rateLimitDelayMs: 1e3,
-            rateLimitMaxWaitMs: 3e3
-          }
-        );
-      } catch (err) {
-        if (token.isCancellationRequested || abortController.signal.aborted) {
-          return;
-        }
-        this.log(`Request failed before receiving a response: ${err?.message || err}`);
-        throw err;
-      }
-      if (!res.ok) {
-        let errText = await res.text().catch(() => "");
-        let userDetail = extractErrorMessage(errText);
-        this.log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`);
-        if (res.status === 400 && isResponses && userDetail.includes("encrypted_content")) {
-          this.log(`Detected reasoning echo error for model=${model.id}, retrying without stale reasoning...`);
-          const resanitized = sanitizeResponsesInput(responsesInput).filter((item) => !isStaleReasoningInput(item));
-          const retryBody = {
-            ...requestBody,
-            input: resanitized.length > 0 ? resanitized : formattedMessages.filter((m) => !isStaleReasoningInput(m))
-          };
-          try {
-            const retryRes = await fetchWithRetry(
-              url,
-              {
-                method: "POST",
-                headers: {
-                  ...clientHeaders,
-                  "x-opencode-request": generateOpenCodeRequestId()
-                },
-                body: JSON.stringify(retryBody),
-                signal: abortController.signal
-              },
-              { retries: 0 }
-            );
-            if (retryRes.ok) {
-              res = retryRes;
-            } else {
-              errText = await retryRes.text().catch(() => "");
-              userDetail = extractErrorMessage(errText);
-            }
-          } catch {
-          }
-        }
-        if (!res.ok) {
-          const isFreeTierError = userDetail.includes("FreeTierError") || userDetail.toLowerCase().includes("free tier");
-          if (!isFreeTierError && (res.status === 401 || res.status === 403)) {
-            const LMError = vscode4.LanguageModelError;
-            const cleanDetail = userDetail.replace(/^OpenCode authentication failed:\s*/i, "").trim();
-            const errMessage = cleanDetail ? `OpenCode authentication failed: ${cleanDetail}` : "OpenCode authentication failed: Invalid or expired API key.";
-            if (LMError?.NoPermissions) {
-              throw LMError.NoPermissions(errMessage);
-            }
-            throw new Error(errMessage);
-          }
-          if (res.status === 404) {
-            const LMError = vscode4.LanguageModelError;
-            if (LMError?.NotFound) {
-              throw LMError.NotFound(`OpenCode model '${model.id}' was not found in the remote catalog.`);
-            }
-            throw new Error(`OpenCode model '${model.id}' was not found in the remote catalog.`);
-          }
-          const alertNotice = [
-            `> \u26A0\uFE0F **OpenCode Model Alert (${res.status} ${res.statusText || "Service Error"})**`,
-            `>`,
-            `> Unable to reach **${model.name}** (\`${model.id}\`): ${isFreeTierError ? "upstream free-tier policy error" : "upstream server error"}.`,
-            `>`,
-            `> **Upstream detail:** \`${userDetail.slice(0, 300) || "Internal server error"}\``
-          ].join("\n");
-          progress.report(new vscode4.LanguageModelTextPart(alertNotice));
-          return;
-        }
-      }
-      const streamResult = await consumeProviderStream({
-        response: res,
-        modelId: model.id,
-        tools: options.tools,
-        progress,
-        token,
-        abortSignal: abortController.signal,
-        idleTimeoutMs,
-        stallAttempt,
-        maxStallRetries,
-        log: (message) => {
-          this.log(message);
-        }
-      });
-      if (streamResult === "retry") continue;
+      const outcome = await runStallAttempt(loopInput, stallAttempt, logger);
+      if (outcome === "retry") continue;
       return;
     }
   }
@@ -29908,16 +30438,16 @@ var OpenCodeChatProvider = class _OpenCodeChatProvider {
   }
 };
 
-// src/views/usageTreeProvider.ts
-var vscode5 = __toESM(require("vscode"), 1);
-var OpenCodeTreeItem = class extends vscode5.TreeItem {
-  constructor(label, collapsibleState = vscode5.TreeItemCollapsibleState.None, itemType = "status-item") {
+// src/usage/infrastructure/usage-tree-adapter.ts
+var vscode7 = __toESM(require("vscode"), 1);
+var OpenCodeTreeItem = class extends vscode7.TreeItem {
+  constructor(label, collapsibleState = vscode7.TreeItemCollapsibleState.None, itemType = "status-item") {
     super(label, collapsibleState);
     this.itemType = itemType;
   }
 };
 var OpenCodeUsageTreeProvider = class {
-  _onDidChangeTreeData = new vscode5.EventEmitter();
+  _onDidChangeTreeData = new vscode7.EventEmitter();
   onDidChangeTreeData = this._onDidChangeTreeData.event;
   usageData = null;
   usageError = null;
@@ -29947,16 +30477,9 @@ var OpenCodeUsageTreeProvider = class {
         return;
       }
       const res = await fetchOpenCodeUsage(apiKey);
-      if (res.ok) {
-        this.usageData = res.usage;
-        this.usageError = null;
-      } else if (res.reason === "no-subscription") {
-        this.usageData = null;
-        this.usageError = "No active Go subscription (Zen pay-as-you-go / free)";
-      } else {
-        this.usageData = null;
-        this.usageError = `Unable to fetch usage (${res.reason})`;
-      }
+      const state = toUsageDisplayState(res);
+      this.usageData = state.usage;
+      this.usageError = state.error ?? null;
     } catch (err) {
       this.usageData = null;
       this.usageError = err instanceof Error ? err.message : "Error fetching usage";
@@ -29978,29 +30501,29 @@ var OpenCodeUsageTreeProvider = class {
   getRootItems() {
     const quotaCategory = new OpenCodeTreeItem(
       "Go Subscription Quotas",
-      vscode5.TreeItemCollapsibleState.Expanded,
+      vscode7.TreeItemCollapsibleState.Expanded,
       "category"
     );
-    quotaCategory.iconPath = new vscode5.ThemeIcon("dashboard");
+    quotaCategory.iconPath = new vscode7.ThemeIcon("dashboard");
     const catalogCategory = new OpenCodeTreeItem(
       "Model Catalogs",
-      vscode5.TreeItemCollapsibleState.Expanded,
+      vscode7.TreeItemCollapsibleState.Expanded,
       "category"
     );
-    catalogCategory.iconPath = new vscode5.ThemeIcon("layers");
+    catalogCategory.iconPath = new vscode7.ThemeIcon("layers");
     const actionCategory = new OpenCodeTreeItem(
       "Quick Actions",
-      vscode5.TreeItemCollapsibleState.Expanded,
+      vscode7.TreeItemCollapsibleState.Expanded,
       "category"
     );
-    actionCategory.iconPath = new vscode5.ThemeIcon("zap");
+    actionCategory.iconPath = new vscode7.ThemeIcon("zap");
     return [quotaCategory, catalogCategory, actionCategory];
   }
   getCategoryChildren(element) {
     if (element.label === "Go Subscription Quotas") {
       if (this.usageError) {
-        const errItem = new OpenCodeTreeItem(this.usageError, vscode5.TreeItemCollapsibleState.None, "status-item");
-        errItem.iconPath = new vscode5.ThemeIcon("info");
+        const errItem = new OpenCodeTreeItem(this.usageError, vscode7.TreeItemCollapsibleState.None, "status-item");
+        errItem.iconPath = new vscode7.ThemeIcon("info");
         if (this.usageError.includes("API key")) {
           errItem.command = {
             command: "opencode-copilot-sync.setApiKey",
@@ -30010,8 +30533,8 @@ var OpenCodeUsageTreeProvider = class {
         return [errItem];
       }
       if (!this.usageData) {
-        const loadingItem = new OpenCodeTreeItem("Loading usage data...", vscode5.TreeItemCollapsibleState.None, "status-item");
-        loadingItem.iconPath = new vscode5.ThemeIcon("loading~spin");
+        const loadingItem = new OpenCodeTreeItem("Loading usage data...", vscode7.TreeItemCollapsibleState.None, "status-item");
+        loadingItem.iconPath = new vscode7.ThemeIcon("loading~spin");
         return [loadingItem];
       }
       const { rolling, weekly, monthly } = this.usageData;
@@ -30019,13 +30542,13 @@ var OpenCodeUsageTreeProvider = class {
         const resetsIn = formatRelativeTime(period.resetsAt);
         const item = new OpenCodeTreeItem(
           `${name}: ${period.percent}% (resets ${resetsIn})`,
-          vscode5.TreeItemCollapsibleState.None,
+          vscode7.TreeItemCollapsibleState.None,
           "quota-item"
         );
         const isLimited = period.status === "rate-limited";
-        item.iconPath = new vscode5.ThemeIcon(
+        item.iconPath = new vscode7.ThemeIcon(
           isLimited ? "warning" : "pass",
-          isLimited ? new vscode5.ThemeColor("charts.red") : new vscode5.ThemeColor("charts.green")
+          isLimited ? new vscode7.ThemeColor("charts.red") : new vscode7.ThemeColor("charts.green")
         );
         item.tooltip = `${name} limit: ${period.percent}% used. Status: ${period.status}. Resets at ${period.resetsAt}`;
         return item;
@@ -30039,47 +30562,47 @@ var OpenCodeUsageTreeProvider = class {
     if (element.label === "Model Catalogs") {
       const goItem = new OpenCodeTreeItem(
         `OpenCode Go: ${this.goModelCount} models`,
-        vscode5.TreeItemCollapsibleState.None,
+        vscode7.TreeItemCollapsibleState.None,
         "catalog-item"
       );
       goItem.description = "Flat-rate ($0/token)";
-      goItem.iconPath = new vscode5.ThemeIcon("package");
+      goItem.iconPath = new vscode7.ThemeIcon("package");
       const zenItem = new OpenCodeTreeItem(
         `Zen & Free Tier: ${this.zenModelCount} models`,
-        vscode5.TreeItemCollapsibleState.None,
+        vscode7.TreeItemCollapsibleState.None,
         "catalog-item"
       );
       zenItem.description = "Free & pay-as-you-go";
-      zenItem.iconPath = new vscode5.ThemeIcon("gift");
+      zenItem.iconPath = new vscode7.ThemeIcon("gift");
       return [goItem, zenItem];
     }
     if (element.label === "Quick Actions") {
       const syncItem = new OpenCodeTreeItem(
         "Sync Models to Copilot",
-        vscode5.TreeItemCollapsibleState.None,
+        vscode7.TreeItemCollapsibleState.None,
         "action-item"
       );
-      syncItem.iconPath = new vscode5.ThemeIcon("sync");
+      syncItem.iconPath = new vscode7.ThemeIcon("sync");
       syncItem.command = {
         command: "opencode-copilot-sync.sync",
         title: "Sync Models to Copilot"
       };
       const keyItem = new OpenCodeTreeItem(
         "Set API Key",
-        vscode5.TreeItemCollapsibleState.None,
+        vscode7.TreeItemCollapsibleState.None,
         "action-item"
       );
-      keyItem.iconPath = new vscode5.ThemeIcon("key");
+      keyItem.iconPath = new vscode7.ThemeIcon("key");
       keyItem.command = {
         command: "opencode-copilot-sync.setApiKey",
         title: "Set API Key"
       };
       const cfgItem = new OpenCodeTreeItem(
         "Open Models Config",
-        vscode5.TreeItemCollapsibleState.None,
+        vscode7.TreeItemCollapsibleState.None,
         "action-item"
       );
-      cfgItem.iconPath = new vscode5.ThemeIcon("settings-gear");
+      cfgItem.iconPath = new vscode7.ThemeIcon("settings-gear");
       cfgItem.command = {
         command: "opencode-copilot-sync.openConfig",
         title: "Open Models Config"
@@ -30092,18 +30615,18 @@ var OpenCodeUsageTreeProvider = class {
 
 // src/extension.ts
 async function activate(context) {
-  const outputChannel = vscode6.window.createOutputChannel("OpenCode Copilot Sync");
+  const outputChannel = vscode8.window.createOutputChannel("OpenCode Copilot Sync");
   context.subscriptions.push(outputChannel);
   outputChannel.appendLine(
-    `[Platform] OS: ${process.platform} (${process.arch}), Remote: ${vscode6.env.remoteName || "local"}, App: ${vscode6.env.appName}`
+    `[Platform] OS: ${process.platform} (${process.arch}), Remote: ${vscode8.env.remoteName || "local"}, App: ${vscode8.env.appName}`
   );
   const applyProxySetting = () => {
-    const proxyUrl = vscode6.workspace.getConfiguration("http").get("proxy");
+    const proxyUrl = vscode8.workspace.getConfiguration("http").get("proxy");
     setVSCodeProxyUrl(proxyUrl || void 0);
   };
   applyProxySetting();
   context.subscriptions.push(
-    vscode6.workspace.onDidChangeConfiguration((e) => {
+    vscode8.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("http.proxy")) {
         applyProxySetting();
       }
@@ -30111,19 +30634,20 @@ async function activate(context) {
   );
   const chatProvider = new OpenCodeChatProvider(context, outputChannel);
   context.subscriptions.push(
-    vscode6.lm.registerLanguageModelChatProvider("opencode", chatProvider)
+    vscode8.lm.registerLanguageModelChatProvider("opencode", chatProvider)
   );
+  chatProvider.refresh();
   outputChannel.appendLine("Registered native OpenCode LanguageModelChatProvider with VS Code.");
   try {
-    const agentHostCfg = vscode6.workspace.getConfiguration("chat.agentHost");
+    const agentHostCfg = vscode8.workspace.getConfiguration("chat.agentHost");
     if (!agentHostCfg.get("byokModels.enabled", false)) {
-      await agentHostCfg.update("byokModels.enabled", true, vscode6.ConfigurationTarget.Global);
+      await agentHostCfg.update("byokModels.enabled", true, vscode8.ConfigurationTarget.Global);
       outputChannel.appendLine("Enabled chat.agentHost.byokModels.enabled for Agent Mode support.");
     }
   } catch (err) {
     outputChannel.appendLine(`Note: Could not set chat.agentHost.byokModels.enabled: ${err.message}`);
   }
-  const statusBarItem = vscode6.window.createStatusBarItem(vscode6.StatusBarAlignment.Right, 99);
+  const statusBarItem = vscode8.window.createStatusBarItem(vscode8.StatusBarAlignment.Right, 99);
   statusBarItem.text = "$(hubot) OpenCode";
   statusBarItem.tooltip = "Click to sync OpenCode models & refresh usage";
   statusBarItem.command = "opencode-copilot-sync.sync";
@@ -30131,42 +30655,17 @@ async function activate(context) {
   context.subscriptions.push(statusBarItem);
   const usageTreeProvider = new OpenCodeUsageTreeProvider(async () => resolveApiKey(context.secrets, false));
   context.subscriptions.push(
-    vscode6.window.registerTreeDataProvider("opencode-usage-view", usageTreeProvider)
+    vscode8.window.registerTreeDataProvider("opencode-usage-view", usageTreeProvider)
   );
-  async function updateUsageMeter(apiKey) {
-    try {
-      const key = apiKey || await resolveApiKey(context.secrets, false);
-      if (!key) {
-        usageTreeProvider.setUsage(null, "No API key configured");
-        return;
-      }
-      const res = await fetchOpenCodeUsage(key);
-      if (res.ok) {
-        statusBarItem.text = formatStatusBarText(res.usage);
-        const md = new vscode6.MarkdownString(formatUsageTooltip(res.usage));
-        md.isTrusted = true;
-        statusBarItem.tooltip = md;
-        usageTreeProvider.setUsage(res.usage);
-      } else if (res.reason === "no-subscription") {
-        statusBarItem.text = "$(hubot) OpenCode (Zen)";
-        statusBarItem.tooltip = "OpenCode Zen (Pay-as-you-go / Free tier). Click to sync models.";
-        usageTreeProvider.setUsage(null, "No active Go subscription (Zen pay-as-you-go / free)");
-      } else {
-        usageTreeProvider.setUsage(null, `Unable to fetch usage (${res.reason})`);
-      }
-    } catch {
-      usageTreeProvider.setUsage(null, "Error fetching usage");
-    }
-  }
   async function openApiKeyPageAndSet() {
     try {
-      await vscode6.env.openExternal(vscode6.Uri.parse("https://opencode.ai"));
+      await vscode8.env.openExternal(vscode8.Uri.parse("https://opencode.ai"));
     } catch {
     }
-    await vscode6.commands.executeCommand("opencode-copilot-sync.setApiKey");
+    await vscode8.commands.executeCommand("opencode-copilot-sync.setApiKey");
   }
   const missingKeyActions = {
-    "Set API Key": () => vscode6.commands.executeCommand("opencode-copilot-sync.setApiKey"),
+    "Set API Key": () => vscode8.commands.executeCommand("opencode-copilot-sync.setApiKey"),
     "Get API Key (opencode.ai)": openApiKeyPageAndSet
   };
   function handleMissingApiKeyChoice(choice) {
@@ -30175,10 +30674,10 @@ async function activate(context) {
   }
   function showMissingApiKeyMessage(interactive) {
     if (interactive) {
-      vscode6.window.showWarningMessage("OpenCode sync cancelled: No API key provided.");
+      vscode8.window.showWarningMessage("OpenCode sync cancelled: No API key provided.");
       return;
     }
-    void vscode6.window.showInformationMessage(
+    void vscode8.window.showInformationMessage(
       "OpenCode Copilot Sync: Enter your OpenCode API key to enable flat-rate Go and Zen models in Copilot.",
       "Set API Key",
       "Get API Key (opencode.ai)"
@@ -30186,14 +30685,14 @@ async function activate(context) {
   }
   async function getSyncApiKey(interactive) {
     const promptIfMissing = shouldPromptForApiKey(interactive, Boolean(process.env.CI));
-    const promptWindow = promptIfMissing ? vscode6.window : void 0;
+    const promptWindow = promptIfMissing ? vscode8.window : void 0;
     return resolveApiKey(context.secrets, promptIfMissing, promptWindow);
   }
   async function runSyncWithProgress(interactive, apiKey, syncOptions) {
     if (!interactive) return syncOpenCodeModels(apiKey, syncOptions);
-    return vscode6.window.withProgress(
+    return vscode8.window.withProgress(
       {
-        location: vscode6.ProgressLocation.Notification,
+        location: vscode8.ProgressLocation.Notification,
         title: "OpenCode: Fetching models and syncing to Copilot...",
         cancellable: false
       },
@@ -30214,20 +30713,14 @@ async function activate(context) {
   }
   function notifySyncResult(syncResult) {
     if (syncResult.warnings.length > 0) {
-      vscode6.window.showWarningMessage(
+      vscode8.window.showWarningMessage(
         `Synced OpenCode models, but ${syncResult.warnings.length} compatibility mirror(s) were skipped. See the OpenCode Copilot Sync output channel for target-local setup instructions.`
       );
       return;
     }
-    vscode6.window.showInformationMessage(
+    vscode8.window.showInformationMessage(
       `Synced ${syncResult.totalCount} OpenCode models (${syncResult.goCount} Go flat-rate + ${syncResult.zenCount} Zen exclusive) to Copilot!`
     );
-  }
-  function getModelFamily(model) {
-    return model.family || model.id;
-  }
-  function getModelCatalog(model) {
-    return model.url.includes("/go/") ? "go" : "zen";
   }
   function updateModelCatalog(syncResult) {
     if (syncResult.models.length > 0) {
@@ -30255,16 +30748,16 @@ async function activate(context) {
     const message = formatSyncFailureMessage(error);
     outputChannel.appendLine(`[Sync Error] ${message}`);
     if (interactive) {
-      vscode6.window.showErrorMessage(`OpenCode sync failed: ${message}`);
+      vscode8.window.showErrorMessage(`OpenCode sync failed: ${message}`);
     }
     statusBarItem.text = "$(hubot) OpenCode";
     statusBarItem.tooltip = formatSyncFailureTooltip();
   }
   async function runSyncWorkflow(interactive) {
     const syncOptions = buildSyncOptions(
-      vscode6.workspace.getConfiguration("opencode"),
+      vscode8.workspace.getConfiguration("opencode"),
       context.globalStorageUri.fsPath,
-      vscode6.env.remoteName
+      vscode8.env.remoteName
     );
     const apiKey = await getSyncApiKey(interactive);
     if (!apiKey) {
@@ -30276,7 +30769,7 @@ async function activate(context) {
     const syncResult = await runSyncWithProgress(interactive, apiKey, syncOptions);
     reportSyncResult(syncResult, interactive);
     updateModelCatalog(syncResult);
-    await updateUsageMeter(apiKey);
+    await updateUsageMeter(statusBarItem, usageTreeProvider, context.secrets, apiKey);
   }
   async function performSync(interactive) {
     try {
@@ -30286,28 +30779,28 @@ async function activate(context) {
     }
   }
   context.subscriptions.push(
-    vscode6.commands.registerCommand("opencode-copilot-sync.sync", () => performSync(true)),
-    vscode6.commands.registerCommand("opencode-copilot-sync.refreshUsage", async () => {
-      await Promise.all([updateUsageMeter(), usageTreeProvider.refresh()]);
+    vscode8.commands.registerCommand("opencode-copilot-sync.sync", () => performSync(true)),
+    vscode8.commands.registerCommand("opencode-copilot-sync.refreshUsage", async () => {
+      await updateUsageMeter(statusBarItem, usageTreeProvider, context.secrets);
     }),
-    vscode6.commands.registerCommand("opencode-copilot-sync.setApiKey", async () => {
-      const key = await promptAndSetApiKey(context.secrets, vscode6.window);
+    vscode8.commands.registerCommand("opencode-copilot-sync.setApiKey", async () => {
+      const key = await promptAndSetApiKey(context.secrets, vscode8.window);
       if (key) {
-        vscode6.window.showInformationMessage("OpenCode API Key saved! Syncing models to Copilot...");
+        vscode8.window.showInformationMessage("OpenCode API Key saved! Syncing models to Copilot...");
         await performSync(true);
       }
     }),
-    vscode6.commands.registerCommand("opencode-copilot-sync.openConfig", async () => {
+    vscode8.commands.registerCommand("opencode-copilot-sync.openConfig", async () => {
       const p = getChatLanguageModelsPath(context.globalStorageUri.fsPath);
       try {
-        const doc = await vscode6.workspace.openTextDocument(p);
-        await vscode6.window.showTextDocument(doc);
+        const doc = await vscode8.workspace.openTextDocument(p);
+        await vscode8.window.showTextDocument(doc);
       } catch (err) {
-        vscode6.window.showErrorMessage(`Unable to open config: ${err.message}`);
+        vscode8.window.showErrorMessage(`Unable to open config: ${err.message}`);
       }
     })
   );
-  const config = vscode6.workspace.getConfiguration("opencode");
+  const config = vscode8.workspace.getConfiguration("opencode");
   const autoSync = config.get("autoSyncOnStartup", true);
   if (autoSync) {
     setTimeout(() => {
@@ -30315,7 +30808,7 @@ async function activate(context) {
     }, 3e3);
   }
   const usageTimer = setInterval(() => {
-    void updateUsageMeter();
+    void updateUsageMeter(statusBarItem, usageTreeProvider, context.secrets);
   }, 6e4);
   context.subscriptions.push({ dispose: () => {
     clearInterval(usageTimer);

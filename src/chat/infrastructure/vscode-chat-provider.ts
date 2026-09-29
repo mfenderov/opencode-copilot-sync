@@ -27,6 +27,382 @@ import { getStreamIdleTimeoutMs } from '../application/recover-stream.js';
 import { VERIFIED_OPENCODE_MODELS } from '../../models/infrastructure/verified-catalog.js';
 import { ChatSessionCache, generateOpenCodeRequestId } from '../domain/chat-session.js';
 
+function resolveValidEfforts(model: OpenCodeModelMeta): string[] | undefined {
+  const supportsReasoning = model.thinking !== false;
+  const rawEfforts = model.supportsReasoningEffort;
+  if (supportsReasoning && Array.isArray(rawEfforts) && rawEfforts.length > 0) {
+    return rawEfforts.filter((e) => e !== 'none');
+  }
+  return undefined;
+}
+
+function buildConfigurationSchema(
+  validEfforts: string[] | undefined,
+  contextWindow: number
+): Record<string, unknown> | undefined {
+  const properties: Record<string, unknown> = {};
+  if (validEfforts && validEfforts.length > 0) {
+    properties.reasoningEffort = {
+      type: 'string',
+      title: 'Thinking Effort',
+      enum: validEfforts,
+      enumItemLabels: validEfforts.map(effortLabel),
+      enumDescriptions: validEfforts.map(effortDescription),
+      default: validEfforts.includes('medium') ? 'medium' : validEfforts[0],
+      group: 'navigation',
+    };
+  }
+  if (contextWindow > 256000) {
+    properties.contextTier = {
+      type: 'string',
+      title: 'Context Size',
+      enum: ['default', 'long_context'],
+      enumItemLabels: ['Standard (128K)', 'Extended (1M)'],
+      enumDescriptions: [
+        'Standard context window for faster generation and lower token usage',
+        'Full extended context window for large codebase analysis',
+      ],
+      default: 'default',
+      group: 'tokens',
+    };
+  }
+  return Object.keys(properties).length > 0 ? { properties } : undefined;
+}
+
+function describeModel(model: OpenCodeModelMeta): Record<string, unknown> {
+  const validEfforts = resolveValidEfforts(model);
+  const tokenLimits = resolveModelTokenLimits(model.contextWindow, model.maxOutputTokens);
+  return {
+    id: model.id,
+    name: model.name,
+    family: model.family,
+    version: '1.0.0',
+    maxInputTokens: tokenLimits.maxInputTokens,
+    maxOutputTokens: tokenLimits.maxOutputTokens,
+    capabilities: {
+      imageInput: model.vision,
+      vision: model.vision,
+      toolCalling: true,
+      thinking: model.thinking !== false,
+    },
+    supportsReasoningEffort: validEfforts,
+    supportedReasoningEfforts: validEfforts,
+    defaultReasoningEffort: validEfforts?.includes('medium') ? 'medium' : validEfforts?.[0],
+    configurationSchema: buildConfigurationSchema(validEfforts, model.contextWindow),
+    isBYOK: true,
+  };
+}
+
+interface ReasoningRepairInput {
+  responsesInput: unknown[];
+  formattedMessages: FormattedMessage[];
+  requestBody: Record<string, unknown>;
+}
+
+interface StreamAttempt {
+  url: string;
+  clientHeaders: Record<string, string>;
+  abortSignal: AbortSignal;
+}
+
+interface UpstreamErrorContext {
+  model: vscode.LanguageModelChatInformation;
+  isResponses: boolean;
+}
+
+/**
+ * Transparent repair for Responses-API reasoning echoes: when an idle gap or
+ * session rebind causes the upstream to reject replayed reasoning with
+ * "reasoning `encrypted_content` was not issued to this caller", strip the
+ * stale reasoning items and retry once. Returns the replacement response, or
+ * undefined when no repair was attempted.
+ */
+async function tryRepairReasoningEcho(
+  res: Response,
+  userDetail: string,
+  attempt: StreamAttempt,
+  input: ReasoningRepairInput,
+  ctx: UpstreamErrorContext,
+  log: (message: string) => void
+): Promise<Response | undefined> {
+  if (res.status !== 400 || !ctx.isResponses || !userDetail.includes('encrypted_content')) {
+    return undefined;
+  }
+  log(`Detected reasoning echo error for model=${ctx.model.id}, retrying without stale reasoning...`);
+  const resanitized = sanitizeResponsesInput(input.responsesInput).filter((item) => !isStaleReasoningInput(item));
+  const retryBody: Record<string, unknown> = {
+    ...input.requestBody,
+    input: resanitized.length > 0 ? resanitized : input.formattedMessages.filter((m) => !isStaleReasoningInput(m)),
+  };
+  try {
+    const retryRes = await fetchWithRetry(
+      attempt.url,
+      {
+        method: 'POST',
+        headers: { ...attempt.clientHeaders, 'x-opencode-request': generateOpenCodeRequestId() },
+        body: JSON.stringify(retryBody),
+        signal: attempt.abortSignal,
+      },
+      { retries: 0 }
+    );
+    return retryRes;
+  } catch {
+    return undefined;
+  }
+}
+
+interface AuthErrorInput {
+  res: Response;
+  userDetail: string;
+  isFreeTierError: boolean;
+}
+
+/**
+ * Auth errors throw NoPermissions so VS Code can trigger re-auth prompts —
+ * except upstream FreeTierError policy errors, which would send Copilot into
+ * an unhelpful 5-retry 16-second loop and are better served by the alert card.
+ * Returns nothing when no auth error applies.
+ */
+function throwForAuthError(input: AuthErrorInput): void {
+  // IMPORTANT: Do NOT throw NoPermissions for upstream FreeTierError (e.g.
+  // policy/model restriction); let it fall through to the alert notice card
+  // for immediate, helpful fail-fast resolution.
+  if (input.isFreeTierError || (input.res.status !== 401 && input.res.status !== 403)) {
+    return;
+  }
+  const LMError = (vscode as any).LanguageModelError;
+  const cleanDetail = input.userDetail.replace(/^OpenCode authentication failed:\s*/i, '').trim();
+  const errMessage = cleanDetail
+    ? `OpenCode authentication failed: ${cleanDetail}`
+    : 'OpenCode authentication failed: Invalid or expired API key.';
+  if (LMError?.NoPermissions) {
+    throw LMError.NoPermissions(errMessage);
+  }
+  throw new Error(errMessage);
+}
+
+function buildAlertNotice(res: Response, model: vscode.LanguageModelChatInformation, reason: string, userDetail: string): string {
+  return [
+    `> ⚠️ **OpenCode Model Alert (${res.status} ${res.statusText || 'Service Error'})**`,
+    `>`,
+    `> Unable to reach **${model.name}** (\`${model.id}\`): ${reason}.`,
+    `>`,
+    `> **Upstream detail:** \`${userDetail.slice(0, 300) || 'Internal server error'}\``,
+  ].join('\n');
+}
+
+/**
+ * Handles a non-ok upstream response: repairs stale reasoning once, throws for
+ * auth failures, and otherwise streams an informative alert card and resolves
+ * cleanly — a thrown Error makes Copilot retry 5 times for 32.4 seconds, and a
+ * thrown NotFound turns one stale pin into a retry storm. Never throw for 404.
+ * Returns 'handled' when the request is done, 'stream' when the caller should
+ * consume the (possibly repaired) response.
+ */
+async function handleUpstreamError(
+  res: Response,
+  errText: string,
+  attempt: StreamAttempt,
+  input: ReasoningRepairInput,
+  ctx: UpstreamErrorContext,
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+  log: (message: string) => void
+): Promise<{ outcome: 'handled' | 'stream'; res: Response; userDetail: string }> {
+  let userDetail = extractErrorMessage(errText);
+  log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`);
+
+  const repaired = await tryRepairReasoningEcho(res, userDetail, attempt, input, ctx, log);
+  if (repaired) {
+    if (repaired.ok) {
+      return { outcome: 'stream', res: repaired, userDetail };
+    }
+    errText = await repaired.text().catch(() => '');
+    userDetail = extractErrorMessage(errText);
+    res = repaired;
+  }
+
+  if (!res.ok) {
+    const isFreeTierError =
+      userDetail.includes('FreeTierError') || userDetail.toLowerCase().includes('free tier');
+    throwForAuthError({ res, userDetail, isFreeTierError });
+
+    const reason = classifyUpstreamAlert(res.status, userDetail, isFreeTierError);
+    progress.report(new vscode.LanguageModelTextPart(buildAlertNotice(res, ctx.model, reason, userDetail)));
+    return { outcome: 'handled', res, userDetail };
+  }
+  return { outcome: 'stream', res, userDetail };
+}
+
+interface StallAttemptInput {
+  url: string;
+  requestBody: Record<string, unknown>;
+  apiKey: string;
+  sessionId: string;
+  abortSignal: AbortSignal;
+}
+
+const TRANSIENT_RETRY_POLICY = {
+  // 5xx / network errors: treated as a likely-dead upstream, so we only give
+  // it one quick courtesy retry before surfacing the alert.
+  retries: 1,
+  baseDelayMs: 300,
+  maxDelayMs: 1000,
+  // 429: a rate-limit cooldown is a "come back later" signal, not a dead
+  // upstream, so it gets its own much more patient budget — 3 back-to-back
+  // attempts, then 7 more spaced 1s apart (10 retries total), honoring
+  // Retry-After up to a 3s cap per wait so a long server-requested cooldown
+  // can't block the user for a full minute.
+  rateLimitRetries: 10,
+  rateLimitImmediateAttempts: 3,
+  rateLimitDelayMs: 1000,
+  rateLimitMaxWaitMs: 3000,
+};
+
+/**
+ * One upstream POST attempt. Returns the response with its headers, or
+ * 'cancelled' when the request died before receiving one and the caller was
+ * the one who cancelled.
+ */
+interface AttemptOutcome {
+  res: Response;
+  clientHeaders: Record<string, string>;
+}
+
+async function postUpstreamRequest(
+  input: StallAttemptInput,
+  token: vscode.CancellationToken,
+  log: (message: string) => void
+): Promise<AttemptOutcome | 'cancelled'> {
+  const clientHeaders = createOpenCodeRequestHeaders(
+    input.apiKey,
+    input.sessionId,
+    generateOpenCodeRequestId()
+  );
+  let res: Response;
+  try {
+    res = await fetchWithRetry(
+      input.url,
+      {
+        method: 'POST',
+        headers: clientHeaders,
+        body: JSON.stringify(input.requestBody),
+        signal: input.abortSignal,
+      },
+      TRANSIENT_RETRY_POLICY
+    );
+    return { res, clientHeaders };
+  } catch (err: any) {
+    if (token.isCancellationRequested || input.abortSignal.aborted) {
+      return 'cancelled';
+    }
+    log(`Request failed before receiving a response: ${err?.message || err}`);
+    throw err;
+  }
+}
+
+interface StallLoopInput {
+  url: string;
+  requestBody: Record<string, unknown>;
+  apiKey: string;
+  sessionId: string;
+  model: vscode.LanguageModelChatInformation;
+  options: vscode.ProvideLanguageModelChatResponseOptions;
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>;
+  token: vscode.CancellationToken;
+  abortSignal: AbortSignal;
+  isResponses: boolean;
+  formattedMessages: FormattedMessage[];
+  responsesInput: unknown[];
+  idleTimeoutMs: number;
+  maxStallRetries: number;
+}
+
+/**
+ * One pass through the stall-retry loop: POST, repair or surface any upstream
+ * error, then consume the stream. Returns 'done' when the request is finished
+ * and 'retry' when the stream asked for another attempt.
+ */
+async function runStallAttempt(
+  input: StallLoopInput,
+  stallAttempt: number,
+  log: (message: string) => void
+): Promise<'done' | 'retry'> {
+  const posted = await postUpstreamRequest(
+    {
+      url: input.url,
+      requestBody: input.requestBody,
+      apiKey: input.apiKey,
+      sessionId: input.sessionId,
+      abortSignal: input.abortSignal,
+    },
+    input.token,
+    log
+  );
+  if (posted === 'cancelled') {
+    return 'done';
+  }
+
+  let res = posted.res;
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    const handled = await handleUpstreamError(
+      res,
+      errText,
+      { url: input.url, clientHeaders: posted.clientHeaders, abortSignal: input.abortSignal },
+      {
+        responsesInput: input.responsesInput,
+        formattedMessages: input.formattedMessages,
+        requestBody: input.requestBody,
+      },
+      { model: input.model, isResponses: input.isResponses },
+      input.progress,
+      log
+    );
+    if (handled.outcome === 'handled') {
+      return 'done';
+    }
+    res = handled.res;
+  }
+
+  const streamResult = await consumeProviderStream({
+    response: res,
+    modelId: input.model.id,
+    tools: input.options.tools,
+    progress: input.progress,
+    token: input.token,
+    abortSignal: input.abortSignal,
+    idleTimeoutMs: input.idleTimeoutMs,
+    stallAttempt,
+    maxStallRetries: input.maxStallRetries,
+    log,
+  });
+  return streamResult;
+}
+
+function effortLabel(effort: string): string {
+  switch (effort) {
+    case 'minimal': return 'Minimal';
+    case 'low': return 'Low';
+    case 'medium': return 'Medium';
+    case 'high': return 'High';
+    case 'xhigh': return 'Extra High';
+    case 'max': return 'Max';
+    default: return effort.charAt(0).toUpperCase() + effort.slice(1);
+  }
+}
+
+function effortDescription(effort: string): string {
+  switch (effort) {
+    case 'minimal': return 'Minimal reasoning';
+    case 'low': return 'Faster responses with light reasoning';
+    case 'medium': return 'Balanced reasoning and speed';
+    case 'high': return 'Deep reasoning';
+    case 'xhigh': return 'Extra deep reasoning';
+    case 'max': return 'Maximum reasoning depth';
+    default: return `${effort} reasoning`;
+  }
+}
+
 function extractErrorMessage(rawJson: string): string {
   try {
     const data: unknown = JSON.parse(rawJson);
@@ -44,6 +420,37 @@ function extractErrorMessage(rawJson: string): string {
     }
   } catch {}
   return rawJson;
+}
+
+export function isSchemaValidationError(status: number, detail: string): boolean {
+  // A schema-validation 400 means we sent something the gateway refuses, not
+  // that the gateway is unhealthy. Reporting it as a server error sends the
+  // user looking at the wrong thing — and a recurring one here means the
+  // sanitizer did not cover every schema position.
+  //
+  // Deliberately narrow: require the gateway's own enum-limit wording or an
+  // explicit schema diagnostic (a schema noun near a violation verb), not a
+  // bare keyword. A context-length 400 like "invalid_request_error: context
+  // length exceeds the model limit" must stay a server error — telling the
+  // user to drop a tool would be wrong.
+  if (status !== 400) return false;
+  if (/single enum property/i.test(detail)) return true;
+  const hasSchemaNoun = /\bschema\b|\benum\b/i.test(detail);
+  const hasViolationVerb = /exceeds|too many|invalid|failed|rejected|not allowed/i.test(detail);
+  return hasSchemaNoun && hasViolationVerb;
+}
+
+export function classifyUpstreamAlert(status: number, detail: string, isFreeTierError: boolean): string {
+  if (status === 404) {
+    return 'stale model ID (renamed or removed by a later sync; re-run sync and re-pick the model)';
+  }
+  if (isFreeTierError) {
+    return 'upstream free-tier policy error';
+  }
+  if (isSchemaValidationError(status, detail)) {
+    return 'tool schema rejected by upstream (an attached tool declares a constraint the gateway cannot accept; retry without that tool, or re-run sync)';
+  }
+  return 'upstream server error';
 }
 
 export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
@@ -94,87 +501,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     _options: vscode.PrepareLanguageModelChatModelOptions,
     _token: vscode.CancellationToken
   ): Promise<vscode.LanguageModelChatInformation[]> {
-    return this._models.map((m) => {
-      const supportsReasoning = m.thinking !== false;
-      const properties: Record<string, any> = {};
-
-      // Dynamic reasoning effort options based on actual model metadata
-      const rawEfforts = m.supportsReasoningEffort;
-      const validEfforts = supportsReasoning && Array.isArray(rawEfforts) && rawEfforts.length > 0
-        ? rawEfforts.filter((e) => e !== 'none')
-        : undefined;
-      const defaultReasoningEffort = validEfforts?.includes('medium') ? 'medium' : validEfforts?.[0];
-
-      if (validEfforts && validEfforts.length > 0) {
-        const enumItemLabels = validEfforts.map((e) => {
-          if (e === 'minimal') return 'Minimal';
-          if (e === 'low') return 'Low';
-          if (e === 'medium') return 'Medium';
-          if (e === 'high') return 'High';
-          if (e === 'xhigh') return 'Extra High';
-          if (e === 'max') return 'Max';
-          return e.charAt(0).toUpperCase() + e.slice(1);
-        });
-
-        const enumDescriptions = validEfforts.map((e) => {
-          if (e === 'minimal') return 'Minimal reasoning';
-          if (e === 'low') return 'Faster responses with light reasoning';
-          if (e === 'medium') return 'Balanced reasoning and speed';
-          if (e === 'high') return 'Deep reasoning';
-          if (e === 'xhigh') return 'Extra deep reasoning';
-          if (e === 'max') return 'Maximum reasoning depth';
-          return `${e} reasoning`;
-        });
-
-        properties.reasoningEffort = {
-          type: 'string',
-          title: 'Thinking Effort',
-          enum: validEfforts,
-          enumItemLabels,
-          enumDescriptions,
-          default: defaultReasoningEffort,
-          group: 'navigation',
-        };
-      }
-
-      if (m.contextWindow > 256000) {
-        properties.contextTier = {
-          type: 'string',
-          title: 'Context Size',
-          enum: ['default', 'long_context'],
-          enumItemLabels: ['Standard (128K)', 'Extended (1M)'],
-          enumDescriptions: [
-            'Standard context window for faster generation and lower token usage',
-            'Full extended context window for large codebase analysis',
-          ],
-          default: 'default',
-          group: 'tokens',
-        };
-      }
-
-      const configurationSchema = Object.keys(properties).length > 0 ? { properties } : undefined;
-
-      const tokenLimits = resolveModelTokenLimits(m.contextWindow, m.maxOutputTokens);
-      return {
-        id: m.id,
-        name: m.name,
-        family: m.family,
-        version: '1.0.0',
-        maxInputTokens: tokenLimits.maxInputTokens,
-        maxOutputTokens: tokenLimits.maxOutputTokens,
-        capabilities: {
-          imageInput: m.vision,
-          vision: m.vision,
-          toolCalling: true,
-          thinking: supportsReasoning,
-        },
-        supportsReasoningEffort: validEfforts,
-        supportedReasoningEfforts: validEfforts,
-        defaultReasoningEffort,
-        configurationSchema,
-        isBYOK: true,
-      } as any;
-    });
+    return this._models.map((m) => describeModel(m) as any);
   }
 
   async provideLanguageModelChatResponse(
@@ -202,7 +529,9 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     const isResponses = isResponsesModel(model.id, meta?.apiType);
     const isFreeOrZen = isFreeOrZenModel(model.id, meta);
 
-    const toolsPayload = formatProviderTools(options.tools, isResponses, isFreeOrZen);
+    const toolsPayload = formatProviderTools(options.tools, isResponses, isFreeOrZen, (message) => {
+      this.log(message);
+    });
 
     const responsesInput: any[] = isResponses ? buildResponsesInput(formattedMessages) : [];
 
@@ -264,148 +593,29 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
 
     const maxStallRetries = 1;
     const idleTimeoutMs = getStreamIdleTimeoutMs();
+    const logger = (message: string): void => {
+      this.log(message);
+    };
+    const loopInput: StallLoopInput = {
+      url,
+      requestBody,
+      apiKey,
+      sessionId,
+      model,
+      options,
+      progress,
+      token,
+      abortSignal: abortController.signal,
+      isResponses,
+      formattedMessages,
+      responsesInput,
+      idleTimeoutMs,
+      maxStallRetries,
+    };
 
     for (let stallAttempt = 0; stallAttempt <= maxStallRetries; stallAttempt++) {
-      const clientHeaders = createOpenCodeRequestHeaders(
-        apiKey,
-        sessionId,
-        generateOpenCodeRequestId()
-      );
-
-      let res: Response;
-      try {
-        res = await fetchWithRetry(
-          url,
-          {
-            method: 'POST',
-            headers: clientHeaders,
-            body: JSON.stringify(requestBody),
-            signal: abortController.signal,
-          },
-          {
-            // 5xx / network errors: treated as a likely-dead upstream, so we
-            // only give it one quick courtesy retry before surfacing the alert.
-            retries: 1,
-            baseDelayMs: 300,
-            maxDelayMs: 1000,
-            // 429: a rate-limit cooldown is a "come back later" signal, not a
-            // dead upstream, so it gets its own much more patient budget — 3
-            // back-to-back attempts, then 7 more spaced 1s apart (10 retries
-            // total), honoring Retry-After up to a 3s cap per wait so a long
-            // server-requested cooldown can't block the user for a full minute.
-            rateLimitRetries: 10,
-            rateLimitImmediateAttempts: 3,
-            rateLimitDelayMs: 1000,
-            rateLimitMaxWaitMs: 3000,
-          }
-        );
-      } catch (err: any) {
-        if (token.isCancellationRequested || abortController.signal.aborted) {
-          return;
-        }
-        this.log(`Request failed before receiving a response: ${err?.message || err}`);
-        throw err;
-      }
-
-      if (!res.ok) {
-        let errText = await res.text().catch(() => '');
-        let userDetail = extractErrorMessage(errText);
-
-        this.log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`);
-
-        // 0. Responses-API reasoning echo repair: when an idle gap or session rebind causes
-        // the upstream to reject replayed reasoning with "reasoning `encrypted_content` was not issued to this caller",
-        // strip stale reasoning items from input and retry once transparently.
-        if (res.status === 400 && isResponses && userDetail.includes('encrypted_content')) {
-          this.log(`Detected reasoning echo error for model=${model.id}, retrying without stale reasoning...`);
-          const resanitized = sanitizeResponsesInput(responsesInput).filter((item) => !isStaleReasoningInput(item));
-          const retryBody: Record<string, unknown> = {
-            ...requestBody,
-            input: resanitized.length > 0 ? resanitized : formattedMessages.filter((m) => !isStaleReasoningInput(m)),
-          };
-          try {
-            const retryRes = await fetchWithRetry(
-              url,
-              {
-                method: 'POST',
-                headers: {
-                  ...clientHeaders,
-                  'x-opencode-request': generateOpenCodeRequestId(),
-                },
-                body: JSON.stringify(retryBody),
-                signal: abortController.signal,
-              },
-              { retries: 0 }
-            );
-            if (retryRes.ok) {
-              res = retryRes;
-            } else {
-              errText = await retryRes.text().catch(() => '');
-              userDetail = extractErrorMessage(errText);
-            }
-          } catch {}
-        }
-
-        if (!res.ok) {
-          const isFreeTierError =
-            userDetail.includes('FreeTierError') ||
-            userDetail.toLowerCase().includes('free tier');
-
-          // 1. Auth errors: throw NoPermissions to let VS Code trigger re-auth prompts if configured.
-          // IMPORTANT: Do NOT throw NoPermissions for upstream FreeTierError (e.g. policy/model restriction);
-          // doing so causes Copilot to enter an unhelpful 5-retry 16-second loop. Let FreeTierError fall
-          // through to the alert notice card for immediate, helpful fail-fast resolution.
-          if (!isFreeTierError && (res.status === 401 || res.status === 403)) {
-            const LMError = (vscode as any).LanguageModelError;
-            const cleanDetail = userDetail.replace(/^OpenCode authentication failed:\s*/i, '').trim();
-            const errMessage = cleanDetail
-              ? `OpenCode authentication failed: ${cleanDetail}`
-              : 'OpenCode authentication failed: Invalid or expired API key.';
-            if (LMError?.NoPermissions) {
-              throw LMError.NoPermissions(errMessage);
-            }
-            throw new Error(errMessage);
-          }
-
-          // 2. Stale model ID (404: requested ID was renamed or removed by a later sync,
-          // or resurrected from a stale models_cache.json) and 3. upstream server errors
-          // (500, 502 Bad Gateway, 503, 504), rate limits, or FreeTierError policy alerts:
-          // stream an informative Markdown alert card and resolve cleanly (return void).
-          // A thrown Error makes Copilot retry 5 times for 32.4 seconds. A thrown
-          // NotFound here turns one stale pin into a retry storm. Never throw for 404.
-          const reason = res.status === 404
-            ? 'stale model ID (renamed or removed by a later sync; re-run sync and re-pick the model)'
-            : isFreeTierError
-              ? 'upstream free-tier policy error'
-              : 'upstream server error';
-          const alertNotice = [
-            `> ⚠️ **OpenCode Model Alert (${res.status} ${res.statusText || 'Service Error'})**`,
-            `>`,
-            `> Unable to reach **${model.name}** (\`${model.id}\`): ${reason}.`,
-            `>`,
-            `> **Upstream detail:** \`${userDetail.slice(0, 300) || 'Internal server error'}\``,
-          ].join('\n');
-
-          progress.report(new vscode.LanguageModelTextPart(alertNotice));
-          return; // Clean resolution bypasses the Copilot retry loop.
-        }
-      }
-
-      const streamResult = await consumeProviderStream({
-        response: res,
-        modelId: model.id,
-        tools: options.tools,
-        progress,
-        token,
-        abortSignal: abortController.signal,
-        idleTimeoutMs,
-        stallAttempt,
-        maxStallRetries,
-        log: (message) => {
-          this.log(message);
-        },
-      });
-      if (streamResult === 'retry') continue;
+      const outcome = await runStallAttempt(loopInput, stallAttempt, logger);
+      if (outcome === 'retry') continue;
       return;
     }
   }
