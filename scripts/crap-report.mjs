@@ -18,6 +18,7 @@ import { ESLint } from 'eslint';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const COVERAGE_FILE = path.join(ROOT, 'coverage', 'coverage-final.json');
@@ -29,6 +30,8 @@ const thresholdArg = args.find((a) => a.startsWith('--threshold='));
 const THRESHOLD = thresholdArg ? Number(thresholdArg.split('=')[1]) : 10;
 const badgeArg = args.find((a) => a.startsWith('--badge='));
 const BADGE_PATH = badgeArg ? path.resolve(ROOT, badgeArg.split('=')[1]) : undefined;
+const badgePngArg = args.find((a) => a.startsWith('--badge-png='));
+const BADGE_PNG_PATH = badgePngArg ? path.resolve(ROOT, badgePngArg.split('=')[1]) : undefined;
 
 // Coverage percentages for functions sitting right at 100% are not perfectly
 // reproducible across Node/V8 versions: different major versions instrument
@@ -167,14 +170,36 @@ function renderBadgeSvg(worst, functionCount) {
 }
 
 function writeBadge(functions) {
-  if (!BADGE_PATH) return;
+  if (!BADGE_PATH && !BADGE_PNG_PATH) return;
   const worst = functions.length > 0
     ? Math.max(...functions.map((f) => f.crap))
     : undefined;
   const display = worst === undefined ? undefined : Math.round(worst * 100) / 100;
-  fs.mkdirSync(path.dirname(BADGE_PATH), { recursive: true });
-  fs.writeFileSync(BADGE_PATH, renderBadgeSvg(display, functions.length));
-  console.log(`Wrote CRAP badge (worst ${display ?? 'unknown'} over ${functions.length} functions) to ${path.relative(ROOT, BADGE_PATH)}`);
+  if (BADGE_PATH) {
+    fs.mkdirSync(path.dirname(BADGE_PATH), { recursive: true });
+    fs.writeFileSync(BADGE_PATH, renderBadgeSvg(display, functions.length));
+    console.log(`Wrote CRAP badge (worst ${display ?? 'unknown'} over ${functions.length} functions) to ${path.relative(ROOT, BADGE_PATH)}`);
+  }
+  if (BADGE_PNG_PATH) {
+    writeBadgePng(display, functions.length);
+  }
+}
+
+// PNG twin of the SVG badge: vsce refuses SVGs in README.md, so the shipped
+// README references the PNG while the SVG stays as the vector source.
+function writeBadgePng(display, functionCount) {
+  fs.mkdirSync(path.dirname(BADGE_PNG_PATH), { recursive: true });
+  const svgPath = BADGE_PATH ?? path.join(path.dirname(BADGE_PNG_PATH), 'crap-badge.svg');
+  if (!BADGE_PATH) {
+    fs.writeFileSync(svgPath, renderBadgeSvg(display, functionCount));
+  }
+  try {
+    execFileSync('rsvg-convert', ['-w', '256', '-h', '40', '-o', BADGE_PNG_PATH, svgPath], { stdio: 'pipe' });
+    console.log(`Wrote CRAP badge PNG (worst ${display ?? 'unknown'}) to ${path.relative(ROOT, BADGE_PNG_PATH)}`);
+  } catch (err) {
+    console.error(`Cannot convert badge SVG to PNG (is rsvg-convert installed?): ${err.message}`);
+    process.exitCode = 1;
+  }
 }
 
 async function main() {

@@ -5,7 +5,7 @@
 # OpenCode Models for Copilot (`opencode-copilot-sync`)
 
 [![CI](https://github.com/mfenderov/opencode-copilot-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/mfenderov/opencode-copilot-sync/actions/workflows/ci.yml)
-[![CRAP](docs/crap-badge.svg)](scripts/crap-report.mjs)
+[![CRAP](docs/crap-badge.png)](scripts/crap-report.mjs)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![GitHub Release](https://img.shields.io/github/v/release/mfenderov/opencode-copilot-sync)](https://github.com/mfenderov/opencode-copilot-sync/releases)
 
