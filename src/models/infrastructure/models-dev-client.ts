@@ -60,43 +60,55 @@ export interface ModelDevMetadata {
   [key: string]: unknown;
 }
 
+type ProviderCatalog = Record<string, { models?: Record<string, ModelDevMetadata> } | undefined>;
+
+function collectFallbackModels(data: ProviderCatalog, result: Record<string, ModelDevMetadata>): void {
+  // Gather all models across all providers as fallback
+  for (const providerData of Object.values(data)) {
+    if (providerData?.models) {
+      for (const [mId, mData] of Object.entries(providerData.models)) {
+        result[mId] ??= mData;
+      }
+    }
+  }
+}
+
+function applyAuthoritativeModels(data: ProviderCatalog, result: Record<string, ModelDevMetadata>): void {
+  // OpenCode providers are authoritative. OpenCode Go is applied last because
+  // Go-only model IDs can be absent from the general OpenCode provider entry.
+  for (const provider of ['opencode', 'opencode-go']) {
+    const models = data[provider]?.models;
+    if (models) {
+      for (const [mId, mData] of Object.entries(models)) {
+        result[mId] = mData;
+      }
+    }
+  }
+}
+
+async function fetchCatalogFrom(url: string): Promise<Record<string, ModelDevMetadata> | undefined> {
+  try {
+    const res = await fetchWithRetry(
+      url,
+      { signal: AbortSignal.timeout(5000) },
+      { retries: 1, baseDelayMs: 200 }
+    );
+    if (!res.ok) return undefined;
+    const data = (await res.json()) as ProviderCatalog;
+    const result: Record<string, ModelDevMetadata> = {};
+    collectFallbackModels(data, result);
+    applyAuthoritativeModels(data, result);
+    return result;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function fetchModelsDevMetadata(): Promise<Record<string, ModelDevMetadata>> {
   const urls = ['https://models.opencode.ai/api.json', 'https://models.dev/api.json'];
   for (const url of urls) {
-    try {
-      const res = await fetchWithRetry(
-        url,
-        { signal: AbortSignal.timeout(5000) },
-        { retries: 1, baseDelayMs: 200 }
-      );
-      if (!res.ok) continue;
-      const data = (await res.json()) as Record<string, { models?: Record<string, ModelDevMetadata> } | undefined>;
-      const result: Record<string, ModelDevMetadata> = {};
-
-      // 1. Gather all models across all providers as fallback
-      for (const providerData of Object.values(data)) {
-        if (providerData?.models) {
-          for (const [mId, mData] of Object.entries(providerData.models)) {
-            result[mId] ??= mData;
-          }
-        }
-      }
-
-      // 2. OpenCode providers are authoritative. OpenCode Go is applied last because
-      // Go-only model IDs can be absent from the general OpenCode provider entry.
-      if (data.opencode?.models) {
-        for (const [mId, mData] of Object.entries(data.opencode.models)) {
-          result[mId] = mData;
-        }
-      }
-      if (data['opencode-go']?.models) {
-        for (const [mId, mData] of Object.entries(data['opencode-go'].models)) {
-          result[mId] = mData;
-        }
-      }
-
-      return result;
-    } catch {}
+    const catalog = await fetchCatalogFrom(url);
+    if (catalog) return catalog;
   }
   return {};
 }
@@ -107,25 +119,32 @@ export async function fetchModelsDevMetadata(): Promise<Record<string, ModelDevM
  * (where free models have input: 0 and output: 0), falling back to name
  * heuristics when metadata is not provided or cost is undefined.
  */
-export function isFreeTierModel(modelId: string, devMeta?: ModelDevMetadata): boolean {
-  if (devMeta?.cost) {
-    if (devMeta.cost.input === 0 && devMeta.cost.output === 0) {
-      return true;
-    }
-    if (
-      (typeof devMeta.cost.input === 'number' && devMeta.cost.input > 0) ||
-      (typeof devMeta.cost.output === 'number' && devMeta.cost.output > 0)
-    ) {
-      return false;
-    }
-  }
+function hasPositiveCost(cost: { input?: unknown; output?: unknown }): boolean {
+  return (
+    (typeof cost.input === 'number' && cost.input > 0) ||
+    (typeof cost.output === 'number' && cost.output > 0)
+  );
+}
 
+function isFreeTierName(modelId: string): boolean {
   const lower = modelId.toLowerCase();
   return (
     lower.includes('free') ||
     lower.includes('community') ||
     lower === 'big-pickle'
   );
+}
+
+export function isFreeTierModel(modelId: string, devMeta?: ModelDevMetadata): boolean {
+  if (devMeta?.cost) {
+    if (devMeta.cost.input === 0 && devMeta.cost.output === 0) {
+      return true;
+    }
+    if (hasPositiveCost(devMeta.cost)) {
+      return false;
+    }
+  }
+  return isFreeTierName(modelId);
 }
 
 export function filterFreeModels(
@@ -155,12 +174,10 @@ export function filterAvailableGoModels(modelIds: string[]): string[] {
 
 export const filterAvailableModels = filterAvailableGoModels;
 
-export async function checkZenBalance(apiKey: string): Promise<boolean> {
-  if (isOfflineMode()) return false;
-
+async function postBalanceProbe(apiKey: string): Promise<Response | undefined> {
   const url = 'https://opencode.ai/zen/v1/chat/completions';
   try {
-    const res = await fetch(
+    return await fetch(
       url,
       await withProxy(url, {
         method: 'POST',
@@ -176,14 +193,22 @@ export async function checkZenBalance(apiKey: string): Promise<boolean> {
         signal: AbortSignal.timeout(3000),
       })
     );
-    if (res.status === 401) {
-      const text = await res.text();
-      if (text.includes('Insufficient balance') || text.includes('CreditsError')) {
-        return false;
-      }
-    }
-    return res.status === 200 || res.status === 400;
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+async function isInsufficientBalance(res: Response): Promise<boolean> {
+  const text = await res.text();
+  return text.includes('Insufficient balance') || text.includes('CreditsError');
+}
+
+export async function checkZenBalance(apiKey: string): Promise<boolean> {
+  if (isOfflineMode()) return false;
+  const res = await postBalanceProbe(apiKey);
+  if (!res) return false;
+  if (res.status === 401) {
+    return !(await isInsufficientBalance(res));
+  }
+  return res.status === 200 || res.status === 400;
 }

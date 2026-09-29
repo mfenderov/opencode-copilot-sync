@@ -1,7 +1,10 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as vscode from 'vscode';
 import { formatStatusBarText, formatUsageTooltip } from '../out/usage/domain/usage-snapshot.js';
 import { fetchOpenCodeUsage } from '../out/usage/infrastructure/quota-client.js';
+import { updateUsageMeter } from '../out/usage/application/refresh-usage.js';
+import { OpenCodeUsageTreeProvider } from '../out/usage/infrastructure/usage-tree-adapter.js';
 
 const originalOfflineMode = process.env.OPENCODE_OFFLINE;
 delete process.env.OPENCODE_OFFLINE;
@@ -100,4 +103,44 @@ test('fetchOpenCodeUsage does not call the API while OPENCODE_OFFLINE is enabled
     if (previousOffline === undefined) delete process.env.OPENCODE_OFFLINE;
     else process.env.OPENCODE_OFFLINE = previousOffline;
   }
+});
+
+test('updateUsageMeter renders usage without an API call when offline', async () => {
+  const previousOffline = process.env.OPENCODE_OFFLINE;
+  process.env.OPENCODE_OFFLINE = '1';
+  try {
+    const statusBarItem = { text: '', tooltip: '' };
+    const seen = [];
+    const tree = {
+      setUsage: (usage, error) => {
+        seen.push({ usage, error });
+      },
+    };
+    const secrets = { get: async () => undefined, store: async () => {}, delete: async () => {} };
+
+    await updateUsageMeter(statusBarItem, tree, secrets, 'sk-test');
+
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].error, 'Unable to fetch usage (network)');
+  } finally {
+    if (previousOffline === undefined) delete process.env.OPENCODE_OFFLINE;
+    else process.env.OPENCODE_OFFLINE = previousOffline;
+  }
+});
+
+test('updateUsageMeter reports missing key without calling the API', async () => {
+  const statusBarItem = { text: '', tooltip: '' };
+  const seen = [];
+  const tree = {
+    setUsage: (usage, error) => {
+      seen.push({ usage, error });
+    },
+  };
+  const secrets = { get: async () => undefined, store: async () => {}, delete: async () => {} };
+
+  await updateUsageMeter(statusBarItem, tree, secrets, undefined);
+
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].usage, null);
+  assert.equal(seen[0].error, 'No API key configured');
 });

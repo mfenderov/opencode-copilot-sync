@@ -27718,52 +27718,67 @@ async function fetchOpenCodeModels(apiKey, catalog = "go") {
   }
   return json.data.map((m) => m.id).filter(Boolean);
 }
+function collectFallbackModels(data, result) {
+  for (const providerData of Object.values(data)) {
+    if (providerData?.models) {
+      for (const [mId, mData] of Object.entries(providerData.models)) {
+        result[mId] ??= mData;
+      }
+    }
+  }
+}
+function applyAuthoritativeModels(data, result) {
+  for (const provider of ["opencode", "opencode-go"]) {
+    const models = data[provider]?.models;
+    if (models) {
+      for (const [mId, mData] of Object.entries(models)) {
+        result[mId] = mData;
+      }
+    }
+  }
+}
+async function fetchCatalogFrom(url) {
+  try {
+    const res = await fetchWithRetry(
+      url,
+      { signal: AbortSignal.timeout(5e3) },
+      { retries: 1, baseDelayMs: 200 }
+    );
+    if (!res.ok) return void 0;
+    const data = await res.json();
+    const result = {};
+    collectFallbackModels(data, result);
+    applyAuthoritativeModels(data, result);
+    return result;
+  } catch {
+    return void 0;
+  }
+}
 async function fetchModelsDevMetadata() {
   const urls = ["https://models.opencode.ai/api.json", "https://models.dev/api.json"];
   for (const url of urls) {
-    try {
-      const res = await fetchWithRetry(
-        url,
-        { signal: AbortSignal.timeout(5e3) },
-        { retries: 1, baseDelayMs: 200 }
-      );
-      if (!res.ok) continue;
-      const data = await res.json();
-      const result = {};
-      for (const providerData of Object.values(data)) {
-        if (providerData?.models) {
-          for (const [mId, mData] of Object.entries(providerData.models)) {
-            result[mId] ??= mData;
-          }
-        }
-      }
-      if (data.opencode?.models) {
-        for (const [mId, mData] of Object.entries(data.opencode.models)) {
-          result[mId] = mData;
-        }
-      }
-      if (data["opencode-go"]?.models) {
-        for (const [mId, mData] of Object.entries(data["opencode-go"].models)) {
-          result[mId] = mData;
-        }
-      }
-      return result;
-    } catch {
-    }
+    const catalog = await fetchCatalogFrom(url);
+    if (catalog) return catalog;
   }
   return {};
+}
+function hasPositiveCost(cost) {
+  return typeof cost.input === "number" && cost.input > 0 || typeof cost.output === "number" && cost.output > 0;
+}
+function isFreeTierName(modelId) {
+  const lower = modelId.toLowerCase();
+  return lower.includes("free") || lower.includes("community") || lower === "big-pickle";
 }
 function isFreeTierModel(modelId, devMeta) {
   if (devMeta?.cost) {
     if (devMeta.cost.input === 0 && devMeta.cost.output === 0) {
       return true;
     }
-    if (typeof devMeta.cost.input === "number" && devMeta.cost.input > 0 || typeof devMeta.cost.output === "number" && devMeta.cost.output > 0) {
+    if (hasPositiveCost(devMeta.cost)) {
       return false;
     }
   }
-  const lower = modelId.toLowerCase();
-  return lower.includes("free") || lower.includes("community") || lower === "big-pickle";
+  return isFreeTierName(modelId);
 }
 
 // src/models/domain/token-budget.ts
@@ -27783,158 +27798,140 @@ function resolveModelTokenLimits(contextWindow, maxOutputTokens) {
 }
 
 // src/models/infrastructure/model-enricher.ts
+var FAMILY_CAPABILITIES = [
+  [/deepseek/i, { contextWindow: 1048576, maxOutputTokens: 131072, vision: (id) => id.toLowerCase().includes("vision"), thinking: true }],
+  [/glm/i, { contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true }],
+  [/kimi/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true }],
+  [/qwen/i, { contextWindow: 1e6, maxOutputTokens: 131072, vision: true, thinking: false }],
+  [/minimax/i, { contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: false }],
+  [/claude/i, { contextWindow: 1e6, maxOutputTokens: 128e3, vision: true, thinking: (id) => !id.toLowerCase().includes("haiku") }],
+  [/gpt/i, { contextWindow: 1e6, maxOutputTokens: 128e3, vision: true, thinking: true }],
+  [/gemini/i, { contextWindow: 1e6, maxOutputTokens: 65536, vision: true, thinking: (id) => id.toLowerCase().includes("thinking") }],
+  [/grok/i, { contextWindow: 1e6, maxOutputTokens: 65536, vision: true, thinking: true }],
+  [/mimo/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: (id) => id.toLowerCase().includes("omni"), thinking: true }],
+  [/nemotron/i, { contextWindow: 1e6, maxOutputTokens: 128e3, vision: false, thinking: true }],
+  [/muse/i, { contextWindow: 1e6, maxOutputTokens: 65536, vision: false, thinking: true }],
+  [/longcat/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false }],
+  [/(omen|hy4)/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true }]
+];
+var SMALL_GPT_CONTEXT = 128e3;
+var SMALL_GPT_OUTPUT = 16384;
+function resolveCapability(value, modelId) {
+  return typeof value === "function" ? value(modelId) : value;
+}
+function fallbackCapabilities(modelId) {
+  const lower = modelId.toLowerCase();
+  if (/gpt/i.test(modelId) && (lower.includes("mini") || lower.includes("nano"))) {
+    return { contextWindow: SMALL_GPT_CONTEXT, maxOutputTokens: SMALL_GPT_OUTPUT, vision: true, thinking: true };
+  }
+  if (/claude/i.test(modelId) && lower.includes("haiku")) {
+    return { contextWindow: 2e5, maxOutputTokens: 64e3, vision: true, thinking: false };
+  }
+  for (const [pattern, caps] of FAMILY_CAPABILITIES) {
+    if (pattern.test(modelId)) {
+      return {
+        contextWindow: caps.contextWindow,
+        maxOutputTokens: caps.maxOutputTokens,
+        vision: resolveCapability(caps.vision, modelId),
+        thinking: resolveCapability(caps.thinking, modelId)
+      };
+    }
+  }
+  return { contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true };
+}
+function resolveTransport(modelId, devMeta, isGo) {
+  const lower = modelId.toLowerCase();
+  const goBase = "https://opencode.ai/zen/go/v1";
+  const zenBase = "https://opencode.ai/zen/v1";
+  const isResponses = devMeta?.provider?.npm === "@ai-sdk/openai" || lower.includes("muse") || lower.includes("gpt-") || lower.includes("grok-");
+  const isMessages = devMeta?.provider?.npm === "@ai-sdk/anthropic" || lower.includes("claude");
+  if (isMessages) {
+    return { apiType: "messages", modelUrl: isGo ? goBase : zenBase };
+  }
+  if (isResponses) {
+    return { apiType: "responses", modelUrl: isGo ? goBase : zenBase };
+  }
+  return {
+    apiType: "chat-completions",
+    modelUrl: isGo ? `${goBase}/chat/completions` : `${zenBase}/chat/completions`
+  };
+}
+function resolveReasoningEfforts(thinking, devMeta, isResponses, modelId) {
+  if (!thinking) return void 0;
+  const devEffortOpt = devMeta?.reasoning_options?.find((o) => o.type === "effort");
+  if (devEffortOpt && Array.isArray(devEffortOpt.values)) {
+    const filtered = devEffortOpt.values.filter((v) => v !== "none");
+    if (filtered.length > 0) {
+      return filtered;
+    }
+    return void 0;
+  }
+  if (devMeta) return void 0;
+  const lower = modelId.toLowerCase();
+  if (isResponses) {
+    return ["minimal", "low", "medium", "high", "xhigh"];
+  }
+  if (lower.includes("deepseek") || lower.includes("kimi-k3") || lower.includes("glm")) {
+    return ["low", "medium", "high", "max"];
+  }
+  return void 0;
+}
+var TITLE_CASE_EXCEPTIONS = {
+  glm: "GLM",
+  gpt: "GPT",
+  mimo: "MiMo",
+  qwen: "Qwen",
+  kimi: "Kimi",
+  minimax: "MiniMax",
+  deepseek: "DeepSeek",
+  gemini: "Gemini",
+  claude: "Claude",
+  grok: "Grok",
+  nemotron: "Nemotron",
+  muse: "Muse",
+  spark: "Spark",
+  contributor: "Contributor",
+  free: "Free"
+};
+function titleCasePart(part) {
+  const known = TITLE_CASE_EXCEPTIONS[part.toLowerCase()];
+  if (known) return known;
+  if (/^v\d+/i.test(part)) return part.toUpperCase();
+  return part.charAt(0).toUpperCase() + part.slice(1);
+}
 function formatModelName(id, suffix = "(OpenCode)") {
   const normalized = id.replace(/-(\d+)-(\d+)(?=-|$)/g, "-$1.$2");
-  const parts = normalized.split(/[-_]/);
-  const title = parts.map((p) => {
-    const lower = p.toLowerCase();
-    if (lower === "glm") return "GLM";
-    if (lower === "gpt") return "GPT";
-    if (lower === "mimo") return "MiMo";
-    if (lower === "qwen") return "Qwen";
-    if (lower === "kimi") return "Kimi";
-    if (lower === "minimax") return "MiniMax";
-    if (lower === "deepseek") return "DeepSeek";
-    if (lower === "gemini") return "Gemini";
-    if (lower === "claude") return "Claude";
-    if (lower === "grok") return "Grok";
-    if (lower === "nemotron") return "Nemotron";
-    if (lower === "muse") return "Muse";
-    if (lower === "spark") return "Spark";
-    if (lower === "contributor") return "Contributor";
-    if (lower === "free") return "Free";
-    if (/^v\d+/i.test(p)) return p.toUpperCase();
-    return p.charAt(0).toUpperCase() + p.slice(1);
-  }).join(" ");
+  const title = normalized.split(/[-_]/).map(titleCasePart).join(" ");
   return `${title} ${suffix}`;
+}
+function devCapability(devValue, fallbackValue, defaultValue) {
+  return devValue ?? fallbackValue ?? defaultValue;
+}
+function resolveCapabilities(devMeta, modelId) {
+  const fallback = !devMeta ? fallbackCapabilities(modelId) : void 0;
+  return {
+    contextWindow: devCapability(devMeta?.limit?.context, fallback?.contextWindow, 1048576),
+    maxOutputTokens: devCapability(devMeta?.limit?.output, fallback?.maxOutputTokens, 65536),
+    vision: devCapability(devMeta?.modalities?.input?.includes("image"), fallback?.vision, false),
+    thinking: devCapability(devMeta?.reasoning, fallback?.thinking, true)
+  };
 }
 function enrichModel(modelId, options = {}) {
   const isGo = options.isGo ?? true;
   const devMeta = options.modelsDevData;
   const isFree = options.isFree ?? (isGo ? false : isFreeTierModel(modelId, devMeta));
-  const lower = modelId.toLowerCase();
-  const isResponses = devMeta?.provider?.npm === "@ai-sdk/openai" || lower.includes("muse") || lower.includes("gpt-") || lower.includes("grok-");
-  const isMessages = devMeta?.provider?.npm === "@ai-sdk/anthropic" || lower.includes("claude");
-  let apiType = "chat-completions";
-  let modelUrl;
-  if (isMessages) {
-    apiType = "messages";
-    modelUrl = isGo ? "https://opencode.ai/zen/go/v1" : "https://opencode.ai/zen/v1";
-  } else if (isResponses) {
-    apiType = "responses";
-    modelUrl = isGo ? "https://opencode.ai/zen/go/v1" : "https://opencode.ai/zen/v1";
-  } else {
-    apiType = "chat-completions";
-    modelUrl = isGo ? "https://opencode.ai/zen/go/v1/chat/completions" : "https://opencode.ai/zen/v1/chat/completions";
-  }
+  const { apiType, modelUrl } = resolveTransport(modelId, devMeta, isGo);
   const defaultSuffix = isGo ? "(OpenCode Go)" : isFree ? "(OpenCode Free)" : "(OpenCode Zen)";
   const suffix = options.suffix ?? defaultSuffix;
   const name = formatModelName(modelId, suffix);
-  let contextWindow = devMeta?.limit?.context ?? 1048576;
-  let maxOutputTokens = devMeta?.limit?.output ?? 65536;
-  let vision = devMeta?.modalities?.input?.includes("image") ?? false;
-  let thinking = devMeta?.reasoning ?? true;
-  if (!devMeta) {
-    if (lower.includes("deepseek")) {
-      contextWindow = 1048576;
-      maxOutputTokens = 131072;
-      vision = lower.includes("vision");
-    } else if (lower.includes("glm")) {
-      contextWindow = 1048576;
-      maxOutputTokens = 131072;
-      vision = true;
-    } else if (lower.includes("kimi")) {
-      contextWindow = 1048576;
-      maxOutputTokens = 65536;
-      vision = true;
-    } else if (lower.includes("qwen")) {
-      contextWindow = 1e6;
-      maxOutputTokens = 131072;
-      vision = true;
-      thinking = false;
-    } else if (lower.includes("minimax")) {
-      contextWindow = 1048576;
-      maxOutputTokens = 131072;
-      vision = false;
-      thinking = false;
-    } else if (lower.includes("claude")) {
-      if (lower.includes("haiku")) {
-        contextWindow = 2e5;
-        maxOutputTokens = 64e3;
-        thinking = false;
-      } else {
-        contextWindow = 1e6;
-        maxOutputTokens = 128e3;
-        thinking = true;
-      }
-      vision = true;
-    } else if (lower.includes("gpt")) {
-      if (lower.includes("mini") || lower.includes("nano")) {
-        contextWindow = 128e3;
-        maxOutputTokens = 16384;
-      } else {
-        contextWindow = 1e6;
-        maxOutputTokens = 128e3;
-      }
-      vision = true;
-      thinking = true;
-    } else if (lower.includes("gemini")) {
-      contextWindow = 1e6;
-      maxOutputTokens = 65536;
-      vision = true;
-      thinking = lower.includes("thinking");
-    } else if (lower.includes("grok")) {
-      contextWindow = 1e6;
-      maxOutputTokens = 65536;
-      vision = true;
-      thinking = true;
-    } else if (lower.includes("mimo")) {
-      contextWindow = 1048576;
-      maxOutputTokens = 65536;
-      vision = lower.includes("omni");
-      thinking = true;
-    } else if (lower.includes("nemotron")) {
-      contextWindow = 1e6;
-      maxOutputTokens = 128e3;
-      vision = false;
-      thinking = true;
-    } else if (lower.includes("muse")) {
-      contextWindow = 1e6;
-      maxOutputTokens = 65536;
-      vision = false;
-      thinking = true;
-    } else if (lower.includes("longcat")) {
-      contextWindow = 1048576;
-      maxOutputTokens = 65536;
-      vision = false;
-      thinking = false;
-    } else if (lower.includes("omen") || lower.includes("hy4")) {
-      contextWindow = 1048576;
-      maxOutputTokens = 65536;
-      vision = false;
-      thinking = true;
-    }
-  }
+  const { contextWindow, maxOutputTokens, vision, thinking } = resolveCapabilities(devMeta, modelId);
   const tokenLimits = resolveModelTokenLimits(contextWindow, maxOutputTokens);
-  contextWindow = tokenLimits.contextWindow;
-  maxOutputTokens = tokenLimits.maxOutputTokens;
-  const maxInputTokens = tokenLimits.maxInputTokens;
-  let supportsReasoningEffort = void 0;
-  if (thinking) {
-    const devEffortOpt = devMeta?.reasoning_options?.find((o) => o.type === "effort");
-    if (devEffortOpt && Array.isArray(devEffortOpt.values)) {
-      const filtered = devEffortOpt.values.filter((v) => v !== "none");
-      if (filtered.length > 0) {
-        supportsReasoningEffort = filtered;
-      }
-    } else if (!devMeta) {
-      if (isResponses) {
-        supportsReasoningEffort = ["minimal", "low", "medium", "high", "xhigh"];
-      } else if (lower.includes("deepseek") || lower.includes("kimi-k3") || lower.includes("glm")) {
-        supportsReasoningEffort = ["low", "medium", "high", "max"];
-      }
-    }
-  }
+  const supportsReasoningEffort = resolveReasoningEfforts(
+    thinking,
+    devMeta,
+    apiType === "responses",
+    modelId
+  );
   const model = {
     id: modelId,
     name,
@@ -27944,9 +27941,9 @@ function enrichModel(modelId, options = {}) {
     apiType,
     toolCalling: true,
     vision,
-    contextWindow,
-    maxInputTokens,
-    maxOutputTokens,
+    contextWindow: tokenLimits.contextWindow,
+    maxInputTokens: tokenLimits.maxInputTokens,
+    maxOutputTokens: tokenLimits.maxOutputTokens,
     thinking,
     supportsReasoningEffort,
     reasoningEffortFormat: apiType,
@@ -28364,51 +28361,51 @@ function fsyncDir(dir) {
   } catch {
   }
 }
+function chmodPortable(target, mode) {
+  if (process.platform === "win32") return;
+  try {
+    import_node_fs.default.chmodSync(target, mode);
+  } catch {
+  }
+}
+function resolveWriteMode(filePath, options) {
+  if (typeof options === "number") return options;
+  if (options?.mode !== void 0) return options.mode;
+  try {
+    return import_node_fs.default.statSync(filePath).mode & 511;
+  } catch {
+    return 420;
+  }
+}
+function atomicWrite(filePath, tmpPath, data, mode, dir) {
+  writeFileWithFsync(tmpPath, data, mode);
+  chmodPortable(tmpPath, mode);
+  import_node_fs.default.renameSync(tmpPath, filePath);
+  chmodPortable(filePath, mode);
+  fsyncDir(dir);
+}
+function directWriteFallback(filePath, tmpPath, data, mode) {
+  try {
+    writeFileWithFsync(filePath, data, mode);
+    chmodPortable(filePath, mode);
+  } finally {
+    try {
+      if (import_node_fs.default.existsSync(tmpPath)) import_node_fs.default.unlinkSync(tmpPath);
+    } catch {
+    }
+  }
+}
 function safeWriteFileSync(filePath, data, options) {
   const dir = path2.dirname(filePath);
   if (!import_node_fs.default.existsSync(dir)) {
     import_node_fs.default.mkdirSync(dir, { recursive: true });
   }
-  let mode = typeof options === "number" ? options : options?.mode;
-  if (mode === void 0) {
-    try {
-      mode = import_node_fs.default.statSync(filePath).mode & 511;
-    } catch {
-      mode = 420;
-    }
-  }
+  const mode = resolveWriteMode(filePath, options);
   const tmpPath = `${filePath}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
   try {
-    writeFileWithFsync(tmpPath, data, mode);
-    if (process.platform !== "win32") {
-      try {
-        import_node_fs.default.chmodSync(tmpPath, mode);
-      } catch {
-      }
-    }
-    import_node_fs.default.renameSync(tmpPath, filePath);
-    if (process.platform !== "win32") {
-      try {
-        import_node_fs.default.chmodSync(filePath, mode);
-      } catch {
-      }
-    }
-    fsyncDir(dir);
+    atomicWrite(filePath, tmpPath, data, mode, dir);
   } catch {
-    try {
-      writeFileWithFsync(filePath, data, mode);
-      if (process.platform !== "win32") {
-        try {
-          import_node_fs.default.chmodSync(filePath, mode);
-        } catch {
-        }
-      }
-    } finally {
-      try {
-        if (import_node_fs.default.existsSync(tmpPath)) import_node_fs.default.unlinkSync(tmpPath);
-      } catch {
-      }
-    }
+    directWriteFallback(filePath, tmpPath, data, mode);
   }
 }
 
@@ -28752,6 +28749,19 @@ var vscode2 = __toESM(require("vscode"), 1);
 
 // src/usage/infrastructure/quota-client.ts
 var OPENCODE_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
+function statusResult(res) {
+  if (res.status === 401) return { ok: false, reason: "unauthorized" };
+  if (res.status === 403) return { ok: false, reason: "no-subscription" };
+  if (!res.ok) return { ok: false, reason: "network" };
+  return void 0;
+}
+function parseUsagePayload(json) {
+  const usage = json?.usage;
+  if (!usage?.rolling || !usage?.weekly || !usage?.monthly) {
+    return { ok: false, reason: "invalid" };
+  }
+  return { ok: true, usage };
+}
 async function fetchOpenCodeUsage(apiKey, fetchFn = fetch) {
   if (!apiKey?.trim()) {
     return { ok: false, reason: "no-key" };
@@ -28768,14 +28778,7 @@ async function fetchOpenCodeUsage(apiKey, fetchFn = fetch) {
         "User-Agent": "vscode-copilot/1.0"
       }
     });
-    if (res.status === 401) return { ok: false, reason: "unauthorized" };
-    if (res.status === 403) return { ok: false, reason: "no-subscription" };
-    if (!res.ok) return { ok: false, reason: "network" };
-    const json = await res.json();
-    if (!json?.usage?.rolling || !json?.usage?.weekly || !json?.usage?.monthly) {
-      return { ok: false, reason: "invalid" };
-    }
-    return { ok: true, usage: json.usage };
+    return statusResult(res) ?? parseUsagePayload(await res.json());
   } catch {
     return { ok: false, reason: "network" };
   }
@@ -28829,28 +28832,38 @@ function formatUsageTooltip(usage) {
 }
 
 // src/usage/application/refresh-usage.ts
+function renderUsage(targets, usage) {
+  targets.statusBarItem.text = formatStatusBarText(usage);
+  const md = new vscode2.MarkdownString(formatUsageTooltip(usage));
+  md.isTrusted = true;
+  targets.statusBarItem.tooltip = md;
+  targets.usageTreeProvider.setUsage(usage);
+}
+function renderNoSubscription(targets) {
+  targets.statusBarItem.text = "$(hubot) OpenCode (Zen)";
+  targets.statusBarItem.tooltip = "OpenCode Zen (Pay-as-you-go / Free tier). Click to sync models.";
+}
+async function refreshWithKey(targets, key) {
+  const res = await fetchOpenCodeUsage(key);
+  if (res.ok) {
+    renderUsage(targets, res.usage);
+    return;
+  }
+  if (res.reason === "no-subscription") {
+    renderNoSubscription(targets);
+  }
+  const state = toUsageDisplayState(res);
+  targets.usageTreeProvider.setUsage(state.usage, state.error);
+}
 async function updateUsageMeter(statusBarItem, usageTreeProvider, secrets, apiKey) {
+  const targets = { statusBarItem, usageTreeProvider };
   try {
     const key = apiKey || await resolveApiKey(secrets, false);
     if (!key) {
       usageTreeProvider.setUsage(null, "No API key configured");
       return;
     }
-    const res = await fetchOpenCodeUsage(key);
-    if (res.ok) {
-      statusBarItem.text = formatStatusBarText(res.usage);
-      const md = new vscode2.MarkdownString(formatUsageTooltip(res.usage));
-      md.isTrusted = true;
-      statusBarItem.tooltip = md;
-      usageTreeProvider.setUsage(res.usage);
-      return;
-    }
-    if (res.reason === "no-subscription") {
-      statusBarItem.text = "$(hubot) OpenCode (Zen)";
-      statusBarItem.tooltip = "OpenCode Zen (Pay-as-you-go / Free tier). Click to sync models.";
-    }
-    const state = toUsageDisplayState(res);
-    usageTreeProvider.setUsage(state.usage, state.error);
+    await refreshWithKey(targets, key);
   } catch {
     usageTreeProvider.setUsage(null, "Error fetching usage");
   }
@@ -28892,6 +28905,40 @@ function writeModelCache(dir, models) {
 
 // src/chat/infrastructure/message-mapper.ts
 var vscode3 = __toESM(require("vscode"), 1);
+function stringifyToolInput(input) {
+  return typeof input === "string" ? input : JSON.stringify(input);
+}
+function formatToolCallPart(part) {
+  return {
+    id: part.callId,
+    type: "function",
+    function: {
+      name: part.name,
+      arguments: stringifyToolInput(part.input)
+    }
+  };
+}
+function partText(part) {
+  if (typeof part === "string") return part;
+  if (part && typeof part === "object" && typeof part.value === "string") {
+    return part.value;
+  }
+  return JSON.stringify(part ?? "") ?? "";
+}
+function formatToolResultContent(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map(partText).join("\n");
+  }
+  if (content !== void 0 && content !== null) {
+    return JSON.stringify(content) ?? "";
+  }
+  return "";
+}
+function isStaleThinkingPart(part) {
+  const ThinkingPart = vscode3.LanguageModelThinkingPart;
+  return ThinkingPart && part instanceof ThinkingPart || part?.constructor?.name === "LanguageModelThinkingPart" || part?.type === "thinking" || part?.type === "reasoning";
+}
 function formatProviderMessages(messages) {
   const formattedMessages = [];
   for (const msg of messages) {
@@ -28899,41 +28946,18 @@ function formatProviderMessages(messages) {
     let textContent = "";
     const toolCalls = [];
     for (const part of msg.content) {
-      const ThinkingPart = vscode3.LanguageModelThinkingPart;
-      const isThinkingPart = ThinkingPart && part instanceof ThinkingPart || part?.constructor?.name === "LanguageModelThinkingPart" || part?.type === "thinking" || part?.type === "reasoning";
-      if (isThinkingPart) {
+      if (isStaleThinkingPart(part)) {
         continue;
       }
       if (part instanceof vscode3.LanguageModelTextPart) {
         textContent += part.value;
       } else if (part instanceof vscode3.LanguageModelToolCallPart) {
-        toolCalls.push({
-          id: part.callId,
-          type: "function",
-          function: {
-            name: part.name,
-            arguments: typeof part.input === "string" ? part.input : JSON.stringify(part.input)
-          }
-        });
+        toolCalls.push(formatToolCallPart(part));
       } else if (part instanceof vscode3.LanguageModelToolResultPart) {
-        let resultStr = "";
-        if (typeof part.content === "string") {
-          resultStr = part.content;
-        } else if (Array.isArray(part.content)) {
-          resultStr = part.content.map((p) => {
-            if (typeof p === "string") return p;
-            if (p && typeof p.value === "string") return p.value;
-            return JSON.stringify(p ?? "") ?? "";
-          }).join("\n");
-        } else if (part.content !== void 0 && part.content !== null) {
-          resultStr = JSON.stringify(part.content) ?? "";
-        } else {
-          resultStr = "";
-        }
         formattedMessages.push({
           role: "tool",
           tool_call_id: part.callId,
-          content: resultStr
+          content: formatToolResultContent(part.content)
         });
       }
     }
@@ -28972,31 +28996,34 @@ function sanitizeResponsesInput(input) {
   }
   return result;
 }
+function appendAssistantInput(responsesInput, msg) {
+  if (msg.content) {
+    responsesInput.push({
+      role: "assistant",
+      content: [{ type: "output_text", text: msg.content }]
+    });
+  }
+  if (msg.tool_calls) {
+    for (const tc of msg.tool_calls) {
+      const rawId = tc.id ?? "";
+      const callId = rawId.length > 0 ? rawId : `call_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      responsesInput.push({
+        type: "function_call",
+        id: callId,
+        call_id: callId,
+        name: tc.function?.name ?? "",
+        arguments: tc.function?.arguments ?? ""
+      });
+    }
+  }
+}
 function buildResponsesInput(formattedMessages) {
   const responsesInput = [];
   for (const msg of formattedMessages) {
     if (msg.role === "user") {
       responsesInput.push({ role: "user", content: msg.content ?? "" });
     } else if (msg.role === "assistant") {
-      if (msg.content) {
-        responsesInput.push({
-          role: "assistant",
-          content: [{ type: "output_text", text: msg.content }]
-        });
-      }
-      if (msg.tool_calls) {
-        for (const tc of msg.tool_calls) {
-          const rawId = tc.id ?? "";
-          const callId = rawId.length > 0 ? rawId : `call_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-          responsesInput.push({
-            type: "function_call",
-            id: callId,
-            call_id: callId,
-            name: tc.function?.name ?? "",
-            arguments: tc.function?.arguments ?? ""
-          });
-        }
-      }
+      appendAssistantInput(responsesInput, msg);
     } else if (msg.role === "tool") {
       responsesInput.push({
         type: "function_call_output",
@@ -29407,156 +29434,228 @@ function parseSseLine(line) {
 }
 
 // src/chat/infrastructure/chat-completions-parser.ts
+function detailText(detail) {
+  if (detail && typeof detail === "object" && typeof detail.text === "string") {
+    return detail.text;
+  }
+  return "";
+}
+function extractReasoningText(delta) {
+  if (!delta) return "";
+  for (const key of ["reasoning_content", "thought", "reasoning"]) {
+    const direct = delta[key];
+    if (typeof direct === "string" && direct.length > 0) return direct;
+  }
+  const details = delta.reasoning_details;
+  if (!Array.isArray(details)) return "";
+  return details.map(detailText).join("");
+}
+function emitSplitContent(content, sink) {
+  if (!content) return;
+  const { text, thinking } = sink.feedThinkTags(content);
+  if (thinking) {
+    sink.emitThinking(thinking, sink.thinkingId);
+  }
+  if (text) {
+    sink.emitText(text);
+  }
+}
+function accumulateToolCall(sink, tc, position) {
+  const rawIndex = tc.index;
+  const idx = typeof rawIndex === "number" ? rawIndex : position;
+  const current = sink.queuedToolCall(idx) || { id: "", name: "", args: "" };
+  if (typeof tc.id === "string") current.id = tc.id;
+  const fn = tc.function && typeof tc.function === "object" ? tc.function : void 0;
+  if (typeof fn?.name === "string") current.name += fn.name;
+  if (typeof fn?.arguments === "string") current.args += fn.arguments;
+  sink.queueToolCall({ ...current, index: idx });
+}
+function shouldFlushToolCalls(finishReason, sink) {
+  return finishReason === "tool_calls" || finishReason === "stop" && sink.queuedToolCallCount() > 0;
+}
 function processChatCompletionsEvent(event, sink) {
   const data = event.data;
-  const choice = data.choices?.[0];
+  const choice = data && typeof data === "object" && Array.isArray(data.choices) ? data.choices[0] : void 0;
   if (!choice) return false;
-  const rawReasoning = choice.delta?.reasoning_content || choice.delta?.thought || choice.delta?.reasoning || (Array.isArray(choice.delta?.reasoning_details) ? choice.delta.reasoning_details.map((d) => d.text || "").join("") : void 0);
-  if (rawReasoning && rawReasoning.length > 0) {
-    sink.emitThinking(rawReasoning, sink.thinkingId);
+  const reasoning = extractReasoningText(choice.delta);
+  if (reasoning) {
+    sink.emitThinking(reasoning, sink.thinkingId);
   }
-  const content = choice.delta?.content;
-  if (content) {
-    const { text, thinking } = sink.feedThinkTags(content);
-    if (thinking) {
-      sink.emitThinking(thinking, sink.thinkingId);
-    }
-    if (text) {
-      sink.emitText(text);
-    }
-  }
+  emitSplitContent(choice.delta?.content, sink);
   if (choice.delta?.tool_calls) {
     choice.delta.tool_calls.forEach((tc, i) => {
-      const idx = tc.index ?? i;
-      const current = sink.queuedToolCall(idx) || { id: "", name: "", args: "" };
-      if (tc.id) current.id = tc.id;
-      if (tc.function?.name) current.name += tc.function.name;
-      if (tc.function?.arguments) current.args += tc.function.arguments;
-      sink.queueToolCall({ ...current, index: idx });
+      accumulateToolCall(sink, tc, i);
     });
   }
-  if (choice.finish_reason === "tool_calls" || choice.finish_reason === "stop" && sink.queuedToolCallCount() > 0) {
+  if (shouldFlushToolCalls(choice.finish_reason, sink)) {
     sink.flushToolCalls();
   }
-  if (choice.finish_reason === "stop") {
-    return true;
-  }
-  return false;
+  return choice.finish_reason === "stop";
 }
 
 // src/chat/infrastructure/responses-parser.ts
-function processResponsesEvent(event, sink) {
-  const data = event.data;
-  if (data.type === "response.completed") {
-    sink.reasoningActive = false;
-    sink.reportUsage(data);
-    if (Array.isArray(data.response?.output)) {
-      for (const item of data.response.output) {
-        if (item?.type === "function_call") {
-          const callId = item.call_id || item.id || `call_${Date.now()}`;
-          const idx = typeof item.output_index === "number" ? item.output_index : sink.queuedToolCallCount();
-          const existing = sink.queuedToolCall(idx) || { id: callId, name: item.name || "", args: "" };
-          if (item.arguments) {
-            existing.args = typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments);
-          }
-          sink.queueToolCall({ ...existing, index: idx });
-        }
-      }
-    }
-    return true;
+function extractDeltaText(data) {
+  const delta = data.delta;
+  if (typeof delta === "string") return delta;
+  if (delta && typeof delta === "object") {
+    const record = delta;
+    if (typeof record.text === "string") return record.text;
+    if (typeof record.value === "string") return record.value;
   }
-  if (data.type === "response.output_text.delta") {
-    const delta = typeof data.delta === "string" ? data.delta : data.delta?.text || data.delta?.value || "";
-    if (delta) {
-      sink.emitText(delta);
-    }
-    return false;
+  return "";
+}
+function queueIndex(item, fallback) {
+  const raw = item.output_index;
+  return typeof raw === "number" ? raw : fallback;
+}
+function callIdentity(item, fallbackId) {
+  return {
+    id: item.call_id || item.id || fallbackId,
+    name: item.name || ""
+  };
+}
+function asArgsString(args) {
+  return typeof args === "string" ? args : JSON.stringify(args);
+}
+function queueFunctionCallOutput(sink, item, args) {
+  const idx = queueIndex(item, sink.queuedToolCallCount());
+  const { id, name } = callIdentity(item, `call_${Date.now()}`);
+  const existing = sink.queuedToolCall(idx) || { id, name, args: "" };
+  if (args) {
+    existing.args = args;
   }
-  if (data.type === "response.output_item.added") {
-    if (data.item?.type === "reasoning") {
-      sink.reasoningActive = true;
-      if (data.item.id) {
-        sink.thinkingId = data.item.id;
-      }
-      sink.emitThinking(data.item.text || "", sink.thinkingId);
-      return false;
-    }
-    if (data.item?.type === "function_call") {
-      const idx = typeof data.output_index === "number" ? data.output_index : 0;
-      sink.queueToolCall({
-        index: idx,
-        id: data.item.call_id || data.item.id || `call_${Date.now()}`,
-        name: data.item.name || "",
-        args: data.item.arguments || ""
-      });
-      return false;
-    }
+  sink.queueToolCall({ ...existing, index: idx });
+}
+function handleResponseCompleted(data, sink) {
+  sink.reasoningActive = false;
+  sink.reportUsage(data);
+  if (!Array.isArray(data.response?.output)) return true;
+  for (const item of data.response.output) {
+    if (item?.type !== "function_call") continue;
+    queueFunctionCallOutput(sink, item, item.arguments ? asArgsString(item.arguments) : "");
   }
-  if (data.type === "response.reasoning_text.delta") {
-    const delta = typeof data.delta === "string" ? data.delta : data.delta?.text || data.delta?.value || "";
-    if (delta && delta.length > 0) {
-      sink.reasoningDeltasEmitted = true;
-      sink.emitThinking(delta, sink.thinkingId);
-    }
-    return false;
-  }
-  if (data.type === "response.function_call_arguments.delta") {
-    const idx = typeof data.output_index === "number" ? data.output_index : 0;
-    const current = sink.queuedToolCall(idx) || { id: "", name: "", args: "" };
-    const delta = typeof data.delta === "string" ? data.delta : data.delta?.arguments || "";
-    current.args += delta;
-    sink.queueToolCall({ ...current, index: idx });
-    return false;
-  }
-  if (data.type === "response.output_item.done") {
-    if (data.item?.type === "reasoning") {
-      sink.reasoningActive = false;
-      if (!sink.reasoningDeltasEmitted && typeof data.item.text === "string" && data.item.text.length > 0) {
-        sink.emitThinking(data.item.text, sink.thinkingId);
-      }
-      return false;
-    }
-    if (data.item?.type === "function_call") {
-      const idx = typeof data.output_index === "number" ? data.output_index : 0;
-      const call = sink.queuedToolCall(idx) || {
-        id: data.item.call_id || data.item.id || `call_${Date.now()}`,
-        name: data.item.name || "",
-        args: ""
-      };
-      if (data.item.name && !call.name) call.name = data.item.name;
-      if (data.item.call_id && !call.id) call.id = data.item.call_id;
-      const itemArgsRaw = data.item.arguments;
-      if (itemArgsRaw !== void 0 && itemArgsRaw !== null) {
-        const itemArgsStr = typeof itemArgsRaw === "string" ? itemArgsRaw : JSON.stringify(itemArgsRaw);
-        if (!call.args || !call.args.trim()) {
-          call.args = itemArgsStr;
-        } else {
-          let callValid = false;
-          let parsedCallArgs = null;
-          try {
-            parsedCallArgs = JSON.parse(call.args);
-            callValid = true;
-          } catch {
-          }
-          if (!callValid) {
-            call.args = itemArgsStr;
-          } else {
-            try {
-              const parsedItemArgs = typeof itemArgsRaw === "object" ? itemArgsRaw : JSON.parse(itemArgsStr);
-              if (parsedItemArgs && typeof parsedItemArgs === "object" && !Array.isArray(parsedItemArgs) && parsedCallArgs && typeof parsedCallArgs === "object" && !Array.isArray(parsedCallArgs)) {
-                call.args = JSON.stringify({ ...parsedCallArgs, ...parsedItemArgs });
-              }
-            } catch {
-            }
-          }
-        }
-      }
-      sink.emitToolCall(call.id, call.name, call.args);
-      sink.forgetQueuedToolCall(idx);
-      return false;
-    }
+  return true;
+}
+function handleOutputTextDelta(data, sink) {
+  const delta = extractDeltaText(data);
+  if (delta) {
+    sink.emitText(delta);
   }
   return false;
+}
+function handleOutputItemAdded(data, sink) {
+  if (data.item?.type === "reasoning") {
+    sink.reasoningActive = true;
+    if (data.item.id) {
+      sink.thinkingId = data.item.id;
+    }
+    sink.emitThinking(data.item.text || "", sink.thinkingId);
+    return false;
+  }
+  if (data.item?.type === "function_call") {
+    const { id, name } = callIdentity(data.item, `call_${Date.now()}`);
+    sink.queueToolCall({
+      index: queueIndex(data, 0),
+      id,
+      name,
+      args: data.item.arguments || ""
+    });
+    return false;
+  }
+  return false;
+}
+function handleReasoningTextDelta(data, sink) {
+  const delta = extractDeltaText(data);
+  if (delta && delta.length > 0) {
+    sink.reasoningDeltasEmitted = true;
+    sink.emitThinking(delta, sink.thinkingId);
+  }
+  return false;
+}
+function handleFunctionCallArgumentsDelta(data, sink) {
+  const idx = queueIndex(data, 0);
+  const current = sink.queuedToolCall(idx) || { id: "", name: "", args: "" };
+  const delta = typeof data.delta === "string" ? data.delta : data.delta?.arguments || "";
+  current.args += delta;
+  sink.queueToolCall({ ...current, index: idx });
+  return false;
+}
+function tryParseJsonObject(text) {
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed;
+    }
+    return void 0;
+  } catch {
+    return void 0;
+  }
+}
+function mergeCompleteFragment(accumulated, fragment) {
+  if (tryParseJsonObject(fragment)) {
+    return fragment;
+  }
+  return accumulated + fragment;
+}
+function mergeObjectFragment(accumulated, fragment) {
+  const parsedAccumulated = tryParseJsonObject(accumulated);
+  if (!parsedAccumulated) {
+    return JSON.stringify(fragment);
+  }
+  return JSON.stringify({ ...parsedAccumulated, ...fragment });
+}
+function mergeArgumentFragments(accumulated, fragment) {
+  if (accumulated.trim().length === 0 || fragment === void 0 || fragment === null) {
+    return fragment === void 0 || fragment === null ? accumulated : asArgsString(fragment);
+  }
+  if (typeof fragment === "string") {
+    return mergeCompleteFragment(accumulated, fragment);
+  }
+  if (typeof fragment !== "object" || Array.isArray(fragment)) {
+    return accumulated;
+  }
+  return mergeObjectFragment(accumulated, fragment);
+}
+function completeFunctionCall(sink, data, call) {
+  const idx = queueIndex(data, 0);
+  if (data.item.name && !call.name) call.name = data.item.name;
+  if (data.item.call_id && !call.id) call.id = data.item.call_id;
+  call.args = mergeArgumentFragments(call.args, data.item.arguments);
+  sink.emitToolCall(call.id, call.name, call.args);
+  sink.forgetQueuedToolCall(idx);
+}
+function handleOutputItemDone(data, sink) {
+  if (data.item?.type === "reasoning") {
+    sink.reasoningActive = false;
+    if (!sink.reasoningDeltasEmitted && typeof data.item.text === "string" && data.item.text.length > 0) {
+      sink.emitThinking(data.item.text, sink.thinkingId);
+    }
+    return false;
+  }
+  if (data.item?.type !== "function_call") {
+    return false;
+  }
+  const call = sink.queuedToolCall(queueIndex(data, 0)) || {
+    ...callIdentity(data.item, `call_${Date.now()}`),
+    args: ""
+  };
+  completeFunctionCall(sink, data, call);
+  return false;
+}
+var RESPONSES_HANDLERS = {
+  "response.completed": handleResponseCompleted,
+  "response.output_text.delta": handleOutputTextDelta,
+  "response.output_item.added": handleOutputItemAdded,
+  "response.reasoning_text.delta": handleReasoningTextDelta,
+  "response.function_call_arguments.delta": handleFunctionCallArgumentsDelta,
+  "response.output_item.done": handleOutputItemDone
+};
+function processResponsesEvent(event, sink) {
+  if (typeof event.data !== "object" || event.data === null) return false;
+  const data = event.data;
+  const handler = typeof data.type === "string" ? RESPONSES_HANDLERS[data.type] : void 0;
+  if (!handler) return false;
+  return handler(data, sink);
 }
 
 // src/chat/infrastructure/token-usage-reporter.ts
@@ -29613,218 +29712,245 @@ function stallInterruptionMessage(detail) {
 }
 
 // src/chat/application/send-chat-message.ts
-async function consumeProviderStream(options) {
-  if (!options.response.body) {
-    throw new Error("OpenCode API returned empty body");
+var StreamState = class {
+  constructor(options) {
+    this.options = options;
+    this.currentThinkingId = this.thinkingId;
   }
-  const reader = options.response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  const pendingToolCalls = /* @__PURE__ */ new Map();
-  const emittedToolCallIds = /* @__PURE__ */ new Set();
-  const thinkingId = `thinking-${Date.now()}`;
-  let currentThinkingId = thinkingId;
-  const thinkParser = new ThinkTagStreamParser();
-  let hasStreamError = false;
-  let lastReadAt = Date.now();
-  let partsReportedCount = 0;
-  let isReasoningActive = false;
-  let reasoningDeltasEmitted = false;
-  let isStallRetry = false;
-  let usageReported = false;
-  const emitThinkingPart = (thinking, id) => {
-    partsReportedCount++;
+  pendingToolCalls = /* @__PURE__ */ new Map();
+  emittedToolCallIds = /* @__PURE__ */ new Set();
+  thinkParser = new ThinkTagStreamParser();
+  thinkingId = `thinking-${Date.now()}`;
+  currentThinkingId;
+  hasStreamError = false;
+  lastReadAt = Date.now();
+  partsReportedCount = 0;
+  isReasoningActive = false;
+  reasoningDeltasEmitted = false;
+  isStallRetry = false;
+  usageReported = false;
+  emitThinkingPart(thinking, id) {
+    this.partsReportedCount++;
     const ThinkingPart = vscode5.LanguageModelThinkingPart;
     if (ThinkingPart) {
-      options.progress.report(new ThinkingPart(thinking, id));
+      this.options.progress.report(new ThinkingPart(thinking, id));
     } else {
-      options.progress.report(new vscode5.LanguageModelTextPart(thinking));
+      this.options.progress.report(new vscode5.LanguageModelTextPart(thinking));
     }
-  };
-  const emitSingleToolCall = (id, name, args) => {
+  }
+  emitSingleToolCall(id, name, args) {
     let parsedArgs = {};
     try {
       parsedArgs = JSON.parse(args);
     } catch {
       parsedArgs = { raw: args };
     }
-    if (!emittedToolCallIds.has(id) && !isSyntheticVerificationTool(name, options.tools)) {
-      partsReportedCount++;
-      emittedToolCallIds.add(id);
-      options.progress.report(new vscode5.LanguageModelToolCallPart(id, name, parsedArgs));
-    }
-  };
-  const flushQueuedToolCalls = () => {
-    if (pendingToolCalls.size === 0) return;
-    for (const [, call] of pendingToolCalls) {
-      emitSingleToolCall(call.id, call.name, call.args);
-    }
-    pendingToolCalls.clear();
-  };
-  const reportUsagePayload = (event) => {
-    if (usageReported) return;
-    const payload = buildUsagePayload(event);
-    if (!payload) return;
-    usageReported = true;
-    partsReportedCount++;
-    options.progress.report(vscode5.LanguageModelDataPart.json(payload, "usage"));
-  };
-  const sink = {
-    emitText: (text) => {
-      partsReportedCount++;
-      options.progress.report(new vscode5.LanguageModelTextPart(text));
-    },
-    emitThinking: (thinking, id) => {
-      emitThinkingPart(thinking, id);
-    },
-    emitToolCall: (id, name, args) => {
-      emitSingleToolCall(id, name, args);
-    },
-    queueToolCall: (call) => {
-      pendingToolCalls.set(call.index, { index: call.index, id: call.id, name: call.name, args: call.args });
-    },
-    queuedToolCall: (index) => pendingToolCalls.get(index),
-    forgetQueuedToolCall: (index) => {
-      pendingToolCalls.delete(index);
-    },
-    queuedToolCallCount: () => pendingToolCalls.size,
-    flushToolCalls: () => {
-      flushQueuedToolCalls();
-    },
-    reportUsage: (event) => {
-      reportUsagePayload(event);
-    },
-    complete: () => {
-      flushQueuedToolCalls();
-    },
-    get thinkingId() {
-      return currentThinkingId;
-    },
-    set thinkingId(id) {
-      currentThinkingId = id;
-    },
-    get reasoningActive() {
-      return isReasoningActive;
-    },
-    set reasoningActive(active) {
-      isReasoningActive = active;
-    },
-    get reasoningDeltasEmitted() {
-      return reasoningDeltasEmitted;
-    },
-    set reasoningDeltasEmitted(emitted) {
-      reasoningDeltasEmitted = emitted;
-    },
-    feedThinkTags: (chunk) => thinkParser.feed(chunk),
-    flushThinkTags: () => thinkParser.flush()
-  };
-  const processLine = (line) => {
-    const parsed = parseSseLine(line);
-    if (parsed.kind === "skip") return false;
-    if (parsed.kind === "done") return true;
-    return processResponsesEvent(parsed.event, sink) || processChatCompletionsEvent(parsed.event, sink);
-  };
-  try {
-    while (true) {
-      if (options.token.isCancellationRequested) break;
-      const effectiveIdleTimeoutMs = isReasoningActive ? options.idleTimeoutMs * 2 : options.idleTimeoutMs;
-      const idleMs = effectiveIdleTimeoutMs - (Date.now() - lastReadAt);
-      let idleTimer;
-      const idleTimeout = new Promise((_, reject) => {
-        idleTimer = setTimeout(
-          () => {
-            reject(new Error(`Stream idle for over ${Math.round(effectiveIdleTimeoutMs / 1e3)}s; no data received from OpenCode upstream.`));
-          },
-          Math.max(0, idleMs)
-        );
-      });
-      let done, value;
-      try {
-        ({ done, value } = await Promise.race([reader.read(), idleTimeout]));
-      } finally {
-        clearTimeout(idleTimer);
-      }
-      lastReadAt = Date.now();
-      if (value) {
-        buffer += decoder.decode(value, { stream: !done });
-      }
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      let isDone = false;
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        const finished = processLine(line);
-        if (finished) {
-          for (let j = i + 1; j < lines.length; j++) {
-            processLine(lines[j]);
-          }
-          if (buffer.trim()) {
-            const remainingLines = buffer.split("\n");
-            buffer = "";
-            for (const remLine of remainingLines) {
-              processLine(remLine);
-            }
-          }
-          sink.complete();
-          isDone = true;
-          break;
-        }
-      }
-      if (done) {
-        if (buffer.trim()) {
-          const remainingLines = buffer.split("\n");
-          buffer = "";
-          for (const remLine of remainingLines) {
-            processLine(remLine);
-          }
-        }
-        sink.complete();
-        break;
-      }
-      if (isDone) break;
-    }
-    const flushed = sink.flushThinkTags();
-    if (flushed.thinking) emitThinkingPart(flushed.thinking, currentThinkingId);
-    if (flushed.text) {
-      partsReportedCount++;
-      options.progress.report(new vscode5.LanguageModelTextPart(flushed.text));
-    }
-  } catch (streamErr) {
-    void reader.cancel().catch(() => {
-    });
-    const errMsg = streamErr instanceof Error ? streamErr.message : String(streamErr);
-    const isIdleTimeout = errMsg.includes("Stream idle for over");
-    if (isIdleTimeout && partsReportedCount === 0 && !isReasoningActive && shouldRetryStall(options.stallAttempt, options.maxStallRetries) && !options.token.isCancellationRequested && !options.abortSignal.aborted) {
-      isStallRetry = true;
-      options.log(
-        `Stream stalled with 0 bytes received for model=${options.modelId}; initiating automatic recovery retry (${options.stallAttempt + 1}/${options.maxStallRetries})...`
-      );
-    } else {
-      hasStreamError = true;
-      if (options.token.isCancellationRequested) {
-        options.log(`Stream canceled by user for model=${options.modelId}`);
-        return "done";
-      }
-      options.log(`Stream interrupted for model=${options.modelId}: ${errMsg}`);
-      options.progress.report(
-        new vscode5.LanguageModelTextPart(
-          stallInterruptionMessage(errMsg)
-        )
-      );
-      return "done";
-    }
-  } finally {
-    if (!isStallRetry) {
-      if (!hasStreamError && !options.token.isCancellationRequested && !options.abortSignal.aborted && pendingToolCalls.size > 0) {
-        flushQueuedToolCalls();
-      }
-      if (!hasStreamError && !options.token.isCancellationRequested && !options.abortSignal.aborted) {
-        options.log(`Stream completed for model=${options.modelId}`);
-      }
+    if (!this.emittedToolCallIds.has(id) && !isSyntheticVerificationTool(name, this.options.tools)) {
+      this.partsReportedCount++;
+      this.emittedToolCallIds.add(id);
+      this.options.progress.report(new vscode5.LanguageModelToolCallPart(id, name, parsedArgs));
     }
   }
-  enforceRequiredToolMode(options, emittedToolCallIds);
-  return isStallRetry ? "retry" : "done";
+  flushQueuedToolCalls() {
+    if (this.pendingToolCalls.size === 0) return;
+    for (const [, call] of this.pendingToolCalls) {
+      this.emitSingleToolCall(call.id, call.name, call.args);
+    }
+    this.pendingToolCalls.clear();
+  }
+  reportUsagePayload(event) {
+    if (this.usageReported) return;
+    const payload = buildUsagePayload(event);
+    if (!payload) return;
+    this.usageReported = true;
+    this.partsReportedCount++;
+    this.options.progress.report(vscode5.LanguageModelDataPart.json(payload, "usage"));
+  }
+  buildSink() {
+    const state = this;
+    return {
+      emitText: (text) => {
+        state.partsReportedCount++;
+        state.options.progress.report(new vscode5.LanguageModelTextPart(text));
+      },
+      emitThinking: (thinking, id) => {
+        state.emitThinkingPart(thinking, id);
+      },
+      emitToolCall: (id, name, args) => {
+        state.emitSingleToolCall(id, name, args);
+      },
+      queueToolCall: (call) => {
+        state.pendingToolCalls.set(call.index, { index: call.index, id: call.id, name: call.name, args: call.args });
+      },
+      queuedToolCall: (index) => state.pendingToolCalls.get(index),
+      forgetQueuedToolCall: (index) => {
+        state.pendingToolCalls.delete(index);
+      },
+      queuedToolCallCount: () => state.pendingToolCalls.size,
+      flushToolCalls: () => {
+        state.flushQueuedToolCalls();
+      },
+      reportUsage: (event) => {
+        state.reportUsagePayload(event);
+      },
+      complete: () => {
+        state.flushQueuedToolCalls();
+      },
+      get thinkingId() {
+        return state.currentThinkingId;
+      },
+      set thinkingId(id) {
+        state.currentThinkingId = id;
+      },
+      get reasoningActive() {
+        return state.isReasoningActive;
+      },
+      set reasoningActive(active) {
+        state.isReasoningActive = active;
+      },
+      get reasoningDeltasEmitted() {
+        return state.reasoningDeltasEmitted;
+      },
+      set reasoningDeltasEmitted(emitted) {
+        state.reasoningDeltasEmitted = emitted;
+      },
+      feedThinkTags: (chunk) => state.thinkParser.feed(chunk),
+      flushThinkTags: () => state.thinkParser.flush()
+    };
+  }
+};
+function processSseLine(line, sink) {
+  const parsed = parseSseLine(line);
+  if (parsed.kind === "skip") return false;
+  if (parsed.kind === "done") return true;
+  return processResponsesEvent(parsed.event, sink) || processChatCompletionsEvent(parsed.event, sink);
+}
+function processLineBatch(lines, sink) {
+  for (let i = 0; i < lines.length; i++) {
+    if (!processSseLine(lines[i], sink)) continue;
+    for (let j = i + 1; j < lines.length; j++) {
+      processSseLine(lines[j], sink);
+    }
+    return true;
+  }
+  return false;
+}
+async function readStreamChunk(reader, idleTimeoutMs, lastReadAt) {
+  const idleMs = idleTimeoutMs - (Date.now() - lastReadAt);
+  let idleTimer;
+  const idleTimeout = new Promise((_, reject) => {
+    idleTimer = setTimeout(
+      () => {
+        reject(new Error(`Stream idle for over ${Math.round(idleTimeoutMs / 1e3)}s; no data received from OpenCode upstream.`));
+      },
+      Math.max(0, idleMs)
+    );
+  });
+  try {
+    return await Promise.race([reader.read(), idleTimeout]);
+  } finally {
+    clearTimeout(idleTimer);
+  }
+}
+function effectiveIdleTimeout(baseMs, reasoningActive) {
+  return reasoningActive ? baseMs * 2 : baseMs;
+}
+function processRemainingBuffer(buffer, sink) {
+  if (!buffer.text.trim()) return;
+  const remainingLines = buffer.text.split("\n");
+  buffer.text = "";
+  processLineBatch(remainingLines, sink);
+}
+async function pumpStream(options, reader, decoder, buffer, state, sink) {
+  while (true) {
+    if (options.token.isCancellationRequested) break;
+    const timeoutMs = effectiveIdleTimeout(options.idleTimeoutMs, state.isReasoningActive);
+    const { done, value } = await readStreamChunk(reader, timeoutMs, state.lastReadAt);
+    state.lastReadAt = Date.now();
+    if (value) {
+      buffer.text += decoder.decode(value, { stream: !done });
+    }
+    const lines = buffer.text.split("\n");
+    buffer.text = lines.pop() ?? "";
+    if (processLineBatch(lines, sink)) {
+      processRemainingBuffer(buffer, sink);
+      sink.complete();
+      break;
+    }
+    if (done) {
+      processRemainingBuffer(buffer, sink);
+      sink.complete();
+      break;
+    }
+  }
+}
+function flushThinkTagRemainder(options, state, sink) {
+  const flushed = sink.flushThinkTags();
+  if (flushed.thinking) state.emitThinkingPart(flushed.thinking, state.currentThinkingId);
+  if (flushed.text) {
+    state.partsReportedCount++;
+    options.progress.report(new vscode5.LanguageModelTextPart(flushed.text));
+  }
+}
+function finalizeStream(options, state) {
+  if (state.isStallRetry) return;
+  if (streamSettledCleanly(options, state) && state.pendingToolCalls.size > 0) {
+    state.flushQueuedToolCalls();
+  }
+  if (streamSettledCleanly(options, state)) {
+    options.log(`Stream completed for model=${options.modelId}`);
+  }
+}
+function streamSettledCleanly(options, state) {
+  return !state.hasStreamError && !options.token.isCancellationRequested && !options.abortSignal.aborted;
+}
+async function consumeProviderStream(options) {
+  if (!options.response.body) {
+    throw new Error("OpenCode API returned empty body");
+  }
+  const reader = options.response.body.getReader();
+  const decoder = new TextDecoder();
+  const buffer = { text: "" };
+  const state = new StreamState(options);
+  const sink = state.buildSink();
+  try {
+    await pumpStream(options, reader, decoder, buffer, state, sink);
+    flushThinkTagRemainder(options, state, sink);
+  } catch (streamErr) {
+    const outcome = handleStreamError(options, state, reader, streamErr);
+    if (outcome === "done") return "done";
+  } finally {
+    finalizeStream(options, state);
+  }
+  enforceRequiredToolMode(options, state.emittedToolCallIds);
+  return state.isStallRetry ? "retry" : "done";
+}
+function shouldRecoverStall(options, state, errMsg) {
+  return errMsg.includes("Stream idle for over") && state.partsReportedCount === 0 && !state.isReasoningActive && shouldRetryStall(options.stallAttempt, options.maxStallRetries) && !options.token.isCancellationRequested && !options.abortSignal.aborted;
+}
+function handleStreamError(options, state, reader, streamErr) {
+  void reader.cancel().catch(() => {
+  });
+  const errMsg = streamErr instanceof Error ? streamErr.message : String(streamErr);
+  if (shouldRecoverStall(options, state, errMsg)) {
+    state.isStallRetry = true;
+    options.log(
+      `Stream stalled with 0 bytes received for model=${options.modelId}; initiating automatic recovery retry (${options.stallAttempt + 1}/${options.maxStallRetries})...`
+    );
+    return "continue";
+  }
+  state.hasStreamError = true;
+  if (options.token.isCancellationRequested) {
+    options.log(`Stream canceled by user for model=${options.modelId}`);
+    return "done";
+  }
+  options.log(`Stream interrupted for model=${options.modelId}: ${errMsg}`);
+  options.progress.report(
+    new vscode5.LanguageModelTextPart(
+      stallInterruptionMessage(errMsg)
+    )
+  );
+  return "done";
 }
 function enforceRequiredToolMode(options, emittedToolCallIds) {
   const toolModes = vscode5.LanguageModelChatToolMode;

@@ -125,6 +125,62 @@ const GPT_RESPONSES_MODEL = {
 // 6. Tool Calling Tests
 // ============================================================================
 
+test('Provider Chaos [reasoning_details]: joins detail texts into thinking parts', async () => {
+  mockServer.setScenario({
+    mode: 'standard',
+    chunks: [
+      {
+        id: 'chatcmpl-reasoning-details',
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: 'deepseek-v4-pro',
+        choices: [{
+          index: 0,
+          delta: {
+            role: 'assistant',
+            reasoning_details: [
+              { text: 'step one. ' },
+              { text: 'step two.' },
+              { ignored: true },
+            ],
+          },
+          finish_reason: null,
+        }],
+      },
+      {
+        id: 'chatcmpl-reasoning-details',
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: 'deepseek-v4-pro',
+        choices: [{
+          index: 0,
+          delta: { content: 'done' },
+          finish_reason: 'stop',
+        }],
+      },
+    ],
+  });
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage('think it through')],
+    {},
+    progress,
+    createMockToken()
+  );
+
+  const ThinkingPart = vscode.LanguageModelThinkingPart ?? vscode.LanguageModelTextPart;
+  const thinking = progress.parts.filter((p) => p instanceof ThinkingPart);
+  assert.ok(
+    thinking.some((p) => p.value === 'step one. step two.'),
+    'expected joined reasoning_details text in a thinking part'
+  );
+});
+
 test('Provider Chaos [Tool Calling on Chat Completions]: emits LanguageModelToolCallPart with parsed arguments', async () => {
   mockServer.setScenario({
     mode: 'tool-call',
