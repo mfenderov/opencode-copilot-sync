@@ -107,7 +107,7 @@
   },
   "src/chat/infrastructure/vscode-chat-provider.ts": {
     "@typescript-eslint/no-explicit-any": {
-      "count": 6
+      "count": 5
     },
     "@typescript-eslint/no-unsafe-assignment": {
       "count": 1

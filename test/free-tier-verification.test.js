@@ -2,7 +2,7 @@ import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import * as vscode from 'vscode';
-import { OpenCodeChatProvider } from '../out/chat/infrastructure/vscode-chat-provider.js';
+import { OpenCodeChatProvider, classifyUpstreamAlert } from '../out/chat/infrastructure/vscode-chat-provider.js';
 import { startMockServer } from './helpers/mock-opencode-server.js';
 
 let mockServer;
@@ -235,6 +235,25 @@ test('Free Tier Verification: strips oversized enums from the wire payload in bo
     );
     assert.equal(schema.properties.mode.type, 'string');
   }
+});
+
+test('classifies upstream alerts without misattributing schema rejections', () => {
+  assert.equal(
+    classifyUpstreamAlert(
+      400,
+      'a single enum property with more than 250 values exceeds the maximum combined enum string length of 15000 characters',
+      false
+    ),
+    'tool schema rejected by upstream (an attached tool declares a constraint the gateway cannot accept; retry without that tool, or re-run sync)'
+  );
+  assert.equal(
+    classifyUpstreamAlert(404, 'not found', false),
+    'stale model ID (renamed or removed by a later sync; re-run sync and re-pick the model)'
+  );
+  assert.equal(classifyUpstreamAlert(403, 'FreeTierError: nope', true), 'upstream free-tier policy error');
+  assert.equal(classifyUpstreamAlert(500, 'boom', false), 'upstream server error');
+  // A 400 that is NOT a schema error stays a server error.
+  assert.equal(classifyUpstreamAlert(400, 'reasoning `encrypted_content` was not issued to this caller', false), 'upstream server error');
 });
 
 test('Free Tier Verification [400 schema error]: reports a tool schema rejection, not a server error', async () => {

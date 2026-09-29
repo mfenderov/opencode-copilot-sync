@@ -124,6 +124,95 @@ interface DropResult {
   changed: boolean;
 }
 
+function shouldDropEnum(value: unknown): value is unknown[] {
+  return Array.isArray(value) && exceedsEnumLimits(value);
+}
+
+function stripArrayItems(
+  items: unknown[],
+  path: string,
+  onDrop: (path: string, count: number) => void,
+  inProgress: Set<unknown>
+): DropResult {
+  if (inProgress.has(items)) return { node: items, changed: false };
+  inProgress.add(items);
+  let changed = false;
+  const out: unknown[] = [];
+  for (const item of items) {
+    const result = stripOversizedEnums(item, path, onDrop, inProgress);
+    if (result.changed) changed = true;
+    out.push(result.node);
+  }
+  inProgress.delete(items);
+  return { node: out, changed };
+}
+
+interface EntryResult {
+  value: unknown;
+  changed: boolean;
+  dropped: boolean;
+}
+
+function stripEntry(
+  key: string,
+  value: unknown,
+  childPath: string,
+  parentPath: string,
+  onDrop: (path: string, count: number) => void,
+  inProgress: Set<unknown>
+): EntryResult {
+  if (key === 'enum') {
+    if (shouldDropEnum(value)) {
+      onDrop(parentPath, value.length);
+      return { value: undefined, changed: true, dropped: true };
+    }
+    return { value, changed: false, dropped: false };
+  }
+  if (NON_SCHEMA_KEYS.has(key)) {
+    return { value, changed: false, dropped: false };
+  }
+  const result = stripOversizedEnums(value, childPath, onDrop, inProgress);
+  return { value: result.node, changed: result.changed, dropped: false };
+}
+
+function needsStringType(droppedOwnEnum: boolean, out: Record<string, unknown>): boolean {
+  return droppedOwnEnum && !('type' in out) && !('$ref' in out);
+}
+
+function stripObjectSchema(
+  source: Record<string, unknown>,
+  path: string,
+  onDrop: (path: string, count: number) => void,
+  inProgress: Set<unknown>
+): DropResult {
+  if (inProgress.has(source)) return { node: source, changed: false };
+  inProgress.add(source);
+  const out: Record<string, unknown> = {};
+  let changed = false;
+  let droppedOwnEnum = false;
+
+  for (const [key, value] of Object.entries(source)) {
+    const entry = stripEntry(key, value, `${path}.${key}`, path, onDrop, inProgress);
+    if (entry.dropped) {
+      changed = true;
+      droppedOwnEnum = true;
+      continue;
+    }
+    if (entry.changed) changed = true;
+    out[key] = entry.value;
+  }
+
+  // A node whose own enum was its only shape information now constrains and describes
+  // nothing; a free-form string keeps it usable. Keyed on this node's own drop, not on
+  // `changed`, which also propagates from descendants.
+  if (needsStringType(droppedOwnEnum, out)) {
+    out.type = 'string';
+  }
+
+  inProgress.delete(source);
+  return { node: out, changed };
+}
+
 /**
  * Rebuilds a schema with oversized enums removed, descending generically through every
  * object and array except `NON_SCHEMA_KEYS`. A node that only declared its shape via
@@ -131,58 +220,13 @@ interface DropResult {
  */
 function stripOversizedEnums(node: unknown, path: string, onDrop: (path: string, count: number) => void, inProgress: Set<unknown>): DropResult {
   if (Array.isArray(node)) {
-    if (inProgress.has(node)) return { node, changed: false };
-    inProgress.add(node);
-    let changed = false;
-    const out = node.map((item) => {
-      const result = stripOversizedEnums(item, path, onDrop, inProgress);
-      if (result.changed) changed = true;
-      return result.node;
-    });
-    inProgress.delete(node);
-    return { node: out, changed };
+    return stripArrayItems(node, path, onDrop, inProgress);
   }
 
   if (typeof node !== 'object' || node === null) {
     return { node, changed: false };
   }
-  if (inProgress.has(node)) return { node, changed: false };
-  inProgress.add(node);
-
-  const source = node as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  let changed = false;
-  let droppedOwnEnum = false;
-
-  for (const [key, value] of Object.entries(source)) {
-    if (key === 'enum') {
-      if (Array.isArray(value) && exceedsEnumLimits(value)) {
-        onDrop(path, value.length);
-        changed = true;
-        droppedOwnEnum = true;
-        continue;
-      }
-      out[key] = value;
-      continue;
-    }
-    if (NON_SCHEMA_KEYS.has(key)) {
-      out[key] = value;
-      continue;
-    }
-    const result = stripOversizedEnums(value, `${path}.${key}`, onDrop, inProgress);
-    if (result.changed) changed = true;
-    out[key] = result.node;
-  }
-
-  // A node whose own enum was its only shape information now constrains and describes
-  // nothing; a free-form string keeps it usable. Keyed on this node's own drop, not on
-  // `changed`, which also propagates from descendants.
-  if (droppedOwnEnum && !('type' in out) && !('$ref' in out)) {
-    out.type = 'string';
-  }
-
-  inProgress.delete(node);
-  return { node: out, changed };
+  return stripObjectSchema(node as Record<string, unknown>, path, onDrop, inProgress);
 }
 
 function sanitizeToolParameters(schema: unknown, toolName: string, log: (message: string) => void): unknown {

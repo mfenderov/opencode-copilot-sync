@@ -29100,52 +29100,69 @@ function exceedsEnumLimits(values) {
   }
   return false;
 }
-function stripOversizedEnums(node, path5, onDrop, inProgress) {
-  if (Array.isArray(node)) {
-    if (inProgress.has(node)) return { node, changed: false };
-    inProgress.add(node);
-    let changed2 = false;
-    const out2 = node.map((item) => {
-      const result = stripOversizedEnums(item, path5, onDrop, inProgress);
-      if (result.changed) changed2 = true;
-      return result.node;
-    });
-    inProgress.delete(node);
-    return { node: out2, changed: changed2 };
+function shouldDropEnum(value) {
+  return Array.isArray(value) && exceedsEnumLimits(value);
+}
+function stripArrayItems(items, path5, onDrop, inProgress) {
+  if (inProgress.has(items)) return { node: items, changed: false };
+  inProgress.add(items);
+  let changed = false;
+  const out = [];
+  for (const item of items) {
+    const result = stripOversizedEnums(item, path5, onDrop, inProgress);
+    if (result.changed) changed = true;
+    out.push(result.node);
   }
-  if (typeof node !== "object" || node === null) {
-    return { node, changed: false };
+  inProgress.delete(items);
+  return { node: out, changed };
+}
+function stripEntry(key, value, childPath, parentPath, onDrop, inProgress) {
+  if (key === "enum") {
+    if (shouldDropEnum(value)) {
+      onDrop(parentPath, value.length);
+      return { value: void 0, changed: true, dropped: true };
+    }
+    return { value, changed: false, dropped: false };
   }
-  if (inProgress.has(node)) return { node, changed: false };
-  inProgress.add(node);
-  const source = node;
+  if (NON_SCHEMA_KEYS.has(key)) {
+    return { value, changed: false, dropped: false };
+  }
+  const result = stripOversizedEnums(value, childPath, onDrop, inProgress);
+  return { value: result.node, changed: result.changed, dropped: false };
+}
+function needsStringType(droppedOwnEnum, out) {
+  return droppedOwnEnum && !("type" in out) && !("$ref" in out);
+}
+function stripObjectSchema(source, path5, onDrop, inProgress) {
+  if (inProgress.has(source)) return { node: source, changed: false };
+  inProgress.add(source);
   const out = {};
   let changed = false;
   let droppedOwnEnum = false;
   for (const [key, value] of Object.entries(source)) {
-    if (key === "enum") {
-      if (Array.isArray(value) && exceedsEnumLimits(value)) {
-        onDrop(path5, value.length);
-        changed = true;
-        droppedOwnEnum = true;
-        continue;
-      }
-      out[key] = value;
+    const entry = stripEntry(key, value, `${path5}.${key}`, path5, onDrop, inProgress);
+    if (entry.dropped) {
+      changed = true;
+      droppedOwnEnum = true;
       continue;
     }
-    if (NON_SCHEMA_KEYS.has(key)) {
-      out[key] = value;
-      continue;
-    }
-    const result = stripOversizedEnums(value, `${path5}.${key}`, onDrop, inProgress);
-    if (result.changed) changed = true;
-    out[key] = result.node;
+    if (entry.changed) changed = true;
+    out[key] = entry.value;
   }
-  if (droppedOwnEnum && !("type" in out) && !("$ref" in out)) {
+  if (needsStringType(droppedOwnEnum, out)) {
     out.type = "string";
   }
-  inProgress.delete(node);
+  inProgress.delete(source);
   return { node: out, changed };
+}
+function stripOversizedEnums(node, path5, onDrop, inProgress) {
+  if (Array.isArray(node)) {
+    return stripArrayItems(node, path5, onDrop, inProgress);
+  }
+  if (typeof node !== "object" || node === null) {
+    return { node, changed: false };
+  }
+  return stripObjectSchema(node, path5, onDrop, inProgress);
 }
 function sanitizeToolParameters(schema, toolName, log) {
   const fallback = schema && typeof schema === "object" ? schema : { type: "object", properties: {} };
@@ -29975,6 +29992,263 @@ var ChatSessionCache = class _ChatSessionCache {
 };
 
 // src/chat/infrastructure/vscode-chat-provider.ts
+function resolveValidEfforts(model) {
+  const supportsReasoning = model.thinking !== false;
+  const rawEfforts = model.supportsReasoningEffort;
+  if (supportsReasoning && Array.isArray(rawEfforts) && rawEfforts.length > 0) {
+    return rawEfforts.filter((e) => e !== "none");
+  }
+  return void 0;
+}
+function buildConfigurationSchema(validEfforts, contextWindow) {
+  const properties = {};
+  if (validEfforts && validEfforts.length > 0) {
+    properties.reasoningEffort = {
+      type: "string",
+      title: "Thinking Effort",
+      enum: validEfforts,
+      enumItemLabels: validEfforts.map(effortLabel),
+      enumDescriptions: validEfforts.map(effortDescription),
+      default: validEfforts.includes("medium") ? "medium" : validEfforts[0],
+      group: "navigation"
+    };
+  }
+  if (contextWindow > 256e3) {
+    properties.contextTier = {
+      type: "string",
+      title: "Context Size",
+      enum: ["default", "long_context"],
+      enumItemLabels: ["Standard (128K)", "Extended (1M)"],
+      enumDescriptions: [
+        "Standard context window for faster generation and lower token usage",
+        "Full extended context window for large codebase analysis"
+      ],
+      default: "default",
+      group: "tokens"
+    };
+  }
+  return Object.keys(properties).length > 0 ? { properties } : void 0;
+}
+function describeModel(model) {
+  const validEfforts = resolveValidEfforts(model);
+  const tokenLimits = resolveModelTokenLimits(model.contextWindow, model.maxOutputTokens);
+  return {
+    id: model.id,
+    name: model.name,
+    family: model.family,
+    version: "1.0.0",
+    maxInputTokens: tokenLimits.maxInputTokens,
+    maxOutputTokens: tokenLimits.maxOutputTokens,
+    capabilities: {
+      imageInput: model.vision,
+      vision: model.vision,
+      toolCalling: true,
+      thinking: model.thinking !== false
+    },
+    supportsReasoningEffort: validEfforts,
+    supportedReasoningEfforts: validEfforts,
+    defaultReasoningEffort: validEfforts?.includes("medium") ? "medium" : validEfforts?.[0],
+    configurationSchema: buildConfigurationSchema(validEfforts, model.contextWindow),
+    isBYOK: true
+  };
+}
+async function tryRepairReasoningEcho(res, userDetail, attempt, input, ctx, log) {
+  if (res.status !== 400 || !ctx.isResponses || !userDetail.includes("encrypted_content")) {
+    return void 0;
+  }
+  log(`Detected reasoning echo error for model=${ctx.model.id}, retrying without stale reasoning...`);
+  const resanitized = sanitizeResponsesInput(input.responsesInput).filter((item) => !isStaleReasoningInput(item));
+  const retryBody = {
+    ...input.requestBody,
+    input: resanitized.length > 0 ? resanitized : input.formattedMessages.filter((m) => !isStaleReasoningInput(m))
+  };
+  try {
+    const retryRes = await fetchWithRetry(
+      attempt.url,
+      {
+        method: "POST",
+        headers: { ...attempt.clientHeaders, "x-opencode-request": generateOpenCodeRequestId() },
+        body: JSON.stringify(retryBody),
+        signal: attempt.abortSignal
+      },
+      { retries: 0 }
+    );
+    return retryRes;
+  } catch {
+    return void 0;
+  }
+}
+function throwForAuthError(input) {
+  if (input.isFreeTierError || input.res.status !== 401 && input.res.status !== 403) {
+    return;
+  }
+  const LMError = vscode6.LanguageModelError;
+  const cleanDetail = input.userDetail.replace(/^OpenCode authentication failed:\s*/i, "").trim();
+  const errMessage = cleanDetail ? `OpenCode authentication failed: ${cleanDetail}` : "OpenCode authentication failed: Invalid or expired API key.";
+  if (LMError?.NoPermissions) {
+    throw LMError.NoPermissions(errMessage);
+  }
+  throw new Error(errMessage);
+}
+function buildAlertNotice(res, model, reason, userDetail) {
+  return [
+    `> \u26A0\uFE0F **OpenCode Model Alert (${res.status} ${res.statusText || "Service Error"})**`,
+    `>`,
+    `> Unable to reach **${model.name}** (\`${model.id}\`): ${reason}.`,
+    `>`,
+    `> **Upstream detail:** \`${userDetail.slice(0, 300) || "Internal server error"}\``
+  ].join("\n");
+}
+async function handleUpstreamError(res, errText, attempt, input, ctx, progress, log) {
+  let userDetail = extractErrorMessage(errText);
+  log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`);
+  const repaired = await tryRepairReasoningEcho(res, userDetail, attempt, input, ctx, log);
+  if (repaired) {
+    if (repaired.ok) {
+      return { outcome: "stream", res: repaired, userDetail };
+    }
+    errText = await repaired.text().catch(() => "");
+    userDetail = extractErrorMessage(errText);
+    res = repaired;
+  }
+  if (!res.ok) {
+    const isFreeTierError = userDetail.includes("FreeTierError") || userDetail.toLowerCase().includes("free tier");
+    throwForAuthError({ res, userDetail, isFreeTierError });
+    const reason = classifyUpstreamAlert(res.status, userDetail, isFreeTierError);
+    progress.report(new vscode6.LanguageModelTextPart(buildAlertNotice(res, ctx.model, reason, userDetail)));
+    return { outcome: "handled", res, userDetail };
+  }
+  return { outcome: "stream", res, userDetail };
+}
+var TRANSIENT_RETRY_POLICY = {
+  // 5xx / network errors: treated as a likely-dead upstream, so we only give
+  // it one quick courtesy retry before surfacing the alert.
+  retries: 1,
+  baseDelayMs: 300,
+  maxDelayMs: 1e3,
+  // 429: a rate-limit cooldown is a "come back later" signal, not a dead
+  // upstream, so it gets its own much more patient budget — 3 back-to-back
+  // attempts, then 7 more spaced 1s apart (10 retries total), honoring
+  // Retry-After up to a 3s cap per wait so a long server-requested cooldown
+  // can't block the user for a full minute.
+  rateLimitRetries: 10,
+  rateLimitImmediateAttempts: 3,
+  rateLimitDelayMs: 1e3,
+  rateLimitMaxWaitMs: 3e3
+};
+async function postUpstreamRequest(input, token, log) {
+  const clientHeaders = createOpenCodeRequestHeaders(
+    input.apiKey,
+    input.sessionId,
+    generateOpenCodeRequestId()
+  );
+  let res;
+  try {
+    res = await fetchWithRetry(
+      input.url,
+      {
+        method: "POST",
+        headers: clientHeaders,
+        body: JSON.stringify(input.requestBody),
+        signal: input.abortSignal
+      },
+      TRANSIENT_RETRY_POLICY
+    );
+    return { res, clientHeaders };
+  } catch (err) {
+    if (token.isCancellationRequested || input.abortSignal.aborted) {
+      return "cancelled";
+    }
+    log(`Request failed before receiving a response: ${err?.message || err}`);
+    throw err;
+  }
+}
+async function runStallAttempt(input, stallAttempt, log) {
+  const posted = await postUpstreamRequest(
+    {
+      url: input.url,
+      requestBody: input.requestBody,
+      apiKey: input.apiKey,
+      sessionId: input.sessionId,
+      abortSignal: input.abortSignal
+    },
+    input.token,
+    log
+  );
+  if (posted === "cancelled") {
+    return "done";
+  }
+  let res = posted.res;
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    const handled = await handleUpstreamError(
+      res,
+      errText,
+      { url: input.url, clientHeaders: posted.clientHeaders, abortSignal: input.abortSignal },
+      {
+        responsesInput: input.responsesInput,
+        formattedMessages: input.formattedMessages,
+        requestBody: input.requestBody
+      },
+      { model: input.model, isResponses: input.isResponses },
+      input.progress,
+      log
+    );
+    if (handled.outcome === "handled") {
+      return "done";
+    }
+    res = handled.res;
+  }
+  const streamResult = await consumeProviderStream({
+    response: res,
+    modelId: input.model.id,
+    tools: input.options.tools,
+    progress: input.progress,
+    token: input.token,
+    abortSignal: input.abortSignal,
+    idleTimeoutMs: input.idleTimeoutMs,
+    stallAttempt,
+    maxStallRetries: input.maxStallRetries,
+    log
+  });
+  return streamResult;
+}
+function effortLabel(effort) {
+  switch (effort) {
+    case "minimal":
+      return "Minimal";
+    case "low":
+      return "Low";
+    case "medium":
+      return "Medium";
+    case "high":
+      return "High";
+    case "xhigh":
+      return "Extra High";
+    case "max":
+      return "Max";
+    default:
+      return effort.charAt(0).toUpperCase() + effort.slice(1);
+  }
+}
+function effortDescription(effort) {
+  switch (effort) {
+    case "minimal":
+      return "Minimal reasoning";
+    case "low":
+      return "Faster responses with light reasoning";
+    case "medium":
+      return "Balanced reasoning and speed";
+    case "high":
+      return "Deep reasoning";
+    case "xhigh":
+      return "Extra deep reasoning";
+    case "max":
+      return "Maximum reasoning depth";
+    default:
+      return `${effort} reasoning`;
+  }
+}
 function extractErrorMessage(rawJson) {
   try {
     const data = JSON.parse(rawJson);
@@ -29993,6 +30267,21 @@ function extractErrorMessage(rawJson) {
   } catch {
   }
   return rawJson;
+}
+function isSchemaValidationError(status, detail) {
+  return status === 400 && /\benum\b|\bschema\b|too many|exceeds|invalid_request/i.test(detail);
+}
+function classifyUpstreamAlert(status, detail, isFreeTierError) {
+  if (status === 404) {
+    return "stale model ID (renamed or removed by a later sync; re-run sync and re-pick the model)";
+  }
+  if (isFreeTierError) {
+    return "upstream free-tier policy error";
+  }
+  if (isSchemaValidationError(status, detail)) {
+    return "tool schema rejected by upstream (an attached tool declares a constraint the gateway cannot accept; retry without that tool, or re-run sync)";
+  }
+  return "upstream server error";
 }
 var OpenCodeChatProvider = class {
   constructor(context, outputChannel) {
@@ -30034,77 +30323,7 @@ var OpenCodeChatProvider = class {
     }
   }
   async provideLanguageModelChatInformation(_options, _token) {
-    return this._models.map((m) => {
-      const supportsReasoning = m.thinking !== false;
-      const properties = {};
-      const rawEfforts = m.supportsReasoningEffort;
-      const validEfforts = supportsReasoning && Array.isArray(rawEfforts) && rawEfforts.length > 0 ? rawEfforts.filter((e) => e !== "none") : void 0;
-      const defaultReasoningEffort = validEfforts?.includes("medium") ? "medium" : validEfforts?.[0];
-      if (validEfforts && validEfforts.length > 0) {
-        const enumItemLabels = validEfforts.map((e) => {
-          if (e === "minimal") return "Minimal";
-          if (e === "low") return "Low";
-          if (e === "medium") return "Medium";
-          if (e === "high") return "High";
-          if (e === "xhigh") return "Extra High";
-          if (e === "max") return "Max";
-          return e.charAt(0).toUpperCase() + e.slice(1);
-        });
-        const enumDescriptions = validEfforts.map((e) => {
-          if (e === "minimal") return "Minimal reasoning";
-          if (e === "low") return "Faster responses with light reasoning";
-          if (e === "medium") return "Balanced reasoning and speed";
-          if (e === "high") return "Deep reasoning";
-          if (e === "xhigh") return "Extra deep reasoning";
-          if (e === "max") return "Maximum reasoning depth";
-          return `${e} reasoning`;
-        });
-        properties.reasoningEffort = {
-          type: "string",
-          title: "Thinking Effort",
-          enum: validEfforts,
-          enumItemLabels,
-          enumDescriptions,
-          default: defaultReasoningEffort,
-          group: "navigation"
-        };
-      }
-      if (m.contextWindow > 256e3) {
-        properties.contextTier = {
-          type: "string",
-          title: "Context Size",
-          enum: ["default", "long_context"],
-          enumItemLabels: ["Standard (128K)", "Extended (1M)"],
-          enumDescriptions: [
-            "Standard context window for faster generation and lower token usage",
-            "Full extended context window for large codebase analysis"
-          ],
-          default: "default",
-          group: "tokens"
-        };
-      }
-      const configurationSchema = Object.keys(properties).length > 0 ? { properties } : void 0;
-      const tokenLimits = resolveModelTokenLimits(m.contextWindow, m.maxOutputTokens);
-      return {
-        id: m.id,
-        name: m.name,
-        family: m.family,
-        version: "1.0.0",
-        maxInputTokens: tokenLimits.maxInputTokens,
-        maxOutputTokens: tokenLimits.maxOutputTokens,
-        capabilities: {
-          imageInput: m.vision,
-          vision: m.vision,
-          toolCalling: true,
-          thinking: supportsReasoning
-        },
-        supportsReasoningEffort: validEfforts,
-        supportedReasoningEfforts: validEfforts,
-        defaultReasoningEffort,
-        configurationSchema,
-        isBYOK: true
-      };
-    });
+    return this._models.map((m) => describeModel(m));
   }
   async provideLanguageModelChatResponse(model, messages, options, progress, token) {
     const apiKey = await this.context.secrets.get("opencode_api_key") || (process.env.OPENCODE_API_KEY && process.env.OPENCODE_API_KEY.trim().length > 0 ? process.env.OPENCODE_API_KEY.trim() : void 0);
@@ -30163,119 +30382,28 @@ var OpenCodeChatProvider = class {
     );
     const maxStallRetries = 1;
     const idleTimeoutMs = getStreamIdleTimeoutMs();
+    const logger = (message) => {
+      this.log(message);
+    };
+    const loopInput = {
+      url,
+      requestBody,
+      apiKey,
+      sessionId,
+      model,
+      options,
+      progress,
+      token,
+      abortSignal: abortController.signal,
+      isResponses,
+      formattedMessages,
+      responsesInput,
+      idleTimeoutMs,
+      maxStallRetries
+    };
     for (let stallAttempt = 0; stallAttempt <= maxStallRetries; stallAttempt++) {
-      const clientHeaders = createOpenCodeRequestHeaders(
-        apiKey,
-        sessionId,
-        generateOpenCodeRequestId()
-      );
-      let res;
-      try {
-        res = await fetchWithRetry(
-          url,
-          {
-            method: "POST",
-            headers: clientHeaders,
-            body: JSON.stringify(requestBody),
-            signal: abortController.signal
-          },
-          {
-            // 5xx / network errors: treated as a likely-dead upstream, so we
-            // only give it one quick courtesy retry before surfacing the alert.
-            retries: 1,
-            baseDelayMs: 300,
-            maxDelayMs: 1e3,
-            // 429: a rate-limit cooldown is a "come back later" signal, not a
-            // dead upstream, so it gets its own much more patient budget — 3
-            // back-to-back attempts, then 7 more spaced 1s apart (10 retries
-            // total), honoring Retry-After up to a 3s cap per wait so a long
-            // server-requested cooldown can't block the user for a full minute.
-            rateLimitRetries: 10,
-            rateLimitImmediateAttempts: 3,
-            rateLimitDelayMs: 1e3,
-            rateLimitMaxWaitMs: 3e3
-          }
-        );
-      } catch (err) {
-        if (token.isCancellationRequested || abortController.signal.aborted) {
-          return;
-        }
-        this.log(`Request failed before receiving a response: ${err?.message || err}`);
-        throw err;
-      }
-      if (!res.ok) {
-        let errText = await res.text().catch(() => "");
-        let userDetail = extractErrorMessage(errText);
-        this.log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`);
-        if (res.status === 400 && isResponses && userDetail.includes("encrypted_content")) {
-          this.log(`Detected reasoning echo error for model=${model.id}, retrying without stale reasoning...`);
-          const resanitized = sanitizeResponsesInput(responsesInput).filter((item) => !isStaleReasoningInput(item));
-          const retryBody = {
-            ...requestBody,
-            input: resanitized.length > 0 ? resanitized : formattedMessages.filter((m) => !isStaleReasoningInput(m))
-          };
-          try {
-            const retryRes = await fetchWithRetry(
-              url,
-              {
-                method: "POST",
-                headers: {
-                  ...clientHeaders,
-                  "x-opencode-request": generateOpenCodeRequestId()
-                },
-                body: JSON.stringify(retryBody),
-                signal: abortController.signal
-              },
-              { retries: 0 }
-            );
-            if (retryRes.ok) {
-              res = retryRes;
-            } else {
-              errText = await retryRes.text().catch(() => "");
-              userDetail = extractErrorMessage(errText);
-            }
-          } catch {
-          }
-        }
-        if (!res.ok) {
-          const isFreeTierError = userDetail.includes("FreeTierError") || userDetail.toLowerCase().includes("free tier");
-          const isSchemaError = res.status === 400 && /\benum\b|\bschema\b|too many|exceeds|invalid_request/i.test(userDetail);
-          if (!isFreeTierError && (res.status === 401 || res.status === 403)) {
-            const LMError = vscode6.LanguageModelError;
-            const cleanDetail = userDetail.replace(/^OpenCode authentication failed:\s*/i, "").trim();
-            const errMessage = cleanDetail ? `OpenCode authentication failed: ${cleanDetail}` : "OpenCode authentication failed: Invalid or expired API key.";
-            if (LMError?.NoPermissions) {
-              throw LMError.NoPermissions(errMessage);
-            }
-            throw new Error(errMessage);
-          }
-          const reason = res.status === 404 ? "stale model ID (renamed or removed by a later sync; re-run sync and re-pick the model)" : isFreeTierError ? "upstream free-tier policy error" : isSchemaError ? "tool schema rejected by upstream (an attached tool declares a constraint the gateway cannot accept; retry without that tool, or re-run sync)" : "upstream server error";
-          const alertNotice = [
-            `> \u26A0\uFE0F **OpenCode Model Alert (${res.status} ${res.statusText || "Service Error"})**`,
-            `>`,
-            `> Unable to reach **${model.name}** (\`${model.id}\`): ${reason}.`,
-            `>`,
-            `> **Upstream detail:** \`${userDetail.slice(0, 300) || "Internal server error"}\``
-          ].join("\n");
-          progress.report(new vscode6.LanguageModelTextPart(alertNotice));
-          return;
-        }
-      }
-      const streamResult = await consumeProviderStream({
-        response: res,
-        modelId: model.id,
-        tools: options.tools,
-        progress,
-        token,
-        abortSignal: abortController.signal,
-        idleTimeoutMs,
-        stallAttempt,
-        maxStallRetries,
-        log: (message) => {
-          this.log(message);
-        }
-      });
-      if (streamResult === "retry") continue;
+      const outcome = await runStallAttempt(loopInput, stallAttempt, logger);
+      if (outcome === "retry") continue;
       return;
     }
   }
