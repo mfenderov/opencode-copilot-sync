@@ -27506,6 +27506,13 @@ async function promptAndSetApiKey(secrets, vscodeWindow) {
 // src/infrastructure/http/proxy-routing.ts
 var proxyAgentCtor;
 var proxyAgentLoadAttempted = false;
+function defaultProxyWarning(message) {
+  console.warn(message);
+}
+var warnProxyUnavailable = defaultProxyWarning;
+function setProxyWarningHandler(handler) {
+  warnProxyUnavailable = handler;
+}
 async function loadProxyAgentCtor() {
   if (proxyAgentLoadAttempted) return proxyAgentCtor;
   proxyAgentLoadAttempted = true;
@@ -27513,9 +27520,8 @@ async function loadProxyAgentCtor() {
     const undici = await Promise.resolve().then(() => __toESM(require_undici(), 1));
     proxyAgentCtor = undici.ProxyAgent;
   } catch (err) {
-    console.warn(
-      "OpenCode: proxy support unavailable (failed to load undici); requests will bypass the configured proxy.",
-      err
+    warnProxyUnavailable(
+      `OpenCode: proxy support unavailable (failed to load undici); requests will bypass the configured proxy. ${err instanceof Error ? err.message : String(err)}`
     );
     proxyAgentCtor = void 0;
   }
@@ -28588,7 +28594,7 @@ function writeProvidersToConfig(providers, targetPath, storagePath, options = {}
 }
 
 // src/models/application/synchronize-models.ts
-async function fetchOpenCodeCatalogIds(apiKey, includeGo, includeZen) {
+async function fetchOpenCodeCatalogIds(apiKey, includeGo, includeZen, log = () => void 0) {
   const [goOutcome, zenOutcome] = await Promise.allSettled([
     includeGo ? fetchOpenCodeModels(apiKey, "go") : Promise.resolve([]),
     includeZen ? fetchOpenCodeModels(apiKey, "zen") : Promise.resolve([])
@@ -28599,13 +28605,13 @@ async function fetchOpenCodeCatalogIds(apiKey, includeGo, includeZen) {
     goModelIds = goOutcome.value.filter(Boolean);
   } else {
     const message = goOutcome.reason instanceof Error ? goOutcome.reason.message : String(goOutcome.reason);
-    console.error(`Failed to fetch Go models: ${message}`);
+    log(`Failed to fetch Go models: ${message}`, "error");
   }
   if (zenOutcome.status === "fulfilled") {
     zenModelIds = zenOutcome.value.filter(Boolean);
   } else {
     const message = zenOutcome.reason instanceof Error ? zenOutcome.reason.message : String(zenOutcome.reason);
-    console.error(`Failed to fetch Zen models: ${message}`);
+    log(`Failed to fetch Zen models: ${message}`, "error");
   }
   return { goModelIds, zenModelIds };
 }
@@ -28668,7 +28674,7 @@ async function syncOpenCodeModels(apiKey, options = {}) {
   const includeGo = options.includeGo ?? true;
   const includeZen = options.includeZen ?? true;
   const [catalogIds, metadata] = await Promise.all([
-    fetchOpenCodeCatalogIds(apiKey, includeGo, includeZen),
+    fetchOpenCodeCatalogIds(apiKey, includeGo, includeZen, options.log),
     fetchOpenCodeModelMetadata()
   ]);
   const { models, zenCount } = buildUnifiedModels(
@@ -29944,7 +29950,7 @@ function handleStreamError(options, state, reader, streamErr) {
     options.log(`Stream canceled by user for model=${options.modelId}`);
     return "done";
   }
-  options.log(`Stream interrupted for model=${options.modelId}: ${errMsg}`);
+  options.log(`Stream interrupted for model=${options.modelId}: ${errMsg}`, "error");
   options.progress.report(
     new vscode5.LanguageModelTextPart(
       stallInterruptionMessage(errMsg)
@@ -29965,7 +29971,7 @@ function enforceRequiredToolMode(options, emittedToolCallIds) {
     return;
   }
   const message = `Upstream model ${options.modelId} returned no tool call although toolMode Required was requested. The request carried ${options.tools.length} tool(s); retry with toolMode Auto or without tools.`;
-  options.log(message);
+  options.log(message, "warn");
   options.progress.report(new vscode5.LanguageModelTextPart(message));
 }
 
@@ -30281,7 +30287,7 @@ function buildAlertNotice(res, model, reason, userDetail) {
 }
 async function handleUpstreamError(res, errText, attempt, input, ctx, progress, log) {
   let userDetail = extractErrorMessage(errText);
-  log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`);
+  log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`, res.status >= 500 ? "error" : "warn");
   const repaired = await tryRepairReasoningEcho(res, userDetail, attempt, input, ctx, log);
   if (repaired) {
     if (repaired.ok) {
@@ -30339,7 +30345,7 @@ async function postUpstreamRequest(input, token, log) {
     if (token.isCancellationRequested || input.abortSignal.aborted) {
       return "cancelled";
     }
-    log(`Request failed before receiving a response: ${err?.message || err}`);
+    log(`Request failed before receiving a response: ${err?.message || err}`, "error");
     throw err;
   }
 }
@@ -30491,8 +30497,8 @@ var OpenCodeChatProvider = class {
   // seen so far, and a new chain that extends a different branch of the same root
   // gets its own session instead of bleeding into the first chat's upstream context.
   sessionCache = new ChatSessionCache();
-  log(message) {
-    this.outputChannel?.appendLine(`[Provider] ${message}`);
+  log(message, level = "info") {
+    this.outputChannel?.[level](`[Provider] ${message}`);
   }
   refresh() {
     this._onDidChange.fire();
@@ -30521,8 +30527,8 @@ var OpenCodeChatProvider = class {
     const meta = this._models.find((m) => m.id === model.id || model.id.endsWith("/" + m.id));
     const isResponses = isResponsesModel(model.id, meta?.apiType);
     const isFreeOrZen = isFreeOrZenModel(model.id, meta);
-    const toolsPayload = formatProviderTools(options.tools, isResponses, isFreeOrZen, (message) => {
-      this.log(message);
+    const toolsPayload = formatProviderTools(options.tools, isResponses, isFreeOrZen, (message, level) => {
+      this.log(message, level);
     });
     const responsesInput = isResponses ? buildResponsesInput(formattedMessages) : [];
     const abortController = new AbortController();
@@ -30567,8 +30573,8 @@ var OpenCodeChatProvider = class {
     );
     const maxStallRetries = 1;
     const idleTimeoutMs = getStreamIdleTimeoutMs();
-    const logger = (message) => {
-      this.log(message);
+    const logger = (message, level) => {
+      this.log(message, level);
     };
     const loopInput = {
       url,
@@ -30792,9 +30798,9 @@ var OpenCodeUsageTreeProvider = class {
 
 // src/extension.ts
 async function activate(context) {
-  const outputChannel = vscode8.window.createOutputChannel("OpenCode Copilot Sync");
+  const outputChannel = vscode8.window.createOutputChannel("OpenCode Copilot Sync", { log: true });
   context.subscriptions.push(outputChannel);
-  outputChannel.appendLine(
+  outputChannel.info(
     `[Platform] OS: ${process.platform} (${process.arch}), Remote: ${vscode8.env.remoteName || "local"}, App: ${vscode8.env.appName}`
   );
   const applyProxySetting = () => {
@@ -30802,6 +30808,9 @@ async function activate(context) {
     setVSCodeProxyUrl(proxyUrl || void 0);
   };
   applyProxySetting();
+  setProxyWarningHandler((message) => {
+    outputChannel.warn(message);
+  });
   context.subscriptions.push(
     vscode8.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("http.proxy")) {
@@ -30814,15 +30823,15 @@ async function activate(context) {
     vscode8.lm.registerLanguageModelChatProvider("opencode", chatProvider)
   );
   chatProvider.refresh();
-  outputChannel.appendLine("Registered native OpenCode LanguageModelChatProvider with VS Code.");
+  outputChannel.info("Registered native OpenCode LanguageModelChatProvider with VS Code.");
   try {
     const agentHostCfg = vscode8.workspace.getConfiguration("chat.agentHost");
     if (!agentHostCfg.get("byokModels.enabled", false)) {
       await agentHostCfg.update("byokModels.enabled", true, vscode8.ConfigurationTarget.Global);
-      outputChannel.appendLine("Enabled chat.agentHost.byokModels.enabled for Agent Mode support.");
+      outputChannel.info("Enabled chat.agentHost.byokModels.enabled for Agent Mode support.");
     }
   } catch (err) {
-    outputChannel.appendLine(`Note: Could not set chat.agentHost.byokModels.enabled: ${err.message}`);
+    outputChannel.warn(`Note: Could not set chat.agentHost.byokModels.enabled: ${err.message}`);
   }
   const statusBarItem = vscode8.window.createStatusBarItem(vscode8.StatusBarAlignment.Right, 99);
   statusBarItem.text = "$(hubot) OpenCode";
@@ -30866,22 +30875,28 @@ async function activate(context) {
     return resolveApiKey(context.secrets, promptIfMissing, promptWindow);
   }
   async function runSyncWithProgress(interactive, apiKey, syncOptions) {
-    if (!interactive) return syncOpenCodeModels(apiKey, syncOptions);
+    const options = {
+      ...syncOptions,
+      log: (message, level = "info") => {
+        outputChannel[level](message);
+      }
+    };
+    if (!interactive) return syncOpenCodeModels(apiKey, options);
     return vscode8.window.withProgress(
       {
         location: vscode8.ProgressLocation.Notification,
         title: "OpenCode: Fetching models and syncing to Copilot...",
         cancellable: false
       },
-      () => syncOpenCodeModels(apiKey, syncOptions)
+      () => syncOpenCodeModels(apiKey, options)
     );
   }
   function logSyncResult(syncResult, interactive) {
-    outputChannel.appendLine(
+    outputChannel.info(
       `${interactive ? "" : "[Startup] "}Synced ${syncResult.totalCount} unified OpenCode models (${syncResult.goCount} Go + ${syncResult.zenCount} Zen) to native provider.`
     );
     syncResult.warnings.forEach((warning) => {
-      outputChannel.appendLine(`[Compatibility mirror] ${warning}`);
+      outputChannel.warn(`[Compatibility mirror] ${warning}`);
     });
   }
   function reportSyncResult(syncResult, interactive) {
@@ -30923,7 +30938,7 @@ async function activate(context) {
   }
   function reportSyncFailure(error, interactive) {
     const message = formatSyncFailureMessage(error);
-    outputChannel.appendLine(`[Sync Error] ${message}`);
+    outputChannel.error(`[Sync Error] ${message}`);
     if (interactive) {
       vscode8.window.showErrorMessage(`OpenCode sync failed: ${message}`);
     }

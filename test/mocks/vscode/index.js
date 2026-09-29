@@ -48,7 +48,7 @@ export class LanguageModelError extends Error {
   }
 }
 export const window = {
-  createOutputChannel: () => ({ appendLine: () => {}, append: () => {}, show: () => {} }),
+  createOutputChannel: () => ({ appendLine: () => {}, append: () => {}, show: () => {}, trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
   registerTreeDataProvider: () => ({ dispose: () => {} }),
   createStatusBarItem: () => ({ text: '', tooltip: '', command: undefined, show: () => {} }),
   showWarningMessage: async () => undefined,

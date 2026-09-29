@@ -1,6 +1,7 @@
 // Chat application: chat message orchestration (stream loop, watchdog).
 import * as vscode from 'vscode';
 import { isSyntheticVerificationTool } from '../infrastructure/tool-mapper.js';
+import type { LogFn } from '../infrastructure/vscode-chat-provider.js';
 import {
   ThinkTagStreamParser,
   parseSseLine,
@@ -24,7 +25,7 @@ export interface ConsumeProviderStreamOptions {
   idleTimeoutMs: number;
   stallAttempt: number;
   maxStallRetries: number;
-  log(message: string): void;
+  log: LogFn;
 }
 
 export type ConsumeProviderStreamResult = 'retry' | 'done';
@@ -348,7 +349,7 @@ function handleStreamError(
     options.log(`Stream canceled by user for model=${options.modelId}`);
     return 'done';
   }
-  options.log(`Stream interrupted for model=${options.modelId}: ${errMsg}`);
+  options.log(`Stream interrupted for model=${options.modelId}: ${errMsg}`, 'error');
   options.progress.report(
     new vscode.LanguageModelTextPart(
       stallInterruptionMessage(errMsg)
@@ -381,6 +382,6 @@ function enforceRequiredToolMode(
   const message =
     `Upstream model ${options.modelId} returned no tool call although toolMode Required was requested. ` +
     `The request carried ${options.tools.length} tool(s); retry with toolMode Auto or without tools.`;
-  options.log(message);
+  options.log(message, 'warn');
   options.progress.report(new vscode.LanguageModelTextPart(message));
 }

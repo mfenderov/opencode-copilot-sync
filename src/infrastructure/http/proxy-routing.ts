@@ -13,6 +13,18 @@ import type { FetchInit } from './fetch-policy.js';
 let proxyAgentCtor: typeof ProxyAgentType | undefined;
 let proxyAgentLoadAttempted = false;
 
+type WarnFn = (message: string) => void;
+
+function defaultProxyWarning(message: string): void {
+  console.warn(message);
+}
+
+let warnProxyUnavailable: WarnFn = defaultProxyWarning;
+
+export function setProxyWarningHandler(handler: WarnFn): void {
+  warnProxyUnavailable = handler;
+}
+
 async function loadProxyAgentCtor(): Promise<typeof ProxyAgentType | undefined> {
   if (proxyAgentLoadAttempted) return proxyAgentCtor;
   proxyAgentLoadAttempted = true;
@@ -20,9 +32,8 @@ async function loadProxyAgentCtor(): Promise<typeof ProxyAgentType | undefined> 
     const undici = await import('undici');
     proxyAgentCtor = undici.ProxyAgent;
   } catch (err) {
-    console.warn(
-      'OpenCode: proxy support unavailable (failed to load undici); requests will bypass the configured proxy.',
-      err
+    warnProxyUnavailable(
+      `OpenCode: proxy support unavailable (failed to load undici); requests will bypass the configured proxy. ${err instanceof Error ? err.message : String(err)}`
     );
     proxyAgentCtor = undefined;
   }
