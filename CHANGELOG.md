@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.18.7 - 2026-09-29
+#### Bug Fixes
+- (**provider**) drop oversized tool enum properties to prevent gateway 400s (#9) - (683ec6c) - Mark Fenderov
+
+- - -
+
 ## v0.18.6 - 2026-09-25
 #### Documentation
 - (**structure**) commit DDD design spec and implementation plan - (3b412f8) - Mark Fenderov
