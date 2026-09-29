@@ -16,6 +16,7 @@ export interface ConsumeProviderStreamOptions {
   response: Response;
   modelId: string;
   tools: readonly vscode.LanguageModelChatTool[] | undefined;
+  toolMode?: vscode.LanguageModelChatToolMode;
   progress: vscode.Progress<vscode.LanguageModelResponsePart>;
   token: vscode.CancellationToken;
   abortSignal: AbortSignal;
@@ -264,5 +265,35 @@ export async function consumeProviderStream(
     }
   }
 
+  enforceRequiredToolMode(options, emittedToolCallIds);
+
   return isStallRetry ? 'retry' : 'done';
+}
+
+/**
+ * Honors the provider contract for `toolMode: Required`: when the caller
+ * demands a tool call and the stream emitted none (excluding synthetic
+ * verification calls, which are filtered before emission), say so loudly
+ * rather than silently returning text the caller did not ask for.
+ */
+function enforceRequiredToolMode(
+  options: ConsumeProviderStreamOptions,
+  emittedToolCallIds: Set<string>
+): void {
+  const toolModes: { Required?: unknown } | undefined = (vscode as unknown as { LanguageModelChatToolMode?: { Required?: unknown } }).LanguageModelChatToolMode;
+  const Required = toolModes?.Required;
+  if (Required === undefined || options.toolMode !== Required) {
+    return;
+  }
+  if (emittedToolCallIds.size > 0) {
+    return;
+  }
+  if (!options.tools || options.tools.length === 0) {
+    return;
+  }
+  const message =
+    `Upstream model ${options.modelId} returned no tool call although toolMode Required was requested. ` +
+    `The request carried ${options.tools.length} tool(s); retry with toolMode Auto or without tools.`;
+  options.log(message);
+  options.progress.report(new vscode.LanguageModelTextPart(message));
 }

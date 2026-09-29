@@ -14,11 +14,6 @@
     "complexity": 6,
     "coverage": 0.031
   },
-  "src/chat/application/send-chat-message.ts:30:consumeProviderStream": {
-    "crap": 38.32,
-    "complexity": 36,
-    "coverage": 0.879
-  },
   "src/models/infrastructure/models-dev-client.ts:158:checkZenBalance": {
     "crap": 36.43,
     "complexity": 7,
@@ -83,5 +78,10 @@
     "crap": 11.01,
     "complexity": 11,
     "coverage": 0.953
+  },
+  "src/chat/application/send-chat-message.ts:31:consumeProviderStream": {
+    "crap": 38.32,
+    "complexity": 36,
+    "coverage": 0.879
   }
 }

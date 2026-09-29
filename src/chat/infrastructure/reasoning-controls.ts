@@ -30,13 +30,39 @@ export function normalizeReasoningEffort(
 }
 
 export function getReasoningEffort(options: vscode.ProvideLanguageModelChatResponseOptions): string | undefined {
+  // The documented channel comes first: ProvideLanguageModelChatResponseOptions.modelOptions
+  // is where a spec-conformant caller sets per-model knobs (typed as an open
+  // string map, so its values are unknown by design). The remaining shapes are
+  // observed-not-documented — Copilot and related hosts pass these today, so
+  // they stay as fallbacks rather than being dropped.
+  const documented = documentedEffort(options.modelOptions);
+  if (documented) return documented;
+  return legacyEffort(options as unknown as Record<string, unknown>);
+}
+
+function asEffortString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function documentedEffort(modelOptions: Record<string, unknown> | undefined): string | undefined {
+  return asEffortString(modelOptions?.reasoningEffort) ?? asEffortString(modelOptions?.thinkingLevel);
+}
+
+function configEffort(configuration: Record<string, unknown> | undefined): string | undefined {
   return (
-    (options as any)?.modelConfiguration?.reasoningEffort ||
-    (options as any)?.modelConfiguration?.thinkingLevel ||
-    (options as any)?.configuration?.reasoningEffort ||
-    (options as any)?.configuration?.thinkingLevel ||
-    (options as any)?.reasoningEffort ||
-    (options as any)?.thinkingLevel
+    asEffortString(configuration?.reasoningEffort) ??
+    asEffortString(configuration?.thinkingLevel)
+  );
+}
+
+function legacyEffort(legacy: Record<string, unknown>): string | undefined {
+  const modelConfiguration = legacy.modelConfiguration as Record<string, unknown> | undefined;
+  const configuration = legacy.configuration as Record<string, unknown> | undefined;
+  return (
+    configEffort(modelConfiguration) ??
+    configEffort(configuration) ??
+    asEffortString(legacy.reasoningEffort) ??
+    asEffortString(legacy.thinkingLevel)
   );
 }
 

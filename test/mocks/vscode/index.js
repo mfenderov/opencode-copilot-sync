@@ -30,6 +30,7 @@ export class LanguageModelDataPart {
 export class LanguageModelToolCallPart { constructor(callId, name, input) { this.callId = callId; this.name = name; this.input = input; } }
 export class LanguageModelToolResultPart { constructor(callId, content) { this.callId = callId; this.content = content; } }
 export class LanguageModelThinkingPart { constructor(value, id) { this.value = value; this.id = id; } }
+export const LanguageModelChatToolMode = { Auto: 1, Required: 2 };
 export class LanguageModelError extends Error {
   constructor(message, code) {
     super(message);

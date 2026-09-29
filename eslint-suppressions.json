@@ -66,20 +66,8 @@
     }
   },
   "src/chat/infrastructure/reasoning-controls.ts": {
-    "@typescript-eslint/no-explicit-any": {
-      "count": 6
-    },
     "@typescript-eslint/no-unnecessary-type-conversion": {
       "count": 1
-    },
-    "@typescript-eslint/no-unsafe-member-access": {
-      "count": 6
-    },
-    "@typescript-eslint/no-unsafe-return": {
-      "count": 1
-    },
-    "@typescript-eslint/prefer-nullish-coalescing": {
-      "count": 5
     }
   },
   "src/chat/infrastructure/responses-parser.ts": {

@@ -2,7 +2,7 @@ import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import * as vscode from 'vscode';
-import { OpenCodeChatProvider } from '../out/chat/infrastructure/vscode-chat-provider.js';
+import { OpenCodeChatProvider, charsPerToken, AGENT_MODE_INFO_KEYS } from '../out/chat/infrastructure/vscode-chat-provider.js';
 import { startMockServer } from './helpers/mock-opencode-server.js';
 
 let mockServer;
@@ -368,7 +368,7 @@ test('Provider [provideTokenCount]: estimates token count from text or message',
   const token = createMockToken();
 
   const count1 = await provider.provideTokenCount(GO_CHAT_MODEL, 'Hello world from Copilot OpenCode sync!', token);
-  assert.equal(count1, Math.ceil('Hello world from Copilot OpenCode sync!'.length / 4));
+  assert.equal(count1, Math.ceil('Hello world from Copilot OpenCode sync!'.length / charsPerToken(GO_CHAT_MODEL.id)));
 
   const count2 = await provider.provideTokenCount(
     GO_CHAT_MODEL,
@@ -376,6 +376,21 @@ test('Provider [provideTokenCount]: estimates token count from text or message',
     token
   );
   assert.ok(count2 > 0);
+});
+
+test('Provider [provideTokenCount]: varies estimate by model family and never returns zero', async () => {
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const token = createMockToken();
+  const text = 'x'.repeat(360);
+
+  const gpt = await provider.provideTokenCount({ id: 'gpt-5.5' }, text, token);
+  const deepseek = await provider.provideTokenCount({ id: 'deepseek-v4-pro' }, text, token);
+  const unknown = await provider.provideTokenCount({ id: 'something-new-99' }, text, token);
+  assert.equal(gpt, Math.ceil(360 / 4), 'GPT-family ratio applies');
+  assert.equal(deepseek, Math.ceil(360 / 3.4), 'code-heavy families estimate denser tokenization');
+  assert.equal(unknown, Math.ceil(360 / 3.6), 'unknown families fall back to the default ratio');
+  assert.ok((await provider.provideTokenCount({ id: 'gpt-5.5' }, '', token)) >= 1, 'empty input still counts at least one token');
 });
 
 test('Provider [provideLanguageModelChatInformation]: dynamically sets reasoningEffort enum strictly to supported levels', async () => {
@@ -437,6 +452,30 @@ test('Provider [provideLanguageModelChatInformation]: dynamically sets reasoning
   assert.equal(qwenInfo.capabilities.thinking, false);
   assert.strictEqual(qwenInfo.supportsReasoningEffort, undefined);
   assert.strictEqual(qwenInfo.configurationSchema?.properties?.reasoningEffort, undefined);
+});
+
+test('Provider [model information]: pins the undocumented Agent Mode key set', async () => {
+  // The stable LanguageModelChatInformation contract does not include the
+  // agent-host BYOK keys; they are asserted here so an upstream drift shows
+  // up as a test failure instead of a silent Agent Mode regression.
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const token = createMockToken();
+  const info = await provider.provideLanguageModelChatInformation({}, token);
+  assert.ok(info.length > 0);
+
+  const stableKeys = new Set([
+    'id', 'name', 'family', 'version', 'maxInputTokens', 'maxOutputTokens',
+    'capabilities', 'tooltip', 'detail',
+  ]);
+  for (const model of info) {
+    const extra = Object.keys(model).filter((k) => !stableKeys.has(k));
+    assert.deepEqual(
+      [...extra].sort(),
+      [...AGENT_MODE_INFO_KEYS].sort(),
+      `model ${model.id} carries exactly the documented Agent Mode keys — update AGENT_MODE_INFO_KEYS if the bridge changed`
+    );
+  }
 });
 
 test('Provider [model information]: caps stale output metadata before Agent Mode budgeting', async () => {

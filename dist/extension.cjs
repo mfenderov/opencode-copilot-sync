@@ -29247,7 +29247,23 @@ function normalizeReasoningEffort(effort, isResponses) {
   return isResponses ? { reasoning: { effort: mappedEffort } } : { reasoning_effort: mappedEffort };
 }
 function getReasoningEffort(options) {
-  return options?.modelConfiguration?.reasoningEffort || options?.modelConfiguration?.thinkingLevel || options?.configuration?.reasoningEffort || options?.configuration?.thinkingLevel || options?.reasoningEffort || options?.thinkingLevel;
+  const documented = documentedEffort(options.modelOptions);
+  if (documented) return documented;
+  return legacyEffort(options);
+}
+function asEffortString(value) {
+  return typeof value === "string" && value.length > 0 ? value : void 0;
+}
+function documentedEffort(modelOptions) {
+  return asEffortString(modelOptions?.reasoningEffort) ?? asEffortString(modelOptions?.thinkingLevel);
+}
+function configEffort(configuration) {
+  return asEffortString(configuration?.reasoningEffort) ?? asEffortString(configuration?.thinkingLevel);
+}
+function legacyEffort(legacy) {
+  const modelConfiguration = legacy.modelConfiguration;
+  const configuration = legacy.configuration;
+  return configEffort(modelConfiguration) ?? configEffort(configuration) ?? asEffortString(legacy.reasoningEffort) ?? asEffortString(legacy.thinkingLevel);
 }
 function isStaleReasoningInput(item) {
   if (typeof item !== "object" || item === null) return false;
@@ -29807,7 +29823,24 @@ async function consumeProviderStream(options) {
       }
     }
   }
+  enforceRequiredToolMode(options, emittedToolCallIds);
   return isStallRetry ? "retry" : "done";
+}
+function enforceRequiredToolMode(options, emittedToolCallIds) {
+  const toolModes = vscode5.LanguageModelChatToolMode;
+  const Required = toolModes?.Required;
+  if (Required === void 0 || options.toolMode !== Required) {
+    return;
+  }
+  if (emittedToolCallIds.size > 0) {
+    return;
+  }
+  if (!options.tools || options.tools.length === 0) {
+    return;
+  }
+  const message = `Upstream model ${options.modelId} returned no tool call although toolMode Required was requested. The request carried ${options.tools.length} tool(s); retry with toolMode Auto or without tools.`;
+  options.log(message);
+  options.progress.report(new vscode5.LanguageModelTextPart(message));
 }
 
 // src/models/infrastructure/verified-catalog.ts
@@ -30224,6 +30257,7 @@ async function runStallAttempt(input, stallAttempt, log) {
     response: res,
     modelId: input.model.id,
     tools: input.options.tools,
+    toolMode: input.options.toolMode,
     progress: input.progress,
     token: input.token,
     abortSignal: input.abortSignal,
@@ -30432,11 +30466,28 @@ var OpenCodeChatProvider = class {
       return;
     }
   }
-  provideTokenCount(_model, text, _token) {
-    const raw = typeof text === "string" ? text : JSON.stringify(text);
-    return Promise.resolve(Math.ceil(raw.length / 4));
+  provideTokenCount(model, text, _token) {
+    return Promise.resolve(estimateTokenCount(model.id, text));
   }
 };
+var CHARS_PER_TOKEN_BY_FAMILY = [
+  [/^(gpt-|o1|o3|o4)/i, 4],
+  [/^claude/i, 3.7],
+  [/^(muse|gemini)/i, 4],
+  [/^(grok|deepseek|qwen|llama|mi(mo|x)|kimi|glm)/i, 3.4]
+];
+function charsPerToken(modelId) {
+  if (typeof modelId === "string") {
+    for (const [pattern, ratio] of CHARS_PER_TOKEN_BY_FAMILY) {
+      if (pattern.test(modelId)) return ratio;
+    }
+  }
+  return 3.6;
+}
+function estimateTokenCount(modelId, text) {
+  const raw = typeof text === "string" ? text : JSON.stringify(text);
+  return Math.max(1, Math.ceil(raw.length / charsPerToken(modelId)));
+}
 
 // src/usage/infrastructure/usage-tree-adapter.ts
 var vscode7 = __toESM(require("vscode"), 1);
