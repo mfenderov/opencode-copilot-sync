@@ -89,6 +89,107 @@ test('streams Responses reasoning and output text through their respective part 
   );
 });
 
+test('streams Responses object-form deltas and merges done-item arguments', async () => {
+  const progress = createProgress();
+  const result = await consumeProviderStream({
+    response: createResponse([
+      sse({ type: 'response.output_text.delta', delta: { text: 'object text' } }),
+      sse({ type: 'response.reasoning_text.delta', delta: { value: 'object reasoning' } }),
+      sse({
+        type: 'response.output_item.done',
+        output_index: 0,
+        item: { type: 'function_call', call_id: 'call_obj_1', name: 'lookup', arguments: { key: 'a' } },
+      }),
+      sse({ type: 'response.completed', response: { output: [] } }),
+    ]),
+    modelId: 'muse-spark-1.3',
+    tools: undefined,
+    progress,
+    token: createToken(),
+    abortSignal: new AbortController().signal,
+    idleTimeoutMs: 1000,
+    stallAttempt: 0,
+    maxStallRetries: 1,
+    log() {},
+  });
+
+  assert.equal(result, 'done');
+  assert.deepEqual(
+    progress.parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value),
+    ['object text']
+  );
+  assert.ok(
+    progress.parts.some((part) => part instanceof vscode.LanguageModelThinkingPart && part.value === 'object reasoning')
+  );
+  const calls = progress.parts.filter((part) => part instanceof vscode.LanguageModelToolCallPart);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].callId, 'call_obj_1');
+  assert.deepEqual(calls[0].input, { key: 'a' });
+});
+
+test('queues completed-item function calls without emitting them early', async () => {
+  const progress = createProgress();
+  const result = await consumeProviderStream({
+    response: createResponse([
+      sse({
+        type: 'response.completed',
+        response: {
+          output: [
+            { type: 'function_call', call_id: 'call_obj_2', name: 'lookup', arguments: { key: 'b' } },
+          ],
+        },
+      }),
+    ]),
+    modelId: 'muse-spark-1.3',
+    tools: undefined,
+    progress,
+    token: createToken(),
+    abortSignal: new AbortController().signal,
+    idleTimeoutMs: 1000,
+    stallAttempt: 0,
+    maxStallRetries: 1,
+    log() {},
+  });
+
+  assert.equal(result, 'done');
+  // response.completed terminates the stream; queued function calls are
+  // flushed by the stream's completion path.
+  const calls = progress.parts.filter((part) => part instanceof vscode.LanguageModelToolCallPart);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].callId, 'call_obj_2');
+  assert.deepEqual(calls[0].input, { key: 'b' });
+});
+
+test('merges done-item argument fragments into accumulated string args', async () => {
+  const progress = createProgress();
+  const result = await consumeProviderStream({
+    response: createResponse([
+      sse({ type: 'response.function_call_arguments.delta', output_index: 0, delta: '{"key":' }),
+      sse({
+        type: 'response.output_item.done',
+        output_index: 0,
+        item: { type: 'function_call', call_id: 'call_merge_1', name: 'lookup', arguments: '"value"}' },
+      }),
+      sse({ type: 'response.completed', response: { output: [] } }),
+    ]),
+    modelId: 'muse-spark-1.3',
+    tools: undefined,
+    progress,
+    token: createToken(),
+    abortSignal: new AbortController().signal,
+    idleTimeoutMs: 1000,
+    stallAttempt: 0,
+    maxStallRetries: 1,
+    log() {},
+  });
+
+  assert.equal(result, 'done');
+  const calls = progress.parts.filter((part) => part instanceof vscode.LanguageModelToolCallPart);
+  assert.equal(calls.length, 1);
+  // The done-item fragment is appended verbatim to the accumulated args.
+  assert.deepEqual(calls[0].input, { key: 'value' });
+});
+
 test('forwards one Responses usage payload for VS Code Agent Mode', async () => {
   const progress = createProgress();
   const result = await consumeProviderStream({

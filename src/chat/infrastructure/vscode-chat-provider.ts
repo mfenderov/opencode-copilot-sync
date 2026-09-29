@@ -69,6 +69,24 @@ function buildConfigurationSchema(
   return Object.keys(properties).length > 0 ? { properties } : undefined;
 }
 
+/**
+ * Keys beyond the stable `LanguageModelChatInformation` contract
+ * (id/family/version/maxInputTokens/maxOutputTokens/capabilities/tooltip/detail).
+ * These are read by VS Code's experimental agent-host BYOK bridge
+ * (`chat.agentHost.byokModels`) so custom models appear in Agent Mode — see
+ * the opt-in in extension.ts. They are undocumented and may move without a
+ * compile error, which is why AGENT_MODE_INFO_KEYS is asserted by test
+ * rather than by the type system: a drift shows up as a test failure, not a
+ * silent UI regression.
+ */
+export const AGENT_MODE_INFO_KEYS = [
+  'isBYOK',
+  'supportsReasoningEffort',
+  'supportedReasoningEfforts',
+  'defaultReasoningEffort',
+  'configurationSchema',
+] as const;
+
 function describeModel(model: OpenCodeModelMeta): Record<string, unknown> {
   const validEfforts = resolveValidEfforts(model);
   const tokenLimits = resolveModelTokenLimits(model.contextWindow, model.maxOutputTokens);
@@ -368,6 +386,7 @@ async function runStallAttempt(
     response: res,
     modelId: input.model.id,
     tools: input.options.tools,
+    toolMode: input.options.toolMode,
     progress: input.progress,
     token: input.token,
     abortSignal: input.abortSignal,
@@ -621,11 +640,40 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
   }
 
   provideTokenCount(
-    _model: vscode.LanguageModelChatInformation,
+    model: vscode.LanguageModelChatInformation,
     text: string | vscode.LanguageModelChatRequestMessage,
     _token: vscode.CancellationToken
   ): Thenable<number> {
-    const raw = typeof text === 'string' ? text : JSON.stringify(text);
-    return Promise.resolve(Math.ceil(raw.length / 4));
+    return Promise.resolve(estimateTokenCount(model.id, text));
   }
+}
+
+/**
+ * Best-effort token estimate, documented as approximate. Chars-per-token
+ * varies by model family (code-heavy models tokenize identifiers more
+ * densely). Callers needing exact budgets should treat this as a lower bound
+ * and leave headroom.
+ */
+const CHARS_PER_TOKEN_BY_FAMILY: readonly (readonly [RegExp, number])[] = [
+  [/^(gpt-|o1|o3|o4)/i, 4],
+  [/^claude/i, 3.7],
+  [/^(muse|gemini)/i, 4],
+  [/^(grok|deepseek|qwen|llama|mi(mo|x)|kimi|glm)/i, 3.4],
+];
+
+export function charsPerToken(modelId: string | undefined): number {
+  if (typeof modelId === 'string') {
+    for (const [pattern, ratio] of CHARS_PER_TOKEN_BY_FAMILY) {
+      if (pattern.test(modelId)) return ratio;
+    }
+  }
+  return 3.6;
+}
+
+function estimateTokenCount(
+  modelId: string | undefined,
+  text: string | vscode.LanguageModelChatRequestMessage
+): number {
+  const raw = typeof text === 'string' ? text : JSON.stringify(text);
+  return Math.max(1, Math.ceil(raw.length / charsPerToken(modelId)));
 }

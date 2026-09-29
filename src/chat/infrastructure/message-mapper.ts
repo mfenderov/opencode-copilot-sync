@@ -42,6 +42,54 @@ export type ResponsesInputItem =
   | ResponsesInputFunctionCallOutput
   | Record<string, unknown>;
 
+function stringifyToolInput(input: unknown): string {
+  return typeof input === 'string' ? input : JSON.stringify(input);
+}
+
+function formatToolCallPart(part: vscode.LanguageModelToolCallPart): FormattedToolCall {
+  return {
+    id: part.callId,
+    type: 'function',
+    function: {
+      name: part.name,
+      arguments: stringifyToolInput(part.input),
+    },
+  };
+}
+
+interface ResultPartValue {
+  value?: unknown;
+}
+
+function partText(part: unknown): string {
+  if (typeof part === 'string') return part;
+  if (part && typeof part === 'object' && typeof (part as ResultPartValue).value === 'string') {
+    return (part as ResultPartValue).value as string;
+  }
+  return JSON.stringify(part ?? '') ?? '';
+}
+
+function formatToolResultContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map(partText).join('\n');
+  }
+  if (content !== undefined && content !== null) {
+    return JSON.stringify(content) ?? '';
+  }
+  return '';
+}
+
+function isStaleThinkingPart(part: unknown): boolean {
+  const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
+  return (
+    (ThinkingPart && part instanceof ThinkingPart) ||
+    (part as any)?.constructor?.name === 'LanguageModelThinkingPart' ||
+    (part as any)?.type === 'thinking' ||
+    (part as any)?.type === 'reasoning'
+  );
+}
+
 export function formatProviderMessages(
   messages: readonly vscode.LanguageModelChatRequestMessage[]
 ): FormattedMessage[] {
@@ -56,51 +104,19 @@ export function formatProviderMessages(
     const toolCalls: FormattedToolCall[] = [];
 
     for (const part of msg.content) {
-      const ThinkingPart = (vscode as any).LanguageModelThinkingPart;
-      const isThinkingPart =
-        (ThinkingPart && part instanceof ThinkingPart) ||
-        (part as any)?.constructor?.name === 'LanguageModelThinkingPart' ||
-        (part as any)?.type === 'thinking' ||
-        (part as any)?.type === 'reasoning';
-      if (isThinkingPart) {
+      if (isStaleThinkingPart(part)) {
         // Stale reasoning from prior turns MUST NEVER be replayed into textContent or input
         continue;
       }
       if (part instanceof vscode.LanguageModelTextPart) {
         textContent += part.value;
       } else if (part instanceof vscode.LanguageModelToolCallPart) {
-        toolCalls.push({
-          id: part.callId,
-          type: 'function',
-          function: {
-            name: part.name,
-            arguments:
-              typeof part.input === 'string'
-                ? part.input
-                : JSON.stringify(part.input),
-          },
-        });
+        toolCalls.push(formatToolCallPart(part));
       } else if (part instanceof vscode.LanguageModelToolResultPart) {
-        let resultStr = '';
-        if (typeof part.content === 'string') {
-          resultStr = part.content;
-        } else if (Array.isArray(part.content)) {
-          resultStr = part.content
-            .map((p: any) => {
-              if (typeof p === 'string') return p;
-              if (p && typeof p.value === 'string') return p.value;
-              return JSON.stringify(p ?? '') ?? '';
-            })
-            .join('\n');
-        } else if (part.content !== undefined && part.content !== null) {
-          resultStr = JSON.stringify(part.content) ?? '';
-        } else {
-          resultStr = '';
-        }
         formattedMessages.push({
           role: 'tool',
           tool_call_id: part.callId,
-          content: resultStr,
+          content: formatToolResultContent(part.content),
         });
       }
     }
@@ -155,31 +171,38 @@ export function sanitizeResponsesInput(input: unknown[]): ResponsesInputItem[] {
   return result;
 }
 
+function appendAssistantInput(
+  responsesInput: ResponsesInputItem[],
+  msg: FormattedMessage
+): void {
+  if (msg.content) {
+    responsesInput.push({
+      role: 'assistant',
+      content: [{ type: 'output_text', text: msg.content }],
+    });
+  }
+  if (msg.tool_calls) {
+    for (const tc of msg.tool_calls) {
+      const rawId = tc.id ?? '';
+      const callId = rawId.length > 0 ? rawId : `call_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      responsesInput.push({
+        type: 'function_call',
+        id: callId,
+        call_id: callId,
+        name: tc.function?.name ?? '',
+        arguments: tc.function?.arguments ?? '',
+      });
+    }
+  }
+}
+
 export function buildResponsesInput(formattedMessages: FormattedMessage[]): ResponsesInputItem[] {
   const responsesInput: ResponsesInputItem[] = [];
   for (const msg of formattedMessages) {
     if (msg.role === 'user') {
       responsesInput.push({ role: 'user', content: msg.content ?? '' });
     } else if (msg.role === 'assistant') {
-      if (msg.content) {
-        responsesInput.push({
-          role: 'assistant',
-          content: [{ type: 'output_text', text: msg.content }],
-        });
-      }
-      if (msg.tool_calls) {
-        for (const tc of msg.tool_calls) {
-          const rawId = tc.id ?? '';
-          const callId = rawId.length > 0 ? rawId : `call_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-          responsesInput.push({
-            type: 'function_call',
-            id: callId,
-            call_id: callId,
-            name: tc.function?.name ?? '',
-            arguments: tc.function?.arguments ?? '',
-          });
-        }
-      }
+      appendAssistantInput(responsesInput, msg);
     } else if (msg.role === 'tool') {
       responsesInput.push({
         type: 'function_call_output',

@@ -77,49 +77,54 @@ function fsyncDir(dir: string): void {
   } catch {}
 }
 
+function chmodPortable(target: string, mode: number): void {
+  if (process.platform === 'win32') return;
+  try {
+    fs.chmodSync(target, mode);
+  } catch {}
+}
+
+function resolveWriteMode(filePath: string, options?: { mode?: number } | number): number {
+  if (typeof options === 'number') return options;
+  if (options?.mode !== undefined) return options.mode;
+  // Preserve existing permissions unless the caller explicitly requests another mode.
+  try {
+    return fs.statSync(filePath).mode & 0o777;
+  } catch {
+    return 0o644;
+  }
+}
+
+function atomicWrite(filePath: string, tmpPath: string, data: string, mode: number, dir: string): void {
+  writeFileWithFsync(tmpPath, data, mode);
+  chmodPortable(tmpPath, mode);
+  fs.renameSync(tmpPath, filePath);
+  chmodPortable(filePath, mode);
+  fsyncDir(dir);
+}
+
+function directWriteFallback(filePath: string, tmpPath: string, data: string, mode: number): void {
+  try {
+    writeFileWithFsync(filePath, data, mode);
+    chmodPortable(filePath, mode);
+  } finally {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
+  }
+}
+
 export function safeWriteFileSync(filePath: string, data: string, options?: { mode?: number } | number): void {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  // Preserve existing permissions unless the caller explicitly requests another mode.
-  let mode = typeof options === 'number' ? options : options?.mode;
-  if (mode === undefined) {
-    try {
-      mode = fs.statSync(filePath).mode & 0o777;
-    } catch {
-      mode = 0o644;
-    }
-  }
-
+  const mode = resolveWriteMode(filePath, options);
   const tmpPath = `${filePath}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
   try {
-    writeFileWithFsync(tmpPath, data, mode);
-    if (process.platform !== 'win32') {
-      try {
-        fs.chmodSync(tmpPath, mode);
-      } catch {}
-    }
-    fs.renameSync(tmpPath, filePath);
-    if (process.platform !== 'win32') {
-      try {
-        fs.chmodSync(filePath, mode);
-      } catch {}
-    }
-    fsyncDir(dir);
+    atomicWrite(filePath, tmpPath, data, mode, dir);
   } catch {
-    try {
-      writeFileWithFsync(filePath, data, mode);
-      if (process.platform !== 'win32') {
-        try {
-          fs.chmodSync(filePath, mode);
-        } catch {}
-      }
-    } finally {
-      try {
-        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-      } catch {}
-    }
+    directWriteFallback(filePath, tmpPath, data, mode);
   }
 }

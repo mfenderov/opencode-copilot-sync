@@ -226,6 +226,28 @@ test('Reasoning effort is detected from options.modelConfiguration.reasoningEffo
   assert.deepEqual(req.body.reasoning, { effort: 'medium' });
 });
 
+test('Reasoning effort prefers the documented modelOptions channel', async () => {
+  // ProvideLanguageModelChatResponseOptions.modelOptions is the documented
+  // channel; it must win over the observed-not-documented shapes.
+  mockServer.clearRequests();
+  mockServer.setScenario({ mode: 'standard', content: 'test' });
+  const provider = new OpenCodeChatProvider(mockContext);
+
+  await provider.provideLanguageModelChatResponse(
+    MUSE_MODEL,
+    [createMockMessage('test')],
+    {
+      modelOptions: { reasoningEffort: 'high' },
+      modelConfiguration: { reasoningEffort: 'low' },
+    },
+    createMockProgress(),
+    createMockToken()
+  );
+
+  const req = mockServer.getRequests()[0];
+  assert.deepEqual(req.body.reasoning, { effort: 'high' });
+});
+
 test('Reasoning effort is detected from options.configuration.reasoningEffort', async () => {
   mockServer.clearRequests();
   mockServer.setScenario({ mode: 'standard', content: 'test' });

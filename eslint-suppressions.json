@@ -4,13 +4,13 @@
       "count": 2
     },
     "@typescript-eslint/no-unnecessary-condition": {
-      "count": 3
+      "count": 1
     },
     "@typescript-eslint/no-unsafe-argument": {
       "count": 2
     },
     "@typescript-eslint/no-unsafe-assignment": {
-      "count": 3
+      "count": 2
     },
     "@typescript-eslint/no-unsafe-call": {
       "count": 1
@@ -20,43 +20,22 @@
     }
   },
   "src/chat/infrastructure/chat-completions-parser.ts": {
-    "@typescript-eslint/no-explicit-any": {
-      "count": 3
-    },
-    "@typescript-eslint/no-unsafe-argument": {
-      "count": 3
-    },
-    "@typescript-eslint/no-unsafe-assignment": {
-      "count": 6
-    },
-    "@typescript-eslint/no-unsafe-call": {
-      "count": 3
-    },
-    "@typescript-eslint/no-unsafe-member-access": {
-      "count": 22
-    },
-    "@typescript-eslint/no-unsafe-return": {
-      "count": 1
-    },
     "@typescript-eslint/prefer-nullish-coalescing": {
-      "count": 5
-    },
-    "@typescript-eslint/restrict-plus-operands": {
-      "count": 2
+      "count": 1
     }
   },
   "src/chat/infrastructure/message-mapper.ts": {
     "@typescript-eslint/no-explicit-any": {
-      "count": 5
-    },
-    "@typescript-eslint/no-unnecessary-condition": {
       "count": 4
     },
-    "@typescript-eslint/no-unsafe-assignment": {
+    "@typescript-eslint/no-unnecessary-condition": {
       "count": 2
     },
+    "@typescript-eslint/no-unsafe-assignment": {
+      "count": 1
+    },
     "@typescript-eslint/no-unsafe-member-access": {
-      "count": 6
+      "count": 4
     },
     "@typescript-eslint/no-unsafe-return": {
       "count": 1
@@ -66,40 +45,25 @@
     }
   },
   "src/chat/infrastructure/reasoning-controls.ts": {
-    "@typescript-eslint/no-explicit-any": {
-      "count": 6
-    },
     "@typescript-eslint/no-unnecessary-type-conversion": {
       "count": 1
-    },
-    "@typescript-eslint/no-unsafe-member-access": {
-      "count": 6
-    },
-    "@typescript-eslint/no-unsafe-return": {
-      "count": 1
-    },
-    "@typescript-eslint/prefer-nullish-coalescing": {
-      "count": 5
     }
   },
   "src/chat/infrastructure/responses-parser.ts": {
     "@typescript-eslint/no-explicit-any": {
-      "count": 2
+      "count": 1
     },
     "@typescript-eslint/no-unsafe-argument": {
-      "count": 10
+      "count": 5
     },
     "@typescript-eslint/no-unsafe-assignment": {
-      "count": 25
+      "count": 8
     },
     "@typescript-eslint/no-unsafe-member-access": {
-      "count": 58
+      "count": 22
     },
     "@typescript-eslint/prefer-nullish-coalescing": {
-      "count": 19
-    },
-    "@typescript-eslint/prefer-optional-chain": {
-      "count": 1
+      "count": 9
     },
     "@typescript-eslint/restrict-plus-operands": {
       "count": 1
@@ -197,7 +161,7 @@
   },
   "src/usage/infrastructure/quota-client.ts": {
     "@typescript-eslint/no-unnecessary-condition": {
-      "count": 8
+      "count": 6
     }
   }
 }

@@ -125,6 +125,62 @@ const GPT_RESPONSES_MODEL = {
 // 6. Tool Calling Tests
 // ============================================================================
 
+test('Provider Chaos [reasoning_details]: joins detail texts into thinking parts', async () => {
+  mockServer.setScenario({
+    mode: 'standard',
+    chunks: [
+      {
+        id: 'chatcmpl-reasoning-details',
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: 'deepseek-v4-pro',
+        choices: [{
+          index: 0,
+          delta: {
+            role: 'assistant',
+            reasoning_details: [
+              { text: 'step one. ' },
+              { text: 'step two.' },
+              { ignored: true },
+            ],
+          },
+          finish_reason: null,
+        }],
+      },
+      {
+        id: 'chatcmpl-reasoning-details',
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: 'deepseek-v4-pro',
+        choices: [{
+          index: 0,
+          delta: { content: 'done' },
+          finish_reason: 'stop',
+        }],
+      },
+    ],
+  });
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage('think it through')],
+    {},
+    progress,
+    createMockToken()
+  );
+
+  const ThinkingPart = vscode.LanguageModelThinkingPart ?? vscode.LanguageModelTextPart;
+  const thinking = progress.parts.filter((p) => p instanceof ThinkingPart);
+  assert.ok(
+    thinking.some((p) => p.value === 'step one. step two.'),
+    'expected joined reasoning_details text in a thinking part'
+  );
+});
+
 test('Provider Chaos [Tool Calling on Chat Completions]: emits LanguageModelToolCallPart with parsed arguments', async () => {
   mockServer.setScenario({
     mode: 'tool-call',
@@ -167,6 +223,96 @@ test('Provider Chaos [Tool Calling on Chat Completions]: emits LanguageModelTool
   assert.equal(toolCall.callId, 'call_calc_999');
   assert.equal(toolCall.name, 'calculator');
   assert.deepEqual(toolCall.input, { expression: 'sqrt(144)' });
+});
+
+test('Provider [toolMode Required]: surfaces a clear message when upstream returns no tool call', async () => {
+  mockServer.setScenario({ mode: 'standard', content: 'just a text answer, no tools' });
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+
+  const Required = vscode.LanguageModelChatToolMode?.Required ?? 2;
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage('do the thing')],
+    {
+      tools: [{ name: 'calculator', description: 'Calculate', inputSchema: { type: 'object' } }],
+      toolMode: Required,
+    },
+    progress,
+    createMockToken()
+  );
+
+  const text = progress.parts.map((p) => p.value ?? '').join('\n');
+  assert.match(text, /just a text answer/);
+  assert.match(
+    text,
+    /no tool call although toolMode Required was requested/,
+    'the caller must not silently receive text it did not ask for'
+  );
+});
+
+test('Provider [toolMode Required]: stays silent when a tool call is emitted', async () => {
+  mockServer.setScenario({
+    mode: 'tool-call',
+    toolName: 'calculator',
+    toolCallId: 'call_calc_1',
+    toolArgsPart1: '{"expression":',
+    toolArgsPart2: ' "1+1"}',
+  });
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+
+  const Required = vscode.LanguageModelChatToolMode?.Required ?? 2;
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage('calculate 1+1')],
+    {
+      tools: [{ name: 'calculator', description: 'Calculate', inputSchema: { type: 'object' } }],
+      toolMode: Required,
+    },
+    progress,
+    createMockToken()
+  );
+
+  const toolParts = progress.parts.filter((p) => p instanceof vscode.LanguageModelToolCallPart);
+  assert.equal(toolParts.length, 1);
+  const text = progress.parts.map((p) => p.value ?? '').join('\n');
+  assert.doesNotMatch(text, /toolMode Required/);
+});
+
+test('Provider [toolMode Required]: synthetic verification calls do not count', async () => {
+  // The injected bash/read tools are filtered before emission, so a model that
+  // only calls those must still trigger the Required notice.
+  mockServer.setScenario({
+    mode: 'tool-call',
+    toolName: 'bash',
+    toolCallId: 'call_verify_1',
+    toolArgsPart1: '{"command":',
+    toolArgsPart2: ' "echo hi"}',
+  });
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+
+  const Required = vscode.LanguageModelChatToolMode?.Required ?? 2;
+  await provider.provideLanguageModelChatResponse(
+    GO_CHAT_MODEL,
+    [createMockMessage('do the thing')],
+    {
+      tools: [{ name: 'calculator', description: 'Calculate', inputSchema: { type: 'object' } }],
+      toolMode: Required,
+    },
+    progress,
+    createMockToken()
+  );
+
+  const text = progress.parts.map((p) => p.value ?? '').join('\n');
+  assert.match(text, /no tool call although toolMode Required was requested/);
 });
 
 test('Provider Chaos [Tool Calling]: two parallel tool calls missing an explicit "index" field do not collide', async () => {

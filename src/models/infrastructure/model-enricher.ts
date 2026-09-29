@@ -10,182 +10,192 @@ export interface EnrichOptions {
   modelsDevData?: ModelDevMetadata;
 }
 
+interface ModelCapabilities {
+  contextWindow: number;
+  maxOutputTokens: number;
+  vision: boolean | ((id: string) => boolean);
+  thinking: boolean | ((id: string) => boolean);
+}
+
+// Fallback capabilities used only when models.dev metadata is unavailable.
+// Each family declares its known limits; vision/thinking may be a predicate
+// over the model id for sub-variants (e.g. kimi omni, gemini thinking).
+const FAMILY_CAPABILITIES: (readonly [RegExp, ModelCapabilities])[] = [
+  [/deepseek/i, { contextWindow: 1048576, maxOutputTokens: 131072, vision: (id) => id.toLowerCase().includes('vision'), thinking: true }],
+  [/glm/i, { contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true }],
+  [/kimi/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true }],
+  [/qwen/i, { contextWindow: 1000000, maxOutputTokens: 131072, vision: true, thinking: false }],
+  [/minimax/i, { contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: false }],
+  [/claude/i, { contextWindow: 1000000, maxOutputTokens: 128000, vision: true, thinking: (id) => !id.toLowerCase().includes('haiku') }],
+  [/gpt/i, { contextWindow: 1000000, maxOutputTokens: 128000, vision: true, thinking: true }],
+  [/gemini/i, { contextWindow: 1000000, maxOutputTokens: 65536, vision: true, thinking: (id) => id.toLowerCase().includes('thinking') }],
+  [/grok/i, { contextWindow: 1000000, maxOutputTokens: 65536, vision: true, thinking: true }],
+  [/mimo/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: (id) => id.toLowerCase().includes('omni'), thinking: true }],
+  [/nemotron/i, { contextWindow: 1000000, maxOutputTokens: 128000, vision: false, thinking: true }],
+  [/muse/i, { contextWindow: 1000000, maxOutputTokens: 65536, vision: false, thinking: true }],
+  [/longcat/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false }],
+  [/(omen|hy4)/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true }],
+];
+
+const SMALL_GPT_CONTEXT = 128000;
+const SMALL_GPT_OUTPUT = 16384;
+
+function resolveCapability<T>(value: T | ((id: string) => T), modelId: string): T {
+  return typeof value === 'function' ? (value as (id: string) => T)(modelId) : value;
+}
+
+function fallbackCapabilities(modelId: string): { contextWindow: number; maxOutputTokens: number; vision: boolean; thinking: boolean } {
+  const lower = modelId.toLowerCase();
+  // Small GPT variants (mini/nano) carry a fraction of the full context.
+  if (/gpt/i.test(modelId) && (lower.includes('mini') || lower.includes('nano'))) {
+    return { contextWindow: SMALL_GPT_CONTEXT, maxOutputTokens: SMALL_GPT_OUTPUT, vision: true, thinking: true };
+  }
+  // Small Claude Haiku trades context for speed.
+  if (/claude/i.test(modelId) && lower.includes('haiku')) {
+    return { contextWindow: 200000, maxOutputTokens: 64000, vision: true, thinking: false };
+  }
+  for (const [pattern, caps] of FAMILY_CAPABILITIES) {
+    if (pattern.test(modelId)) {
+      return {
+        contextWindow: caps.contextWindow,
+        maxOutputTokens: caps.maxOutputTokens,
+        vision: resolveCapability(caps.vision, modelId),
+        thinking: resolveCapability(caps.thinking, modelId),
+      };
+    }
+  }
+  return { contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true };
+}
+
+function resolveTransport(modelId: string, devMeta: ModelDevMetadata | undefined, isGo: boolean): { apiType: 'chat-completions' | 'messages' | 'responses'; modelUrl: string } {
+  const lower = modelId.toLowerCase();
+  const goBase = 'https://opencode.ai/zen/go/v1';
+  const zenBase = 'https://opencode.ai/zen/v1';
+  const isResponses =
+    devMeta?.provider?.npm === '@ai-sdk/openai' ||
+    lower.includes('muse') ||
+    lower.includes('gpt-') ||
+    lower.includes('grok-');
+  const isMessages =
+    devMeta?.provider?.npm === '@ai-sdk/anthropic' ||
+    lower.includes('claude');
+  if (isMessages) {
+    return { apiType: 'messages', modelUrl: isGo ? goBase : zenBase };
+  }
+  if (isResponses) {
+    return { apiType: 'responses', modelUrl: isGo ? goBase : zenBase };
+  }
+  return {
+    apiType: 'chat-completions',
+    modelUrl: isGo ? `${goBase}/chat/completions` : `${zenBase}/chat/completions`,
+  };
+}
+
+function resolveReasoningEfforts(
+  thinking: boolean,
+  devMeta: ModelDevMetadata | undefined,
+  isResponses: boolean,
+  modelId: string
+): string[] | undefined {
+  if (!thinking) return undefined;
+  const devEffortOpt = devMeta?.reasoning_options?.find((o) => o.type === 'effort');
+  if (devEffortOpt && Array.isArray(devEffortOpt.values)) {
+    const filtered = devEffortOpt.values.filter((v: string) => v !== 'none');
+    if (filtered.length > 0) {
+      return filtered;
+    }
+    return undefined;
+  }
+  // Fallback heuristics only when models.dev metadata is unavailable
+  if (devMeta) return undefined;
+  const lower = modelId.toLowerCase();
+  if (isResponses) {
+    return ['minimal', 'low', 'medium', 'high', 'xhigh'];
+  }
+  if (lower.includes('deepseek') || lower.includes('kimi-k3') || lower.includes('glm')) {
+    return ['low', 'medium', 'high', 'max'];
+  }
+  return undefined;
+}
+
+const TITLE_CASE_EXCEPTIONS: Record<string, string> = {
+  glm: 'GLM',
+  gpt: 'GPT',
+  mimo: 'MiMo',
+  qwen: 'Qwen',
+  kimi: 'Kimi',
+  minimax: 'MiniMax',
+  deepseek: 'DeepSeek',
+  gemini: 'Gemini',
+  claude: 'Claude',
+  grok: 'Grok',
+  nemotron: 'Nemotron',
+  muse: 'Muse',
+  spark: 'Spark',
+  contributor: 'Contributor',
+  free: 'Free',
+};
+
+function titleCasePart(part: string): string {
+  const known = TITLE_CASE_EXCEPTIONS[part.toLowerCase()];
+  if (known) return known;
+  if (/^v\d+/i.test(part)) return part.toUpperCase();
+  return part.charAt(0).toUpperCase() + part.slice(1);
+}
+
 export function formatModelName(id: string, suffix = '(OpenCode)'): string {
   // Normalize version patterns like "-4-6", "-1-3", "-2-7" to "-4.6"
   const normalized = id.replace(/-(\d+)-(\d+)(?=-|$)/g, '-$1.$2');
-  const parts = normalized.split(/[-_]/);
-  const title = parts
-    .map((p) => {
-      const lower = p.toLowerCase();
-      if (lower === 'glm') return 'GLM';
-      if (lower === 'gpt') return 'GPT';
-      if (lower === 'mimo') return 'MiMo';
-      if (lower === 'qwen') return 'Qwen';
-      if (lower === 'kimi') return 'Kimi';
-      if (lower === 'minimax') return 'MiniMax';
-      if (lower === 'deepseek') return 'DeepSeek';
-      if (lower === 'gemini') return 'Gemini';
-      if (lower === 'claude') return 'Claude';
-      if (lower === 'grok') return 'Grok';
-      if (lower === 'nemotron') return 'Nemotron';
-      if (lower === 'muse') return 'Muse';
-      if (lower === 'spark') return 'Spark';
-      if (lower === 'contributor') return 'Contributor';
-      if (lower === 'free') return 'Free';
-      if (/^v\d+/i.test(p)) return p.toUpperCase();
-      return p.charAt(0).toUpperCase() + p.slice(1);
-    })
-    .join(' ');
+  const title = normalized.split(/[-_]/).map(titleCasePart).join(' ');
   return `${title} ${suffix}`;
+}
+
+interface ResolvedCapabilities {
+  contextWindow: number;
+  maxOutputTokens: number;
+  vision: boolean;
+  thinking: boolean;
+}
+
+function devCapability<T>(devValue: T | undefined, fallbackValue: T | undefined, defaultValue: T): T {
+  return devValue ?? fallbackValue ?? defaultValue;
+}
+
+function resolveCapabilities(
+  devMeta: ModelDevMetadata | undefined,
+  modelId: string
+): ResolvedCapabilities {
+  const fallback = !devMeta ? fallbackCapabilities(modelId) : undefined;
+  return {
+    contextWindow: devCapability(devMeta?.limit?.context, fallback?.contextWindow, 1048576),
+    maxOutputTokens: devCapability(devMeta?.limit?.output, fallback?.maxOutputTokens, 65536),
+    vision: devCapability(devMeta?.modalities?.input?.includes('image'), fallback?.vision, false),
+    thinking: devCapability(devMeta?.reasoning, fallback?.thinking, true),
+  };
 }
 
 export function enrichModel(modelId: string, options: EnrichOptions = {}): CustomEndpointModel {
   const isGo = options.isGo ?? true;
   const devMeta = options.modelsDevData;
   const isFree = options.isFree ?? (isGo ? false : isFreeTierModel(modelId, devMeta));
-  const lower = modelId.toLowerCase();
 
-  // 1. Determine transport dynamically: check provider hint from models.dev first
-  const isResponses =
-    devMeta?.provider?.npm === '@ai-sdk/openai' ||
-    lower.includes('muse') ||
-    lower.includes('gpt-') ||
-    lower.includes('grok-');
-
-  const isMessages =
-    devMeta?.provider?.npm === '@ai-sdk/anthropic' ||
-    lower.includes('claude');
-
-  let apiType: 'chat-completions' | 'messages' | 'responses' = 'chat-completions';
-  let modelUrl: string;
-
-  if (isMessages) {
-    apiType = 'messages';
-    modelUrl = isGo ? 'https://opencode.ai/zen/go/v1' : 'https://opencode.ai/zen/v1';
-  } else if (isResponses) {
-    apiType = 'responses';
-    modelUrl = isGo ? 'https://opencode.ai/zen/go/v1' : 'https://opencode.ai/zen/v1';
-  } else {
-    apiType = 'chat-completions';
-    modelUrl = isGo
-      ? 'https://opencode.ai/zen/go/v1/chat/completions'
-      : 'https://opencode.ai/zen/v1/chat/completions';
-  }
+  const { apiType, modelUrl } = resolveTransport(modelId, devMeta, isGo);
 
   const defaultSuffix = isGo ? '(OpenCode Go)' : isFree ? '(OpenCode Free)' : '(OpenCode Zen)';
   const suffix = options.suffix ?? defaultSuffix;
   const name = formatModelName(modelId, suffix);
 
-  // 2. Derive limits and capabilities dynamically from models.dev if available
-  let contextWindow = devMeta?.limit?.context ?? 1048576;
-  let maxOutputTokens = devMeta?.limit?.output ?? 65536;
-  let vision = devMeta?.modalities?.input?.includes('image') ?? false;
-  let thinking = devMeta?.reasoning ?? true;
-
-  if (!devMeta) {
-    if (lower.includes('deepseek')) {
-      contextWindow = 1048576;
-      maxOutputTokens = 131072;
-      vision = lower.includes('vision');
-    } else if (lower.includes('glm')) {
-      contextWindow = 1048576;
-      maxOutputTokens = 131072;
-      vision = true;
-    } else if (lower.includes('kimi')) {
-      contextWindow = 1048576;
-      maxOutputTokens = 65536;
-      vision = true;
-    } else if (lower.includes('qwen')) {
-      contextWindow = 1000000;
-      maxOutputTokens = 131072;
-      vision = true;
-      thinking = false;
-    } else if (lower.includes('minimax')) {
-      contextWindow = 1048576;
-      maxOutputTokens = 131072;
-      vision = false;
-      thinking = false;
-    } else if (lower.includes('claude')) {
-      if (lower.includes('haiku')) {
-        contextWindow = 200000;
-        maxOutputTokens = 64000;
-        thinking = false;
-      } else {
-        contextWindow = 1000000;
-        maxOutputTokens = 128000;
-        thinking = true;
-      }
-      vision = true;
-    } else if (lower.includes('gpt')) {
-      if (lower.includes('mini') || lower.includes('nano')) {
-        contextWindow = 128000;
-        maxOutputTokens = 16384;
-      } else {
-        contextWindow = 1000000;
-        maxOutputTokens = 128000;
-      }
-      vision = true;
-      thinking = true;
-    } else if (lower.includes('gemini')) {
-      contextWindow = 1000000;
-      maxOutputTokens = 65536;
-      vision = true;
-      thinking = lower.includes('thinking');
-    } else if (lower.includes('grok')) {
-      contextWindow = 1000000;
-      maxOutputTokens = 65536;
-      vision = true;
-      thinking = true;
-    } else if (lower.includes('mimo')) {
-      contextWindow = 1048576;
-      maxOutputTokens = 65536;
-      vision = lower.includes('omni');
-      thinking = true;
-    } else if (lower.includes('nemotron')) {
-      contextWindow = 1000000;
-      maxOutputTokens = 128000;
-      vision = false;
-      thinking = true;
-    } else if (lower.includes('muse')) {
-      contextWindow = 1000000;
-      maxOutputTokens = 65536;
-      vision = false;
-      thinking = true;
-    } else if (lower.includes('longcat')) {
-      contextWindow = 1048576;
-      maxOutputTokens = 65536;
-      vision = false;
-      thinking = false;
-    } else if (lower.includes('omen') || lower.includes('hy4')) {
-      contextWindow = 1048576;
-      maxOutputTokens = 65536;
-      vision = false;
-      thinking = true;
-    }
-  }
+  // Derive limits and capabilities dynamically from models.dev if available,
+  // else from the per-family fallback table.
+  const { contextWindow, maxOutputTokens, vision, thinking } = resolveCapabilities(devMeta, modelId);
 
   const tokenLimits = resolveModelTokenLimits(contextWindow, maxOutputTokens);
-  contextWindow = tokenLimits.contextWindow;
-  maxOutputTokens = tokenLimits.maxOutputTokens;
-  const maxInputTokens = tokenLimits.maxInputTokens;
-  let supportsReasoningEffort: string[] | undefined = undefined;
-
-  if (thinking) {
-    const devEffortOpt = devMeta?.reasoning_options?.find((o) => o.type === 'effort');
-    if (devEffortOpt && Array.isArray(devEffortOpt.values)) {
-      const filtered = devEffortOpt.values.filter((v: string) => v !== 'none');
-      if (filtered.length > 0) {
-        supportsReasoningEffort = filtered;
-      }
-    } else if (!devMeta) {
-      // Fallback heuristics only when models.dev metadata is unavailable
-      if (isResponses) {
-        supportsReasoningEffort = ['minimal', 'low', 'medium', 'high', 'xhigh'];
-      } else if (lower.includes('deepseek') || lower.includes('kimi-k3') || lower.includes('glm')) {
-        supportsReasoningEffort = ['low', 'medium', 'high', 'max'];
-      }
-    }
-  }
+  const supportsReasoningEffort = resolveReasoningEfforts(
+    thinking,
+    devMeta,
+    apiType === 'responses',
+    modelId
+  );
 
   const model: CustomEndpointModel = {
     id: modelId,
@@ -196,9 +206,9 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
     apiType,
     toolCalling: true,
     vision,
-    contextWindow,
-    maxInputTokens,
-    maxOutputTokens,
+    contextWindow: tokenLimits.contextWindow,
+    maxInputTokens: tokenLimits.maxInputTokens,
+    maxOutputTokens: tokenLimits.maxOutputTokens,
     thinking,
     supportsReasoningEffort,
     reasoningEffortFormat: apiType,
