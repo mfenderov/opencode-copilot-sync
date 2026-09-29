@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.18.8 - 2026-09-29
+#### Bug Fixes
+- (**provider**) honor toolMode Required, modelOptions effort, family token estimates (#14) - (da6b246) - Mark Fenderov
+
+- - -
+
 ## v0.18.7 - 2026-09-29
 #### Bug Fixes
 - (**provider**) drop oversized tool enum properties to prevent gateway 400s (#9) - (683ec6c) - Mark Fenderov
