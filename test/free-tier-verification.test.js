@@ -2,7 +2,7 @@ import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import * as vscode from 'vscode';
-import { OpenCodeChatProvider, classifyUpstreamAlert } from '../out/chat/infrastructure/vscode-chat-provider.js';
+import { OpenCodeChatProvider, classifyUpstreamAlert, isSchemaValidationError } from '../out/chat/infrastructure/vscode-chat-provider.js';
 import { startMockServer } from './helpers/mock-opencode-server.js';
 
 let mockServer;
@@ -254,6 +254,17 @@ test('classifies upstream alerts without misattributing schema rejections', () =
   assert.equal(classifyUpstreamAlert(500, 'boom', false), 'upstream server error');
   // A 400 that is NOT a schema error stays a server error.
   assert.equal(classifyUpstreamAlert(400, 'reasoning `encrypted_content` was not issued to this caller', false), 'upstream server error');
+  // A context-length 400 mentions exceeds + invalid_request but no schema term:
+  // misclassifying it would send the user to drop a tool instead of shortening input.
+  assert.equal(
+    classifyUpstreamAlert(400, 'invalid_request_error: context length exceeds the model limit', false),
+    'upstream server error'
+  );
+  assert.equal(
+    isSchemaValidationError(400, 'tool input failed schema validation: missing required property'),
+    true,
+    'explicit schema diagnostics still classify'
+  );
 });
 
 test('Free Tier Verification [400 schema error]: reports a tool schema rejection, not a server error', async () => {

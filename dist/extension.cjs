@@ -29081,7 +29081,7 @@ function clampToolName(name) {
 }
 var OPENCODE_MAX_ENUM_VALUES = 200;
 var OPENCODE_MAX_ENUM_CHARS = 12e3;
-var NON_SCHEMA_KEYS = /* @__PURE__ */ new Set([
+var NON_SCHEMA_DATA_KEYS = /* @__PURE__ */ new Set([
   "enum",
   "const",
   "default",
@@ -29090,6 +29090,13 @@ var NON_SCHEMA_KEYS = /* @__PURE__ */ new Set([
   "description",
   "title",
   "$comment"
+]);
+var NAMED_SCHEMA_MAPS = /* @__PURE__ */ new Set([
+  "properties",
+  "patternProperties",
+  "$defs",
+  "definitions",
+  "dependentSchemas"
 ]);
 function exceedsEnumLimits(values) {
   if (values.length > OPENCODE_MAX_ENUM_VALUES) return true;
@@ -29116,6 +29123,16 @@ function stripArrayItems(items, path5, onDrop, inProgress) {
   inProgress.delete(items);
   return { node: out, changed };
 }
+function stripMapEntries(entries, path5, onDrop, inProgress) {
+  const out = {};
+  let changed = false;
+  for (const [name, subschema] of Object.entries(entries)) {
+    const result = stripOversizedEnums(subschema, `${path5}.${name}`, onDrop, inProgress);
+    if (result.changed) changed = true;
+    out[name] = result.node;
+  }
+  return { out, changed };
+}
 function stripEntry(key, value, childPath, parentPath, onDrop, inProgress) {
   if (key === "enum") {
     if (shouldDropEnum(value)) {
@@ -29124,32 +29141,36 @@ function stripEntry(key, value, childPath, parentPath, onDrop, inProgress) {
     }
     return { value, changed: false, dropped: false };
   }
-  if (NON_SCHEMA_KEYS.has(key)) {
+  if (typeof value === "object" && value !== null && NAMED_SCHEMA_MAPS.has(key)) {
+    const result2 = stripMapEntries(value, childPath, onDrop, inProgress);
+    return { value: result2.out, changed: result2.changed, dropped: false };
+  }
+  if (NON_SCHEMA_DATA_KEYS.has(key)) {
     return { value, changed: false, dropped: false };
   }
   const result = stripOversizedEnums(value, childPath, onDrop, inProgress);
   return { value: result.node, changed: result.changed, dropped: false };
 }
-function needsStringType(droppedOwnEnum, out) {
-  return droppedOwnEnum && !("type" in out) && !("$ref" in out);
+function needsStringType(droppedOwnEnum, droppedValues, out) {
+  return droppedOwnEnum && !("type" in out) && !("$ref" in out) && droppedValues.length > 0 && droppedValues.every((value) => typeof value === "string");
 }
 function stripObjectSchema(source, path5, onDrop, inProgress) {
   if (inProgress.has(source)) return { node: source, changed: false };
   inProgress.add(source);
   const out = {};
   let changed = false;
-  let droppedOwnEnum = false;
+  let droppedValues;
   for (const [key, value] of Object.entries(source)) {
     const entry = stripEntry(key, value, `${path5}.${key}`, path5, onDrop, inProgress);
     if (entry.dropped) {
       changed = true;
-      droppedOwnEnum = true;
+      droppedValues = Array.isArray(value) ? value : [];
       continue;
     }
     if (entry.changed) changed = true;
     out[key] = entry.value;
   }
-  if (needsStringType(droppedOwnEnum, out)) {
+  if (needsStringType(droppedValues !== void 0, droppedValues ?? [], out)) {
     out.type = "string";
   }
   inProgress.delete(source);
@@ -29165,16 +29186,16 @@ function stripOversizedEnums(node, path5, onDrop, inProgress) {
   return stripObjectSchema(node, path5, onDrop, inProgress);
 }
 function sanitizeToolParameters(schema, toolName, log) {
-  const fallback = schema && typeof schema === "object" ? schema : { type: "object", properties: {} };
+  const effective = schema && typeof schema === "object" ? schema : { type: "object", properties: {} };
   try {
-    const { node } = stripOversizedEnums(schema, "root", (path5, count) => {
+    const { node } = stripOversizedEnums(effective, "root", (path5, count) => {
       log(`schema relaxed: dropped oversized enum on ${toolName}${path5} (${count} values)`);
     }, /* @__PURE__ */ new Set());
     return node;
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     log(`schema sanitization failed for ${toolName}: ${detail}; sending caller schema unchanged`);
-    return fallback;
+    return effective;
   }
 }
 var discardLog = () => void 0;
@@ -30269,7 +30290,11 @@ function extractErrorMessage(rawJson) {
   return rawJson;
 }
 function isSchemaValidationError(status, detail) {
-  return status === 400 && /\benum\b|\bschema\b|too many|exceeds|invalid_request/i.test(detail);
+  if (status !== 400) return false;
+  if (/single enum property/i.test(detail)) return true;
+  const hasSchemaNoun = /\bschema\b|\benum\b/i.test(detail);
+  const hasViolationVerb = /exceeds|too many|invalid|failed|rejected|not allowed/i.test(detail);
+  return hasSchemaNoun && hasViolationVerb;
 }
 function classifyUpstreamAlert(status, detail, isFreeTierError) {
   if (status === 404) {

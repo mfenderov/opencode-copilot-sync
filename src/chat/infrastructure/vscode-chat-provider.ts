@@ -427,7 +427,17 @@ export function isSchemaValidationError(status: number, detail: string): boolean
   // that the gateway is unhealthy. Reporting it as a server error sends the
   // user looking at the wrong thing — and a recurring one here means the
   // sanitizer did not cover every schema position.
-  return status === 400 && /\benum\b|\bschema\b|too many|exceeds|invalid_request/i.test(detail);
+  //
+  // Deliberately narrow: require the gateway's own enum-limit wording or an
+  // explicit schema diagnostic (a schema noun near a violation verb), not a
+  // bare keyword. A context-length 400 like "invalid_request_error: context
+  // length exceeds the model limit" must stay a server error — telling the
+  // user to drop a tool would be wrong.
+  if (status !== 400) return false;
+  if (/single enum property/i.test(detail)) return true;
+  const hasSchemaNoun = /\bschema\b|\benum\b/i.test(detail);
+  const hasViolationVerb = /exceeds|too many|invalid|failed|rejected|not allowed/i.test(detail);
+  return hasSchemaNoun && hasViolationVerb;
 }
 
 export function classifyUpstreamAlert(status: number, detail: string, isFreeTierError: boolean): string {

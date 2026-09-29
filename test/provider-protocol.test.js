@@ -237,6 +237,35 @@ test('does not inject a type into ancestors that only lost a descendant enum', (
   assert.equal(params.$defs.wrapper.properties.inner.type, 'string', 'only the node that lost its enum gains a type');
 });
 
+test('does not impose a string type on dropped non-string enums', () => {
+  // A numeric enum constrained to numbers; type: 'string' would invalidate
+  // every originally-valid argument. Leaving it typeless keeps them valid.
+  const numeric = Array.from({ length: 300 }, (_, i) => i);
+  const params = parametersOf(
+    formatProviderTools(
+      [{ name: 'n', description: 'N', inputSchema: { type: 'object', properties: { level: { enum: numeric } } } }],
+      true,
+      false
+    ),
+    true
+  );
+  assert.equal(params.properties.level.enum, undefined, 'the oversized enum is still dropped');
+  assert.equal(params.properties.level.type, undefined, 'but no string type is imposed on a numeric enum');
+
+  // Mixed-type enums stay unconstrained too.
+  const mixed = [...manyValues(250), 42, true];
+  const mixedParams = parametersOf(
+    formatProviderTools(
+      [{ name: 'm', description: 'M', inputSchema: { type: 'object', properties: { v: { enum: mixed } } } }],
+      true,
+      false
+    ),
+    true
+  );
+  assert.equal(mixedParams.properties.v.enum, undefined);
+  assert.equal(mixedParams.properties.v.type, undefined);
+});
+
 test('does not descend into data keywords that merely contain an "enum" key', () => {
   const big = manyValues(300);
   const schema = {
@@ -250,6 +279,46 @@ test('does not descend into data keywords that merely contain an "enum" key', ()
 
   assert.equal(params.examples[0].enum.length, 300, 'examples is data, not schema');
   assert.equal(params.default.enum.length, 300, 'default is data, not schema');
+});
+
+test('visits named schemas even when the property name collides with a keyword', () => {
+  // Under properties/$defs, keys are author-chosen names — a property literally
+  // named `enum`, `default`, or `examples` still holds a schema that must be
+  // visited, or its oversized enum reaches the gateway and 400s the request.
+  const big = manyValues(300);
+  for (const name of ['enum', 'default', 'examples']) {
+    const params = parametersOf(
+      formatProviderTools(
+        [{
+          name: 'p',
+          description: 'P',
+          inputSchema: { type: 'object', properties: { [name]: { enum: big } } },
+        }],
+        true,
+        false
+      ),
+      true
+    );
+    assert.equal(
+      params.properties[name].enum,
+      undefined,
+      `oversized enum under a property named '${name}' must still be dropped`
+    );
+  }
+
+  const defParams = parametersOf(
+    formatProviderTools(
+      [{
+        name: 'p',
+        description: 'P',
+        inputSchema: { $defs: { default: { enum: big } } },
+      }],
+      true,
+      false
+    ),
+    true
+  );
+  assert.equal(defParams.$defs.default.enum, undefined, 'same for a $def named `default`');
 });
 
 test('strips only the breaching property and logs every drop', () => {
@@ -288,6 +357,17 @@ test('falls back to the caller schema and logs when sanitization throws', () => 
   assert.strictEqual(params, throwing, 'degrades to exactly the pre-change payload, not an empty schema');
   assert.equal(logs.length, 1);
   assert.match(logs[0], /schema sanitization failed for bad: boom; sending caller schema unchanged/);
+});
+
+test('schema-less tools keep the pre-change empty object schema', () => {
+  for (const isResponses of [true, false]) {
+    const tools = formatProviderTools([{ name: 'noschema', description: 'No schema' }], isResponses, false);
+    assert.deepEqual(
+      parametersOf(tools, isResponses),
+      { type: 'object', properties: {} },
+      `schema-less tool must send an empty object schema on the ${isResponses ? 'Responses' : 'Chat Completions'} branch`
+    );
+  }
 });
 
 test('survives a cyclic schema without hanging or throwing', () => {

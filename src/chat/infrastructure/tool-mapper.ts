@@ -94,11 +94,10 @@ function clampToolName(name: string): string {
 const OPENCODE_MAX_ENUM_VALUES = 200;
 const OPENCODE_MAX_ENUM_CHARS = 12000;
 
-// Keys whose values are data, not schema. Descending into them risks stripping a property
-// that merely happens to be named `enum`, so the walk stops at these boundaries. Every
-// other key is descended into, which covers any JSON Schema applicator — present or future
-// — without this list having to be kept in sync with the spec.
-const NON_SCHEMA_KEYS = new Set([
+// Keys whose values are data, not schema — EXCEPT when the containing node is
+// a map of named schemas, where each value is itself a schema regardless of
+// its key. See NAMED_SCHEMA_MAPS.
+const NON_SCHEMA_DATA_KEYS = new Set([
   'enum',
   'const',
   'default',
@@ -107,6 +106,20 @@ const NON_SCHEMA_KEYS = new Set([
   'description',
   'title',
   '$comment',
+]);
+
+// Objects whose entries are named schemas, keyed by arbitrary names a tool
+// author chooses. Under these nodes, keys like `enum`, `default`, or
+// `examples` are property/definition names — not keywords — and their values
+// must always be visited, or an oversized enum under e.g.
+// `properties: { enum: { enum: [...] } }` still reaches the gateway and 400s
+// the whole request.
+const NAMED_SCHEMA_MAPS = new Set([
+  'properties',
+  'patternProperties',
+  '$defs',
+  'definitions',
+  'dependentSchemas',
 ]);
 
 function exceedsEnumLimits(values: unknown[]): boolean {
@@ -153,6 +166,22 @@ interface EntryResult {
   dropped: boolean;
 }
 
+function stripMapEntries(
+  entries: Record<string, unknown>,
+  path: string,
+  onDrop: (path: string, count: number) => void,
+  inProgress: Set<unknown>
+): { out: Record<string, unknown>; changed: boolean } {
+  const out: Record<string, unknown> = {};
+  let changed = false;
+  for (const [name, subschema] of Object.entries(entries)) {
+    const result = stripOversizedEnums(subschema, `${path}.${name}`, onDrop, inProgress);
+    if (result.changed) changed = true;
+    out[name] = result.node;
+  }
+  return { out, changed };
+}
+
 function stripEntry(
   key: string,
   value: unknown,
@@ -168,15 +197,30 @@ function stripEntry(
     }
     return { value, changed: false, dropped: false };
   }
-  if (NON_SCHEMA_KEYS.has(key)) {
+  if (typeof value === 'object' && value !== null && NAMED_SCHEMA_MAPS.has(key)) {
+    // A map of named schemas: every value is a subschema, keyed by an author-
+    // chosen name that may collide with a keyword.
+    const result = stripMapEntries(value as Record<string, unknown>, childPath, onDrop, inProgress);
+    return { value: result.out, changed: result.changed, dropped: false };
+  }
+  if (NON_SCHEMA_DATA_KEYS.has(key)) {
     return { value, changed: false, dropped: false };
   }
   const result = stripOversizedEnums(value, childPath, onDrop, inProgress);
   return { value: result.node, changed: result.changed, dropped: false };
 }
 
-function needsStringType(droppedOwnEnum: boolean, out: Record<string, unknown>): boolean {
-  return droppedOwnEnum && !('type' in out) && !('$ref' in out);
+function needsStringType(droppedOwnEnum: boolean, droppedValues: unknown[], out: Record<string, unknown>): boolean {
+  // Impose a string type only when the dropped enum constrained to strings:
+  // a numeric enum ({ enum: [0..300] }) left typeless keeps every numeric
+  // argument valid, while type: 'string' would invalidate all of them.
+  return (
+    droppedOwnEnum &&
+    !('type' in out) &&
+    !('$ref' in out) &&
+    droppedValues.length > 0 &&
+    droppedValues.every((value) => typeof value === 'string')
+  );
 }
 
 function stripObjectSchema(
@@ -189,13 +233,13 @@ function stripObjectSchema(
   inProgress.add(source);
   const out: Record<string, unknown> = {};
   let changed = false;
-  let droppedOwnEnum = false;
+  let droppedValues: unknown[] | undefined;
 
   for (const [key, value] of Object.entries(source)) {
     const entry = stripEntry(key, value, `${path}.${key}`, path, onDrop, inProgress);
     if (entry.dropped) {
       changed = true;
-      droppedOwnEnum = true;
+      droppedValues = Array.isArray(value) ? value : [];
       continue;
     }
     if (entry.changed) changed = true;
@@ -205,7 +249,7 @@ function stripObjectSchema(
   // A node whose own enum was its only shape information now constrains and describes
   // nothing; a free-form string keeps it usable. Keyed on this node's own drop, not on
   // `changed`, which also propagates from descendants.
-  if (needsStringType(droppedOwnEnum, out)) {
+  if (needsStringType(droppedValues !== undefined, droppedValues ?? [], out)) {
     out.type = 'string';
   }
 
@@ -230,10 +274,13 @@ function stripOversizedEnums(node: unknown, path: string, onDrop: (path: string,
 }
 
 function sanitizeToolParameters(schema: unknown, toolName: string, log: (message: string) => void): unknown {
-  const fallback: unknown =
+  // Walk the computed fallback, not the raw schema: pre-change, a schema-less
+  // tool sent { type: 'object', properties: {} } on both wire formats, and the
+  // walker passes non-objects (undefined, null, strings) straight through.
+  const effective: unknown =
     schema && typeof schema === 'object' ? schema : { type: 'object', properties: {} };
   try {
-    const { node } = stripOversizedEnums(schema, 'root', (path, count) => {
+    const { node } = stripOversizedEnums(effective, 'root', (path, count) => {
       log(`schema relaxed: dropped oversized enum on ${toolName}${path} (${count} values)`);
     }, new Set<unknown>());
     return node;
@@ -242,7 +289,7 @@ function sanitizeToolParameters(schema: unknown, toolName: string, log: (message
     // detectable 400 beats a model invoking the tool with invented arguments.
     const detail = err instanceof Error ? err.message : String(err);
     log(`schema sanitization failed for ${toolName}: ${detail}; sending caller schema unchanged`);
-    return fallback;
+    return effective;
   }
 }
 
