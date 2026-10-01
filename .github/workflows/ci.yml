@@ -18,6 +18,8 @@ jobs:
   quality:
     name: Quality Gates (lint, coverage, CRAP)
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -36,6 +38,26 @@ jobs:
 
       - name: Run coverage gate and CRAP complexity gate
         run: npm run crap
+
+      - name: Refresh CRAP badge
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq librsvg2-bin
+          node scripts/crap-report.mjs --badge=docs/crap-badge.svg --badge-png=docs/crap-badge.png
+
+      - name: Commit refreshed CRAP badge (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          if git diff --quiet -- docs/crap-badge.svg docs/crap-badge.png; then
+            echo "CRAP badge unchanged."
+          else
+            git config user.name 'github-actions[bot]'
+            git config user.email 'github-actions[bot]@users.noreply.github.com'
+            git add docs/crap-badge.svg docs/crap-badge.png
+            git commit -m "chore(badge): refresh CRAP badge [skip ci]"
+            git push origin main
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   test:
     name: Test (${{ matrix.os }})
@@ -85,8 +107,7 @@ jobs:
     needs: [test, quality]
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      actions: write
+      contents: read
     concurrency:
       group: release
       cancel-in-progress: false

@@ -12,14 +12,14 @@ import { formatSyncFailureMessage, formatSyncFailureTooltip } from './sync-statu
 import { buildSyncOptions, shouldPromptForApiKey } from './sync-options.js';
 import { updateUsageMeter } from './usage/application/refresh-usage.js';
 import { OpenCodeChatProvider } from './chat/infrastructure/vscode-chat-provider.js';
-import { setVSCodeProxyUrl } from './infrastructure/http/proxy-routing.js';
+import { setVSCodeProxyUrl, setProxyWarningHandler } from './infrastructure/http/proxy-routing.js';
 import { OpenCodeUsageTreeProvider } from './usage/infrastructure/usage-tree-adapter.js';
 
 export async function activate(context: vscode.ExtensionContext) {
-  const outputChannel = vscode.window.createOutputChannel('OpenCode Copilot Sync');
+  const outputChannel = vscode.window.createOutputChannel('OpenCode Copilot Sync', { log: true });
   context.subscriptions.push(outputChannel);
 
-  outputChannel.appendLine(
+  outputChannel.info(
     `[Platform] OS: ${process.platform} (${process.arch}), Remote: ${vscode.env.remoteName || 'local'}, App: ${vscode.env.appName}`
   );
 
@@ -30,6 +30,9 @@ export async function activate(context: vscode.ExtensionContext) {
     setVSCodeProxyUrl(proxyUrl || undefined);
   };
   applyProxySetting();
+  setProxyWarningHandler((message) => {
+    outputChannel.warn(message);
+  });
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('http.proxy')) {
@@ -47,17 +50,17 @@ export async function activate(context: vscode.ExtensionContext) {
   // delayed startup sync finishes; otherwise restored sessions fail model
   // lookup until the first post-sync refresh.
   chatProvider.refresh();
-  outputChannel.appendLine('Registered native OpenCode LanguageModelChatProvider with VS Code.');
+  outputChannel.info('Registered native OpenCode LanguageModelChatProvider with VS Code.');
 
   // Auto-enable VS Code's experimental Agent Host BYOK bridge so custom models appear in Agent Mode
   try {
     const agentHostCfg = vscode.workspace.getConfiguration('chat.agentHost');
     if (!agentHostCfg.get<boolean>('byokModels.enabled', false)) {
       await agentHostCfg.update('byokModels.enabled', true, vscode.ConfigurationTarget.Global);
-      outputChannel.appendLine('Enabled chat.agentHost.byokModels.enabled for Agent Mode support.');
+      outputChannel.info('Enabled chat.agentHost.byokModels.enabled for Agent Mode support.');
     }
   } catch (err: any) {
-    outputChannel.appendLine(`Note: Could not set chat.agentHost.byokModels.enabled: ${err.message}`);
+    outputChannel.warn(`Note: Could not set chat.agentHost.byokModels.enabled: ${err.message}`);
   }
 
   // Status bar indicator with Live Usage Meter & quick trigger
@@ -117,6 +120,9 @@ export async function activate(context: vscode.ExtensionContext) {
     apiKey: string,
     syncOptions: SyncOpenCodeOptions
   ): Promise<SyncOpenCodeResult> {
+    // Sync is atomic: catalog failures throw before any write, and the
+    // thrown error is reported through reportSyncFailure — no in-sync
+    // channel plumbing needed.
     if (!interactive) return syncOpenCodeModels(apiKey, syncOptions);
 
     return vscode.window.withProgress(
@@ -130,11 +136,11 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 
   function logSyncResult(syncResult: SyncOpenCodeResult, interactive: boolean): void {
-    outputChannel.appendLine(
+    outputChannel.info(
       `${interactive ? '' : '[Startup] '}Synced ${syncResult.totalCount} unified OpenCode models (${syncResult.goCount} Go + ${syncResult.zenCount} Zen) to native provider.`
     );
     syncResult.warnings.forEach((warning) => {
-      outputChannel.appendLine(`[Compatibility mirror] ${warning}`);
+      outputChannel.warn(`[Compatibility mirror] ${warning}`);
     });
   }
 
@@ -181,7 +187,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   function reportSyncFailure(error: unknown, interactive: boolean): void {
     const message = formatSyncFailureMessage(error);
-    outputChannel.appendLine(`[Sync Error] ${message}`);
+    outputChannel.error(`[Sync Error] ${message}`);
     if (interactive) {
       vscode.window.showErrorMessage(`OpenCode sync failed: ${message}`);
     }

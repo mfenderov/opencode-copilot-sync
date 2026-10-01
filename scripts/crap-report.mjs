@@ -18,6 +18,7 @@ import { ESLint } from 'eslint';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const COVERAGE_FILE = path.join(ROOT, 'coverage', 'coverage-final.json');
@@ -27,6 +28,10 @@ const args = process.argv.slice(2);
 const updateBaseline = args.includes('--update-baseline');
 const thresholdArg = args.find((a) => a.startsWith('--threshold='));
 const THRESHOLD = thresholdArg ? Number(thresholdArg.split('=')[1]) : 10;
+const badgeArg = args.find((a) => a.startsWith('--badge='));
+const BADGE_PATH = badgeArg ? path.resolve(ROOT, badgeArg.split('=')[1]) : undefined;
+const badgePngArg = args.find((a) => a.startsWith('--badge-png='));
+const BADGE_PNG_PATH = badgePngArg ? path.resolve(ROOT, badgePngArg.split('=')[1]) : undefined;
 
 // Coverage percentages for functions sitting right at 100% are not perfectly
 // reproducible across Node/V8 versions: different major versions instrument
@@ -137,6 +142,66 @@ function printTable(functions) {
   }
 }
 
+// Renders a shields.io-style flat SVG badge. Colors follow the joke honestly:
+// green while the worst function stays under 15, yellow under 30, red above.
+// The value is the worst CRAP across ALL analyzed functions, not just the
+// threshold offenders, so the badge can't hide debt behind the gate cutoff.
+function renderBadgeSvg(worst, functionCount) {
+  const label = 'CRAP';
+  const value = worst === undefined ? 'unknown' : `worst ${worst}`;
+  const color = worst === undefined ? '#9f9f9f' : worst < 15 ? '#4c1' : worst < 30 ? '#dfb317' : '#e05d44';
+  const labelWidth = 46;
+  const valueWidth = 34 + value.length * 6;
+  const totalWidth = labelWidth + valueWidth;
+  const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${totalWidth}" height="20" role="img" aria-label="${esc(label)}: ${esc(value)} (${functionCount} functions)">` +
+    `<title>${esc(label)}: ${esc(value)} — worst CRAP over ${functionCount} functions</title>` +
+    `<linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient>` +
+    `<clipPath id="r"><rect width="${totalWidth}" height="20" rx="3" fill="#fff"/></clipPath>` +
+    `<g clip-path="url(#r)">` +
+    `<rect width="${labelWidth}" height="20" fill="#555"/>` +
+    `<rect x="${labelWidth}" width="${valueWidth}" height="20" fill="${color}"/>` +
+    `<rect width="${totalWidth}" height="20" fill="url(#s)"/>` +
+    `</g>` +
+    `<g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">` +
+    `<text x="${labelWidth / 2}" y="15" fill="#fff">${esc(label)}</text>` +
+    `<text x="${labelWidth + valueWidth / 2}" y="15" fill="#fff">${esc(value)}</text>` +
+    `</g></svg>\n`;
+}
+
+function writeBadge(functions) {
+  if (!BADGE_PATH && !BADGE_PNG_PATH) return;
+  const worst = functions.length > 0
+    ? Math.max(...functions.map((f) => f.crap))
+    : undefined;
+  const display = worst === undefined ? undefined : Math.round(worst * 100) / 100;
+  if (BADGE_PATH) {
+    fs.mkdirSync(path.dirname(BADGE_PATH), { recursive: true });
+    fs.writeFileSync(BADGE_PATH, renderBadgeSvg(display, functions.length));
+    console.log(`Wrote CRAP badge (worst ${display ?? 'unknown'} over ${functions.length} functions) to ${path.relative(ROOT, BADGE_PATH)}`);
+  }
+  if (BADGE_PNG_PATH) {
+    writeBadgePng(display, functions.length);
+  }
+}
+
+// PNG twin of the SVG badge: vsce refuses SVGs in README.md, so the shipped
+// README references the PNG while the SVG stays as the vector source.
+function writeBadgePng(display, functionCount) {
+  fs.mkdirSync(path.dirname(BADGE_PNG_PATH), { recursive: true });
+  const svgPath = BADGE_PATH ?? path.join(path.dirname(BADGE_PNG_PATH), 'crap-badge.svg');
+  if (!BADGE_PATH) {
+    fs.writeFileSync(svgPath, renderBadgeSvg(display, functionCount));
+  }
+  try {
+    execFileSync('rsvg-convert', ['-w', '256', '-h', '40', '-o', BADGE_PNG_PATH, svgPath], { stdio: 'pipe' });
+    console.log(`Wrote CRAP badge PNG (worst ${display ?? 'unknown'}) to ${path.relative(ROOT, BADGE_PNG_PATH)}`);
+  } catch (err) {
+    console.error(`Cannot convert badge SVG to PNG (is rsvg-convert installed?): ${err.message}`);
+    process.exitCode = 1;
+  }
+}
+
 async function main() {
   const functions = await collectFunctions();
   const offenders = functions.filter((f) => f.crap >= THRESHOLD);
@@ -149,6 +214,7 @@ async function main() {
   }
 
   printTable(functions);
+  writeBadge(functions);
 
   const baseline = loadBaseline();
   const failures = offenders.filter((f) => {

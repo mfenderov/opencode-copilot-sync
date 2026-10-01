@@ -344,13 +344,14 @@ function cleanupLegacyFile(filePath: string): boolean {
 
 export function cleanupLegacyOpenCodeCustomEndpoints(
   storagePath?: string,
-  options: Pick<WriteProvidersOptions, 'remoteName' | 'additionalTargetPaths' | 'associatedWslHome' | 'discoveryContext'> = {}
+  options: Pick<WriteProvidersOptions, 'remoteName' | 'additionalTargetPaths' | 'associatedWslHome' | 'discoveryContext'> & { log?: (message: string, level?: 'warn' | 'error') => void } = {}
 ): string[] {
   const plan = createWriteTargetPlan(undefined, storagePath, options);
   const cleaned: string[] = [];
+  const log = options.log ?? (() => undefined);
 
   for (const warning of plan.warnings) {
-    console.warn(`[Legacy sync cleanup] ${warning}`);
+    log(`[Legacy sync cleanup] ${warning}`, 'warn');
   }
 
   for (const filePath of plan.paths) {
@@ -358,7 +359,7 @@ export function cleanupLegacyOpenCodeCustomEndpoints(
       if (cleanupLegacyFile(filePath)) cleaned.push(filePath);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`Failed cleaning legacy customendpoints in ${filePath}: ${message}`);
+      log(`Failed cleaning legacy customendpoints in ${filePath}: ${message}`, 'error');
     }
   }
 

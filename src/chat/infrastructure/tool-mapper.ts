@@ -1,5 +1,6 @@
 // Chat infrastructure: tool definition mapping and verification tools.
 import * as vscode from 'vscode';
+import type { LogFn } from './vscode-chat-provider.js';
 
 export type WireToolDefinition = Record<string, unknown>;
 
@@ -276,7 +277,7 @@ function stripOversizedEnums(node: unknown, path: string, onDrop: (path: string,
 function sanitizeToolParameters(
   schema: unknown,
   toolName: string,
-  log: (message: string) => void
+  log: LogFn
 ): { schema: unknown; relaxed: boolean } {
   // Walk the computed fallback, not the raw schema: pre-change, a schema-less
   // tool sent { type: 'object', properties: {} } on both wire formats, and the
@@ -305,7 +306,7 @@ export function formatProviderTools(
   tools: readonly vscode.LanguageModelChatTool[] | undefined,
   isResponses: boolean,
   injectVerificationTools: boolean,
-  log: (message: string) => void = discardLog,
+  log: LogFn = discardLog,
   relaxedToolNames?: Set<string>
 ): WireToolDefinition[] | undefined {
   let toolsPayload: WireToolDefinition[] | undefined;

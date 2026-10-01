@@ -177,7 +177,8 @@ test('Session ID: same-opener conversations fork to distinct sessions on diverge
 test('Session ID: upstream session id is logged on every request line', async () => {
   const lines = [];
   const context = createMockContext();
-  const provider = new OpenCodeChatProvider(context, { appendLine: (m) => lines.push(m) });
+  const channel = { appendLine: (m) => lines.push(m), info: (m) => lines.push(m), warn: (m) => lines.push(m), error: (m) => lines.push(m) };
+  const provider = new OpenCodeChatProvider(context, channel);
 
   await provider.provideLanguageModelChatResponse(
     GO_CHAT_MODEL,

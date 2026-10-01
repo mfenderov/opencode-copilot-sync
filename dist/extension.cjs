@@ -27506,6 +27506,13 @@ async function promptAndSetApiKey(secrets, vscodeWindow) {
 // src/infrastructure/http/proxy-routing.ts
 var proxyAgentCtor;
 var proxyAgentLoadAttempted = false;
+function defaultProxyWarning(message) {
+  console.warn(message);
+}
+var warnProxyUnavailable = defaultProxyWarning;
+function setProxyWarningHandler(handler) {
+  warnProxyUnavailable = handler;
+}
 async function loadProxyAgentCtor() {
   if (proxyAgentLoadAttempted) return proxyAgentCtor;
   proxyAgentLoadAttempted = true;
@@ -27513,9 +27520,8 @@ async function loadProxyAgentCtor() {
     const undici = await Promise.resolve().then(() => __toESM(require_undici(), 1));
     proxyAgentCtor = undici.ProxyAgent;
   } catch (err) {
-    console.warn(
-      "OpenCode: proxy support unavailable (failed to load undici); requests will bypass the configured proxy.",
-      err
+    warnProxyUnavailable(
+      `OpenCode: proxy support unavailable (failed to load undici); requests will bypass the configured proxy. ${err instanceof Error ? err.message : String(err)}`
     );
     proxyAgentCtor = void 0;
   }
@@ -28588,25 +28594,20 @@ function writeProvidersToConfig(providers, targetPath, storagePath, options = {}
 }
 
 // src/models/application/synchronize-models.ts
+async function fetchCatalogIds(apiKey, catalog) {
+  const label = catalog === "go" ? "Go" : "Zen";
+  try {
+    return (await fetchOpenCodeModels(apiKey, catalog)).filter(Boolean);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to fetch ${label} models: ${detail}`);
+  }
+}
 async function fetchOpenCodeCatalogIds(apiKey, includeGo, includeZen) {
-  const [goOutcome, zenOutcome] = await Promise.allSettled([
-    includeGo ? fetchOpenCodeModels(apiKey, "go") : Promise.resolve([]),
-    includeZen ? fetchOpenCodeModels(apiKey, "zen") : Promise.resolve([])
+  const [goModelIds, zenModelIds] = await Promise.all([
+    includeGo ? fetchCatalogIds(apiKey, "go") : Promise.resolve([]),
+    includeZen ? fetchCatalogIds(apiKey, "zen") : Promise.resolve([])
   ]);
-  let goModelIds = [];
-  let zenModelIds = [];
-  if (goOutcome.status === "fulfilled") {
-    goModelIds = goOutcome.value.filter(Boolean);
-  } else {
-    const message = goOutcome.reason instanceof Error ? goOutcome.reason.message : String(goOutcome.reason);
-    console.error(`Failed to fetch Go models: ${message}`);
-  }
-  if (zenOutcome.status === "fulfilled") {
-    zenModelIds = zenOutcome.value.filter(Boolean);
-  } else {
-    const message = zenOutcome.reason instanceof Error ? zenOutcome.reason.message : String(zenOutcome.reason);
-    console.error(`Failed to fetch Zen models: ${message}`);
-  }
   return { goModelIds, zenModelIds };
 }
 async function fetchOpenCodeModelMetadata() {
@@ -29215,36 +29216,48 @@ function stripOversizedEnums(node, path5, onDrop, inProgress) {
 function sanitizeToolParameters(schema, toolName, log) {
   const effective = schema && typeof schema === "object" ? schema : { type: "object", properties: {} };
   try {
+    let relaxed = false;
     const { node } = stripOversizedEnums(effective, "root", (path5, count) => {
+      relaxed = true;
       log(`schema relaxed: dropped oversized enum on ${toolName}${path5} (${count} values)`);
     }, /* @__PURE__ */ new Set());
-    return node;
+    return { schema: node, relaxed };
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     log(`schema sanitization failed for ${toolName}: ${detail}; sending caller schema unchanged`);
-    return effective;
+    return { schema: effective, relaxed: false };
   }
 }
 var discardLog = () => void 0;
-function formatProviderTools(tools, isResponses, injectVerificationTools, log = discardLog) {
+function formatProviderTools(tools, isResponses, injectVerificationTools, log = discardLog, relaxedToolNames) {
   let toolsPayload;
   if (tools && tools.length > 0) {
     if (isResponses) {
-      toolsPayload = tools.map((tool) => ({
-        type: "function",
-        name: clampToolName(tool.name),
-        description: tool.description,
-        parameters: sanitizeToolParameters(tool.inputSchema, tool.name, log)
-      }));
-    } else {
-      toolsPayload = tools.map((tool) => ({
-        type: "function",
-        function: {
-          name: clampToolName(tool.name),
+      toolsPayload = tools.map((tool) => {
+        const name = clampToolName(tool.name);
+        const sanitized = sanitizeToolParameters(tool.inputSchema, tool.name, log);
+        if (sanitized.relaxed) relaxedToolNames?.add(name);
+        return {
+          type: "function",
+          name,
           description: tool.description,
-          parameters: sanitizeToolParameters(tool.inputSchema, tool.name, log)
-        }
-      }));
+          parameters: sanitized.schema
+        };
+      });
+    } else {
+      toolsPayload = tools.map((tool) => {
+        const name = clampToolName(tool.name);
+        const sanitized = sanitizeToolParameters(tool.inputSchema, tool.name, log);
+        if (sanitized.relaxed) relaxedToolNames?.add(name);
+        return {
+          type: "function",
+          function: {
+            name,
+            description: tool.description,
+            parameters: sanitized.schema
+          }
+        };
+      });
     }
   }
   return injectVerificationTools ? injectOpenCodeVerificationTools(toolsPayload, isResponses) : toolsPayload;
@@ -29526,14 +29539,55 @@ function queueFunctionCallOutput(sink, item, args) {
   }
   sink.queueToolCall({ ...existing, index: idx });
 }
+function completedPartText(part) {
+  if (!part || typeof part !== "object") return "";
+  const content = part;
+  if ((content.type === "output_text" || content.type === "text") && typeof content.text === "string") {
+    return content.text;
+  }
+  return "";
+}
+function completedItemText(item) {
+  if (!item || typeof item !== "object") return "";
+  const record = item;
+  const content = record.content;
+  if (record.type === "message" && Array.isArray(content)) {
+    let text = "";
+    for (const part of content) {
+      text += completedPartText(part);
+    }
+    return text;
+  }
+  return completedPartText(item);
+}
+function extractCompletedText(output) {
+  if (!Array.isArray(output)) return "";
+  let text = "";
+  for (const item of output) {
+    text += completedItemText(item);
+  }
+  return text;
+}
+function emitCompletedTextFallback(output, sink) {
+  if (sink.textEmitted) return;
+  const fallback = extractCompletedText(output);
+  if (fallback) {
+    sink.emitText(fallback);
+  }
+}
 function handleResponseCompleted(data, sink) {
   sink.reasoningActive = false;
   sink.reportUsage(data);
-  if (!Array.isArray(data.response?.output)) return true;
-  for (const item of data.response.output) {
-    if (item?.type !== "function_call") continue;
-    queueFunctionCallOutput(sink, item, item.arguments ? asArgsString(item.arguments) : "");
+  const response = data.response;
+  if (typeof response !== "object" || response === null) return true;
+  const output = response.output;
+  if (!Array.isArray(output)) return true;
+  for (const item of output) {
+    const entry = item;
+    if (entry?.type !== "function_call") continue;
+    queueFunctionCallOutput(sink, entry, entry.arguments ? asArgsString(entry.arguments) : "");
   }
+  emitCompletedTextFallback(output, sink);
   return true;
 }
 function handleOutputTextDelta(data, sink) {
@@ -29712,6 +29766,9 @@ function stallInterruptionMessage(detail) {
 }
 
 // src/chat/application/send-chat-message.ts
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 var StreamState = class {
   constructor(options) {
     this.options = options;
@@ -29727,6 +29784,7 @@ var StreamState = class {
   partsReportedCount = 0;
   isReasoningActive = false;
   reasoningDeltasEmitted = false;
+  textEmitted = false;
   isStallRetry = false;
   usageReported = false;
   emitThinkingPart(thinking, id) {
@@ -29739,15 +29797,22 @@ var StreamState = class {
     }
   }
   emitSingleToolCall(id, name, args) {
-    let parsedArgs = {};
+    let parsedArgs;
     try {
-      parsedArgs = JSON.parse(args);
+      parsedArgs = args.trim().length === 0 ? {} : JSON.parse(args);
     } catch {
-      parsedArgs = { raw: args };
+      parsedArgs = void 0;
+    }
+    if (!isPlainObject(parsedArgs)) {
+      this.options.log(`Dropping malformed tool call ${name} (${id}): arguments are not a JSON object`);
+      return;
     }
     if (!this.emittedToolCallIds.has(id) && !isSyntheticVerificationTool(name, this.options.tools)) {
       this.partsReportedCount++;
       this.emittedToolCallIds.add(id);
+      if (this.options.relaxedToolNames?.has(name)) {
+        this.options.log(`Relaxed-schema tool invoked: ${name} (oversized enums were stripped from its schema; invalid arguments may fail the tool call)`);
+      }
       this.options.progress.report(new vscode5.LanguageModelToolCallPart(id, name, parsedArgs));
     }
   }
@@ -29771,6 +29836,7 @@ var StreamState = class {
     return {
       emitText: (text) => {
         state.partsReportedCount++;
+        state.textEmitted = true;
         state.options.progress.report(new vscode5.LanguageModelTextPart(text));
       },
       emitThinking: (thinking, id) => {
@@ -29813,6 +29879,12 @@ var StreamState = class {
       },
       set reasoningDeltasEmitted(emitted) {
         state.reasoningDeltasEmitted = emitted;
+      },
+      get textEmitted() {
+        return state.textEmitted;
+      },
+      set textEmitted(emitted) {
+        state.textEmitted = emitted;
       },
       feedThinkTags: (chunk) => state.thinkParser.feed(chunk),
       flushThinkTags: () => state.thinkParser.flush()
@@ -29889,6 +29961,7 @@ function flushThinkTagRemainder(options, state, sink) {
   if (flushed.thinking) state.emitThinkingPart(flushed.thinking, state.currentThinkingId);
   if (flushed.text) {
     state.partsReportedCount++;
+    state.textEmitted = true;
     options.progress.report(new vscode5.LanguageModelTextPart(flushed.text));
   }
 }
@@ -29944,7 +30017,7 @@ function handleStreamError(options, state, reader, streamErr) {
     options.log(`Stream canceled by user for model=${options.modelId}`);
     return "done";
   }
-  options.log(`Stream interrupted for model=${options.modelId}: ${errMsg}`);
+  options.log(`Stream interrupted for model=${options.modelId}: ${errMsg}`, "error");
   options.progress.report(
     new vscode5.LanguageModelTextPart(
       stallInterruptionMessage(errMsg)
@@ -29965,7 +30038,7 @@ function enforceRequiredToolMode(options, emittedToolCallIds) {
     return;
   }
   const message = `Upstream model ${options.modelId} returned no tool call although toolMode Required was requested. The request carried ${options.tools.length} tool(s); retry with toolMode Auto or without tools.`;
-  options.log(message);
+  options.log(message, "warn");
   options.progress.report(new vscode5.LanguageModelTextPart(message));
 }
 
@@ -30281,7 +30354,7 @@ function buildAlertNotice(res, model, reason, userDetail) {
 }
 async function handleUpstreamError(res, errText, attempt, input, ctx, progress, log) {
   let userDetail = extractErrorMessage(errText);
-  log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`);
+  log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`, res.status >= 500 ? "error" : "warn");
   const repaired = await tryRepairReasoningEcho(res, userDetail, attempt, input, ctx, log);
   if (repaired) {
     if (repaired.ok) {
@@ -30339,7 +30412,7 @@ async function postUpstreamRequest(input, token, log) {
     if (token.isCancellationRequested || input.abortSignal.aborted) {
       return "cancelled";
     }
-    log(`Request failed before receiving a response: ${err?.message || err}`);
+    log(`Request failed before receiving a response: ${err?.message || err}`, "error");
     throw err;
   }
 }
@@ -30384,6 +30457,7 @@ async function runStallAttempt(input, stallAttempt, log) {
     modelId: input.model.id,
     tools: input.options.tools,
     toolMode: input.options.toolMode,
+    relaxedToolNames: input.relaxedToolNames,
     progress: input.progress,
     token: input.token,
     abortSignal: input.abortSignal,
@@ -30466,7 +30540,18 @@ function classifyUpstreamAlert(status, detail, isFreeTierError) {
   if (isSchemaValidationError(status, detail)) {
     return "tool schema rejected by upstream (an attached tool declares a constraint the gateway cannot accept; retry without that tool, or re-run sync)";
   }
+  if (isContextLengthError(status, detail)) {
+    return "upstream context limit exceeded (shorten the conversation, start a new chat, or pick a larger-context model)";
+  }
   return "upstream server error";
+}
+function isContextLengthError(status, detail) {
+  if (status !== 400) return false;
+  if (isSchemaValidationError(status, detail)) return false;
+  if (/context_length_exceeded/i.test(detail)) return true;
+  const hasContextNoun = /\bcontext\b/i.test(detail);
+  const hasViolationVerb = /\bexceeds?\b|too many|too long|maximum/i.test(detail);
+  return hasContextNoun && hasViolationVerb;
 }
 var OpenCodeChatProvider = class {
   constructor(context, outputChannel) {
@@ -30491,23 +30576,31 @@ var OpenCodeChatProvider = class {
   // seen so far, and a new chain that extends a different branch of the same root
   // gets its own session instead of bleeding into the first chat's upstream context.
   sessionCache = new ChatSessionCache();
-  log(message) {
-    this.outputChannel?.appendLine(`[Provider] ${message}`);
+  log(message, level = "info") {
+    const channel = this.outputChannel;
+    if (!channel) return;
+    const leveled = channel;
+    const fn = leveled[level] ?? channel.appendLine.bind(channel);
+    fn(`[Provider] ${message}`);
   }
   refresh() {
     this._onDidChange.fire();
   }
   updateModels(models) {
     if (Array.isArray(models) && models.length > 0) {
+      const unchanged = this._models.length === models.length && this._models.every((m, i) => m.id === models[i].id);
       this._models = models;
-      this.refresh();
       try {
         writeModelCache(this.context.globalStorageUri.fsPath, models);
       } catch {
       }
+      if (unchanged) return;
+      this.log(`Model catalog updated: ${models.length} models announced`);
+      this.refresh();
     }
   }
   async provideLanguageModelChatInformation(_options, _token) {
+    this.log(`Model information queried: ${this._models.length} models announced`);
     return this._models.map((m) => describeModel(m));
   }
   async provideLanguageModelChatResponse(model, messages, options, progress, token) {
@@ -30521,9 +30614,10 @@ var OpenCodeChatProvider = class {
     const meta = this._models.find((m) => m.id === model.id || model.id.endsWith("/" + m.id));
     const isResponses = isResponsesModel(model.id, meta?.apiType);
     const isFreeOrZen = isFreeOrZenModel(model.id, meta);
-    const toolsPayload = formatProviderTools(options.tools, isResponses, isFreeOrZen, (message) => {
-      this.log(message);
-    });
+    const relaxedToolNames = /* @__PURE__ */ new Set();
+    const toolsPayload = formatProviderTools(options.tools, isResponses, isFreeOrZen, (message, level) => {
+      this.log(message, level);
+    }, relaxedToolNames);
     const responsesInput = isResponses ? buildResponsesInput(formattedMessages) : [];
     const abortController = new AbortController();
     const cancelListener = token.onCancellationRequested(() => {
@@ -30544,14 +30638,15 @@ var OpenCodeChatProvider = class {
         toolsPayload,
         responsesInput,
         apiKey,
-        sessionId
+        sessionId,
+        relaxedToolNames
       );
       return;
     } finally {
       cancelListener.dispose();
     }
   }
-  async streamResponse(model, options, progress, token, abortController, meta, isResponses, isFreeOrZen, formattedMessages, toolsPayload, responsesInput, apiKey, sessionId) {
+  async streamResponse(model, options, progress, token, abortController, meta, isResponses, isFreeOrZen, formattedMessages, toolsPayload, responsesInput, apiKey, sessionId, relaxedToolNames) {
     const reasoningEffort = getReasoningEffort(options);
     const { url, body: requestBody } = createProviderRequest({
       modelId: model.id,
@@ -30563,12 +30658,12 @@ var OpenCodeChatProvider = class {
       reasoningEffort
     });
     this.log(
-      `Request: model=${model.id} protocol=${isResponses ? "responses" : "chat-completions"} url=${url} reasoningEffort=${reasoningEffort || "none"} tools=${toolsPayload?.length ?? 0} session=${sessionId.slice(0, 12)}`
+      `Request: model=${model.id} protocol=${isResponses ? "responses" : "chat-completions"} url=${url} reasoningEffort=${reasoningEffort || "none"} tools=${toolsPayload?.length ?? 0} toolsChars=${toolsPayload ? JSON.stringify(toolsPayload).length : 0} session=${sessionId.slice(0, 12)}`
     );
     const maxStallRetries = 1;
     const idleTimeoutMs = getStreamIdleTimeoutMs();
-    const logger = (message) => {
-      this.log(message);
+    const logger = (message, level) => {
+      this.log(message, level);
     };
     const loopInput = {
       url,
@@ -30583,6 +30678,7 @@ var OpenCodeChatProvider = class {
       isResponses,
       formattedMessages,
       responsesInput,
+      relaxedToolNames,
       idleTimeoutMs,
       maxStallRetries
     };
@@ -30792,9 +30888,9 @@ var OpenCodeUsageTreeProvider = class {
 
 // src/extension.ts
 async function activate(context) {
-  const outputChannel = vscode8.window.createOutputChannel("OpenCode Copilot Sync");
+  const outputChannel = vscode8.window.createOutputChannel("OpenCode Copilot Sync", { log: true });
   context.subscriptions.push(outputChannel);
-  outputChannel.appendLine(
+  outputChannel.info(
     `[Platform] OS: ${process.platform} (${process.arch}), Remote: ${vscode8.env.remoteName || "local"}, App: ${vscode8.env.appName}`
   );
   const applyProxySetting = () => {
@@ -30802,6 +30898,9 @@ async function activate(context) {
     setVSCodeProxyUrl(proxyUrl || void 0);
   };
   applyProxySetting();
+  setProxyWarningHandler((message) => {
+    outputChannel.warn(message);
+  });
   context.subscriptions.push(
     vscode8.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("http.proxy")) {
@@ -30814,15 +30913,15 @@ async function activate(context) {
     vscode8.lm.registerLanguageModelChatProvider("opencode", chatProvider)
   );
   chatProvider.refresh();
-  outputChannel.appendLine("Registered native OpenCode LanguageModelChatProvider with VS Code.");
+  outputChannel.info("Registered native OpenCode LanguageModelChatProvider with VS Code.");
   try {
     const agentHostCfg = vscode8.workspace.getConfiguration("chat.agentHost");
     if (!agentHostCfg.get("byokModels.enabled", false)) {
       await agentHostCfg.update("byokModels.enabled", true, vscode8.ConfigurationTarget.Global);
-      outputChannel.appendLine("Enabled chat.agentHost.byokModels.enabled for Agent Mode support.");
+      outputChannel.info("Enabled chat.agentHost.byokModels.enabled for Agent Mode support.");
     }
   } catch (err) {
-    outputChannel.appendLine(`Note: Could not set chat.agentHost.byokModels.enabled: ${err.message}`);
+    outputChannel.warn(`Note: Could not set chat.agentHost.byokModels.enabled: ${err.message}`);
   }
   const statusBarItem = vscode8.window.createStatusBarItem(vscode8.StatusBarAlignment.Right, 99);
   statusBarItem.text = "$(hubot) OpenCode";
@@ -30877,11 +30976,11 @@ async function activate(context) {
     );
   }
   function logSyncResult(syncResult, interactive) {
-    outputChannel.appendLine(
+    outputChannel.info(
       `${interactive ? "" : "[Startup] "}Synced ${syncResult.totalCount} unified OpenCode models (${syncResult.goCount} Go + ${syncResult.zenCount} Zen) to native provider.`
     );
     syncResult.warnings.forEach((warning) => {
-      outputChannel.appendLine(`[Compatibility mirror] ${warning}`);
+      outputChannel.warn(`[Compatibility mirror] ${warning}`);
     });
   }
   function reportSyncResult(syncResult, interactive) {
@@ -30923,7 +31022,7 @@ async function activate(context) {
   }
   function reportSyncFailure(error, interactive) {
     const message = formatSyncFailureMessage(error);
-    outputChannel.appendLine(`[Sync Error] ${message}`);
+    outputChannel.error(`[Sync Error] ${message}`);
     if (interactive) {
       vscode8.window.showErrorMessage(`OpenCode sync failed: ${message}`);
     }

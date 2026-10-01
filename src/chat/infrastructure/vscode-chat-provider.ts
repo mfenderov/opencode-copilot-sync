@@ -27,6 +27,8 @@ import { getStreamIdleTimeoutMs } from '../application/recover-stream.js';
 import { VERIFIED_OPENCODE_MODELS } from '../../models/infrastructure/verified-catalog.js';
 import { ChatSessionCache, generateOpenCodeRequestId } from '../domain/chat-session.js';
 
+export type LogFn = (message: string, level?: 'info' | 'warn' | 'error') => void;
+
 function resolveValidEfforts(model: OpenCodeModelMeta): string[] | undefined {
   const supportsReasoning = model.thinking !== false;
   const rawEfforts = model.supportsReasoningEffort;
@@ -141,7 +143,7 @@ async function tryRepairReasoningEcho(
   attempt: StreamAttempt,
   input: ReasoningRepairInput,
   ctx: UpstreamErrorContext,
-  log: (message: string) => void
+  log: LogFn
 ): Promise<Response | undefined> {
   if (res.status !== 400 || !ctx.isResponses || !userDetail.includes('encrypted_content')) {
     return undefined;
@@ -224,10 +226,10 @@ async function handleUpstreamError(
   input: ReasoningRepairInput,
   ctx: UpstreamErrorContext,
   progress: vscode.Progress<vscode.LanguageModelResponsePart>,
-  log: (message: string) => void
+  log: LogFn
 ): Promise<{ outcome: 'handled' | 'stream'; res: Response; userDetail: string }> {
   let userDetail = extractErrorMessage(errText);
-  log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`);
+  log(`Upstream returned ${res.status} ${res.statusText}: ${userDetail.slice(0, 300)}`, res.status >= 500 ? 'error' : 'warn');
 
   const repaired = await tryRepairReasoningEcho(res, userDetail, attempt, input, ctx, log);
   if (repaired) {
@@ -289,7 +291,7 @@ interface AttemptOutcome {
 async function postUpstreamRequest(
   input: StallAttemptInput,
   token: vscode.CancellationToken,
-  log: (message: string) => void
+  log: LogFn
 ): Promise<AttemptOutcome | 'cancelled'> {
   const clientHeaders = createOpenCodeRequestHeaders(
     input.apiKey,
@@ -313,7 +315,7 @@ async function postUpstreamRequest(
     if (token.isCancellationRequested || input.abortSignal.aborted) {
       return 'cancelled';
     }
-    log(`Request failed before receiving a response: ${err?.message || err}`);
+    log(`Request failed before receiving a response: ${err?.message || err}`, 'error');
     throw err;
   }
 }
@@ -344,7 +346,7 @@ interface StallLoopInput {
 async function runStallAttempt(
   input: StallLoopInput,
   stallAttempt: number,
-  log: (message: string) => void
+  log: LogFn
 ): Promise<'done' | 'retry'> {
   const posted = await postUpstreamRequest(
     {
@@ -506,7 +508,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly outputChannel?: vscode.OutputChannel
+    private readonly outputChannel?: vscode.LogOutputChannel
   ) {
     try {
       const cached = readModelCache(this.context.globalStorageUri.fsPath);
@@ -516,8 +518,12 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     } catch {}
   }
 
-  private log(message: string): void {
-    this.outputChannel?.appendLine(`[Provider] ${message}`);
+  private log(message: string, level: 'info' | 'warn' | 'error' = 'info'): void {
+    const channel = this.outputChannel;
+    if (!channel) return;
+    const leveled = channel as Partial<Record<'info' | 'warn' | 'error', (message: string) => void>>;
+    const fn = leveled[level] ?? channel.appendLine.bind(channel);
+    fn(`[Provider] ${message}`);
   }
 
   refresh(): void {
@@ -576,8 +582,8 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     const isFreeOrZen = isFreeOrZenModel(model.id, meta);
 
     const relaxedToolNames = new Set<string>();
-    const toolsPayload = formatProviderTools(options.tools, isResponses, isFreeOrZen, (message) => {
-      this.log(message);
+    const toolsPayload = formatProviderTools(options.tools, isResponses, isFreeOrZen, (message, level) => {
+      this.log(message, level);
     }, relaxedToolNames);
 
     const responsesInput: any[] = isResponses ? buildResponsesInput(formattedMessages) : [];
@@ -642,8 +648,8 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
 
     const maxStallRetries = 1;
     const idleTimeoutMs = getStreamIdleTimeoutMs();
-    const logger = (message: string): void => {
-      this.log(message);
+    const logger: LogFn = (message, level) => {
+      this.log(message, level);
     };
     const loopInput: StallLoopInput = {
       url,
