@@ -11,34 +11,31 @@ import {
 import type { OpenCodeCatalogIds, UnifiedOpenCodeModels } from '../domain/model-catalog.js';
 import { writeProvidersToConfig } from '../../sync-writer.js';
 
+async function fetchCatalogIds(apiKey: string, catalog: 'go' | 'zen'): Promise<string[]> {
+  const label = catalog === 'go' ? 'Go' : 'Zen';
+  try {
+    return (await fetchOpenCodeModels(apiKey, catalog)).filter(Boolean);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to fetch ${label} models: ${detail}`);
+  }
+}
+
 export async function fetchOpenCodeCatalogIds(
   apiKey: string,
   includeGo: boolean,
   includeZen: boolean
 ): Promise<OpenCodeCatalogIds> {
+  // Catalog sync is atomic: every enabled catalog must succeed. A failed Go
+  // or Zen fetch aborts the whole sync instead of shrinking the announced
+  // model list out from under pinned Agent sessions. Disabled catalogs stay
+  // empty without fetching.
   // Go and Zen catalogs are independent: fetch them concurrently so one slow
   // endpoint does not serialize behind the other on startup.
-  const [goOutcome, zenOutcome] = await Promise.allSettled([
-    includeGo ? fetchOpenCodeModels(apiKey, 'go') : Promise.resolve([] as string[]),
-    includeZen ? fetchOpenCodeModels(apiKey, 'zen') : Promise.resolve([] as string[]),
+  const [goModelIds, zenModelIds] = await Promise.all([
+    includeGo ? fetchCatalogIds(apiKey, 'go') : Promise.resolve([] as string[]),
+    includeZen ? fetchCatalogIds(apiKey, 'zen') : Promise.resolve([] as string[]),
   ]);
-
-  let goModelIds: string[] = [];
-  let zenModelIds: string[] = [];
-
-  if (goOutcome.status === 'fulfilled') {
-    goModelIds = goOutcome.value.filter(Boolean);
-  } else {
-    const message = goOutcome.reason instanceof Error ? goOutcome.reason.message : String(goOutcome.reason);
-    console.error(`Failed to fetch Go models: ${message}`);
-  }
-
-  if (zenOutcome.status === 'fulfilled') {
-    zenModelIds = zenOutcome.value.filter(Boolean);
-  } else {
-    const message = zenOutcome.reason instanceof Error ? zenOutcome.reason.message : String(zenOutcome.reason);
-    console.error(`Failed to fetch Zen models: ${message}`);
-  }
 
   return { goModelIds, zenModelIds };
 }

@@ -16,6 +16,10 @@ function okEmptyList() {
   return { ok: true, status: 200, statusText: 'OK', json: async () => ({ data: [] }) };
 }
 
+function failedList() {
+  return { ok: false, status: 500, statusText: 'Internal Server Error', text: async () => 'boom' };
+}
+
 test('fetchOpenCodeCatalogIds requests Go and Zen catalogs concurrently', async () => {
   const requested = [];
   let releaseGo;
@@ -38,6 +42,54 @@ test('fetchOpenCodeCatalogIds requests Go and Zen catalogs concurrently', async 
     assert.deepEqual(await pending, { goModelIds: [], zenModelIds: [] });
   } finally {
     releaseGo();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fetchOpenCodeCatalogIds rejects when the enabled Go catalog fails instead of returning a partial list', async () => {
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/zen/go/v1/models')) return failedList();
+    return okEmptyList();
+  };
+
+  try {
+    await assert.rejects(
+      fetchOpenCodeCatalogIds('sk-test-key-12345', true, true),
+      /Go models/
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fetchOpenCodeCatalogIds rejects when the enabled Zen catalog fails instead of returning a partial list', async () => {
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/zen/go/v1/models')) return okEmptyList();
+    return failedList();
+  };
+
+  try {
+    await assert.rejects(
+      fetchOpenCodeCatalogIds('sk-test-key-12345', true, true),
+      /Zen models/
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fetchOpenCodeCatalogIds ignores a disabled catalog that would fail', async () => {
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/zen/go/v1/models')) return failedList();
+    return okEmptyList();
+  };
+
+  try {
+    assert.deepEqual(await fetchOpenCodeCatalogIds('sk-test-key-12345', false, true), {
+      goModelIds: [],
+      zenModelIds: [],
+    });
+  } finally {
     globalThis.fetch = originalFetch;
   }
 });
