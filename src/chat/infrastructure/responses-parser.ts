@@ -44,13 +44,47 @@ function queueFunctionCallOutput(
   sink.queueToolCall({ ...existing, index: idx });
 }
 
+function extractCompletedText(output: unknown): string {
+  if (!Array.isArray(output)) return '';
+  let text = '';
+  for (const item of output) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as ResponsesData;
+    if (record.type === 'message' && Array.isArray(record.content)) {
+      for (const part of record.content) {
+        if (!part || typeof part !== 'object') continue;
+        const content = part as ResponsesData;
+        if ((content.type === 'output_text' || content.type === 'text') && typeof content.text === 'string') {
+          text += content.text;
+        }
+      }
+    } else if ((record.type === 'output_text' || record.type === 'text') && typeof record.text === 'string') {
+      text += record.text;
+    }
+  }
+  return text;
+}
+
 function handleResponseCompleted(data: ResponsesData, sink: StreamSink): boolean {
   sink.reasoningActive = false;
   sink.reportUsage(data);
-  if (!Array.isArray(data.response?.output)) return true;
-  for (const item of data.response.output) {
-    if (item?.type !== 'function_call') continue;
-    queueFunctionCallOutput(sink, item, item.arguments ? asArgsString(item.arguments) : '');
+  const response: unknown = data.response;
+  if (typeof response !== 'object' || response === null) return true;
+  const output: unknown = (response as ResponsesData).output;
+  if (!Array.isArray(output)) return true;
+  for (const item of output) {
+    const entry = item as ResponsesData | undefined;
+    if (entry?.type !== 'function_call') continue;
+    queueFunctionCallOutput(sink, entry, entry.arguments ? asArgsString(entry.arguments) : '');
+  }
+  // Deltas carry text in the normal path; completed carries the full text
+  // as a fallback. Emit it only when no text delta was streamed, otherwise
+  // the turn would duplicate every message.
+  if (!sink.textEmitted) {
+    const fallback = extractCompletedText(output);
+    if (fallback) {
+      sink.emitText(fallback);
+    }
   }
   return true;
 }

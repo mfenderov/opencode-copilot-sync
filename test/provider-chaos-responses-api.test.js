@@ -356,6 +356,47 @@ test('Provider Chaos [Responses API]: parses all remaining buffer lines and flus
   assert.deepEqual(toolParts[0].input, { from_done: true });
 });
 
+test('Provider Chaos [Responses API]: emits completed message text when no output_text deltas were streamed', async () => {
+  mockServer.clearRequests();
+  mockServer.setScenario({
+    mode: 'standard',
+    chunks: [
+      {
+        type: 'response.completed',
+        response: {
+          id: 'resp_text_fallback',
+          status: 'completed',
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'Fallback hello from completed.' }],
+            },
+          ],
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
+      },
+    ],
+  });
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+  const token = createMockToken();
+
+  await provider.provideLanguageModelChatResponse(
+    MUSE_RESPONSES_MODEL,
+    [createMockMessage('hello with no deltas')],
+    {},
+    progress,
+    token
+  );
+
+  const textParts = progress.parts.filter((p) => p instanceof vscode.LanguageModelTextPart);
+  assert.equal(textParts.length, 1);
+  assert.match(textParts[0].value, /Fallback hello from completed/);
+});
+
 
 
 // ============================================================================

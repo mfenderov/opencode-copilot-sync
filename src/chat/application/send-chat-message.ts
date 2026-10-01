@@ -44,6 +44,7 @@ class StreamState {
   partsReportedCount = 0;
   isReasoningActive = false;
   reasoningDeltasEmitted = false;
+  textEmitted = false;
   isStallRetry = false;
   usageReported = false;
 
@@ -99,6 +100,7 @@ class StreamState {
     return {
       emitText: (text) => {
         state.partsReportedCount++;
+        state.textEmitted = true;
         state.options.progress.report(new vscode.LanguageModelTextPart(text));
       },
       emitThinking: (thinking, id) => {
@@ -141,6 +143,12 @@ class StreamState {
       },
       set reasoningDeltasEmitted(emitted: boolean) {
         state.reasoningDeltasEmitted = emitted;
+      },
+      get textEmitted(): boolean {
+        return state.textEmitted;
+      },
+      set textEmitted(emitted: boolean) {
+        state.textEmitted = emitted;
       },
       feedThinkTags: (chunk) => state.thinkParser.feed(chunk),
       flushThinkTags: () => state.thinkParser.flush(),
@@ -242,6 +250,7 @@ function flushThinkTagRemainder(
   if (flushed.thinking) state.emitThinkingPart(flushed.thinking, state.currentThinkingId);
   if (flushed.text) {
     state.partsReportedCount++;
+    state.textEmitted = true;
     options.progress.report(new vscode.LanguageModelTextPart(flushed.text));
   }
 }

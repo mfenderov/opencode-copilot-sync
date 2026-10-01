@@ -124,6 +124,7 @@ export interface StreamSink {
   thinkingId: string;
   reasoningActive: boolean;
   reasoningDeltasEmitted: boolean;
+  textEmitted: boolean;
   feedThinkTags(chunk: string): { text: string; thinking: string };
   flushThinkTags(): { text: string; thinking: string };
 }
