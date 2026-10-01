@@ -666,3 +666,24 @@ test('Session ID: empty message history resolves with a session and does not cra
   );
 });
 
+
+test('Model catalog: updates and information queries log announced counts', async () => {
+  const lines = [];
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context, { appendLine: (m) => lines.push(m) });
+
+  provider.updateModels([
+    { id: 'a', name: 'A', family: 'a', catalog: 'go', contextWindow: 1000, maxOutputTokens: 100 },
+    { id: 'b', name: 'B', family: 'b', catalog: 'zen', contextWindow: 1000, maxOutputTokens: 100 },
+  ]);
+  await provider.provideLanguageModelChatInformation({}, createMockToken());
+
+  assert.ok(
+    lines.some((l) => l.includes('Model catalog updated: 2 models announced')),
+    `expected update log; got: ${JSON.stringify(lines)}`
+  );
+  assert.ok(
+    lines.some((l) => l.includes('Model information queried: 2 models announced')),
+    `expected query log; got: ${JSON.stringify(lines)}`
+  );
+});

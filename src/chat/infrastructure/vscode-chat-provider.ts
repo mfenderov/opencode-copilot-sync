@@ -527,6 +527,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
   updateModels(models: OpenCodeModelMeta[]): void {
     if (Array.isArray(models) && models.length > 0) {
       this._models = models;
+      this.log(`Model catalog updated: ${models.length} models announced`);
       this.refresh();
       try {
         writeModelCache(this.context.globalStorageUri.fsPath, models);
@@ -538,6 +539,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     _options: vscode.PrepareLanguageModelChatModelOptions,
     _token: vscode.CancellationToken
   ): Promise<vscode.LanguageModelChatInformation[]> {
+    this.log(`Model information queried: ${this._models.length} models announced`);
     return this._models.map((m) => describeModel(m) as any);
   }
 
