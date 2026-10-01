@@ -107,7 +107,8 @@ jobs:
     needs: [test, quality]
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
+      actions: write
     concurrency:
       group: release
       cancel-in-progress: false

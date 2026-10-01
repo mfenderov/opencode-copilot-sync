@@ -194,7 +194,12 @@ function writeBadgePng(display, functionCount) {
     fs.writeFileSync(svgPath, renderBadgeSvg(display, functionCount));
   }
   try {
-    execFileSync('rsvg-convert', ['-w', '256', '-h', '40', '-o', BADGE_PNG_PATH, svgPath], { stdio: 'pipe' });
+    // Render 1:1 with the SVG's own dimensions: GitHub shows the PNG at
+    // native pixels, so a 2x asset without a width hint displays double-size
+    // next to the 1x shields badges.
+    const svg = fs.readFileSync(svgPath, 'utf8');
+    const width = Number(/width="(\d+)"/.exec(svg)?.[1] ?? 128);
+    execFileSync('rsvg-convert', ['-w', String(width), '-h', '20', '-o', BADGE_PNG_PATH, svgPath], { stdio: 'pipe' });
     console.log(`Wrote CRAP badge PNG (worst ${display ?? 'unknown'}) to ${path.relative(ROOT, BADGE_PNG_PATH)}`);
   } catch (err) {
     console.error(`Cannot convert badge SVG to PNG (is rsvg-convert installed?): ${err.message}`);
