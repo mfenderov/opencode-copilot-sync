@@ -687,3 +687,18 @@ test('Model catalog: updates and information queries log announced counts', asyn
     `expected query log; got: ${JSON.stringify(lines)}`
   );
 });
+
+test('Model catalog: identical sync results do not re-announce to the host', async () => {
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context, { appendLine: () => {} });
+  let fires = 0;
+  provider.onDidChangeLanguageModelChatInformation(() => {
+    fires++;
+  });
+  const models = [
+    { id: 'a', name: 'A', family: 'a', catalog: 'go', contextWindow: 1000, maxOutputTokens: 100 },
+  ];
+  provider.updateModels(models);
+  provider.updateModels(models.map((m) => ({ ...m })));
+  assert.equal(fires, 1);
+});

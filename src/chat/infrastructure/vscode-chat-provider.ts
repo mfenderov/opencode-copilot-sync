@@ -526,12 +526,19 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
 
   updateModels(models: OpenCodeModelMeta[]): void {
     if (Array.isArray(models) && models.length > 0) {
+      // Skip the announce when only metadata changed: every refresh flaps
+      // the agent-host BYOK bridge, and flapping during session restore is
+      // what strands resumed chats with no BYOK models registered.
+      const unchanged =
+        this._models.length === models.length &&
+        this._models.every((m, i) => m.id === models[i].id);
       this._models = models;
-      this.log(`Model catalog updated: ${models.length} models announced`);
-      this.refresh();
       try {
         writeModelCache(this.context.globalStorageUri.fsPath, models);
       } catch {}
+      if (unchanged) return;
+      this.log(`Model catalog updated: ${models.length} models announced`);
+      this.refresh();
     }
   }
 
