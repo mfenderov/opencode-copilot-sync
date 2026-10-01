@@ -331,6 +331,7 @@ interface StallLoopInput {
   isResponses: boolean;
   formattedMessages: FormattedMessage[];
   responsesInput: unknown[];
+  relaxedToolNames: ReadonlySet<string>;
   idleTimeoutMs: number;
   maxStallRetries: number;
 }
@@ -387,6 +388,7 @@ async function runStallAttempt(
     modelId: input.model.id,
     tools: input.options.tools,
     toolMode: input.options.toolMode,
+    relaxedToolNames: input.relaxedToolNames,
     progress: input.progress,
     token: input.token,
     abortSignal: input.abortSignal,
@@ -469,7 +471,23 @@ export function classifyUpstreamAlert(status: number, detail: string, isFreeTier
   if (isSchemaValidationError(status, detail)) {
     return 'tool schema rejected by upstream (an attached tool declares a constraint the gateway cannot accept; retry without that tool, or re-run sync)';
   }
+  if (isContextLengthError(status, detail)) {
+    return 'upstream context limit exceeded (shorten the conversation, start a new chat, or pick a larger-context model)';
+  }
   return 'upstream server error';
+}
+
+export function isContextLengthError(status: number, detail: string): boolean {
+  // A context-length 400 means the conversation no longer fits the model's
+  // window: retrying, dropping a tool, or re-running sync cannot help.
+  // Checked after the schema classifier so a schema-shaped message keeps its
+  // (correct) label — ordering matters, not just matching.
+  if (status !== 400) return false;
+  if (isSchemaValidationError(status, detail)) return false;
+  if (/context_length_exceeded/i.test(detail)) return true;
+  const hasContextNoun = /\bcontext\b/i.test(detail);
+  const hasViolationVerb = /\bexceeds?\b|too many|too long|maximum/i.test(detail);
+  return hasContextNoun && hasViolationVerb;
 }
 
 export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
@@ -508,11 +526,19 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
 
   updateModels(models: OpenCodeModelMeta[]): void {
     if (Array.isArray(models) && models.length > 0) {
+      // Skip the announce when only metadata changed: every refresh flaps
+      // the agent-host BYOK bridge, and flapping during session restore is
+      // what strands resumed chats with no BYOK models registered.
+      const unchanged =
+        this._models.length === models.length &&
+        this._models.every((m, i) => m.id === models[i].id);
       this._models = models;
-      this.refresh();
       try {
         writeModelCache(this.context.globalStorageUri.fsPath, models);
       } catch {}
+      if (unchanged) return;
+      this.log(`Model catalog updated: ${models.length} models announced`);
+      this.refresh();
     }
   }
 
@@ -520,6 +546,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     _options: vscode.PrepareLanguageModelChatModelOptions,
     _token: vscode.CancellationToken
   ): Promise<vscode.LanguageModelChatInformation[]> {
+    this.log(`Model information queried: ${this._models.length} models announced`);
     return this._models.map((m) => describeModel(m) as any);
   }
 
@@ -548,9 +575,10 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     const isResponses = isResponsesModel(model.id, meta?.apiType);
     const isFreeOrZen = isFreeOrZenModel(model.id, meta);
 
+    const relaxedToolNames = new Set<string>();
     const toolsPayload = formatProviderTools(options.tools, isResponses, isFreeOrZen, (message) => {
       this.log(message);
-    });
+    }, relaxedToolNames);
 
     const responsesInput: any[] = isResponses ? buildResponsesInput(formattedMessages) : [];
 
@@ -572,7 +600,8 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         toolsPayload,
         responsesInput,
         apiKey,
-        sessionId
+        sessionId,
+        relaxedToolNames
       ); return;
     } finally {
       cancelListener.dispose();
@@ -592,7 +621,8 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     toolsPayload: WireToolDefinition[] | undefined,
     responsesInput: any[],
     apiKey: string,
-    sessionId: string
+    sessionId: string,
+    relaxedToolNames: ReadonlySet<string>
   ): Promise<void> {
     // Free models and Zen-exclusive models route to zen/v1, flat-rate Go models route to zen/go/v1
     const reasoningEffort = getReasoningEffort(options);
@@ -607,7 +637,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     });
 
     this.log(
-      `Request: model=${model.id} protocol=${isResponses ? 'responses' : 'chat-completions'} url=${url} reasoningEffort=${reasoningEffort || 'none'} tools=${toolsPayload?.length ?? 0} session=${sessionId.slice(0, 12)}`
+      `Request: model=${model.id} protocol=${isResponses ? 'responses' : 'chat-completions'} url=${url} reasoningEffort=${reasoningEffort || 'none'} tools=${toolsPayload?.length ?? 0} toolsChars=${toolsPayload ? JSON.stringify(toolsPayload).length : 0} session=${sessionId.slice(0, 12)}`
     );
 
     const maxStallRetries = 1;
@@ -628,6 +658,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
       isResponses,
       formattedMessages,
       responsesInput,
+      relaxedToolNames,
       idleTimeoutMs,
       maxStallRetries,
     };

@@ -2,7 +2,7 @@ import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import * as vscode from 'vscode';
-import { OpenCodeChatProvider, classifyUpstreamAlert, isSchemaValidationError } from '../out/chat/infrastructure/vscode-chat-provider.js';
+import { OpenCodeChatProvider, classifyUpstreamAlert, isContextLengthError, isSchemaValidationError } from '../out/chat/infrastructure/vscode-chat-provider.js';
 import { startMockServer } from './helpers/mock-opencode-server.js';
 
 let mockServer;
@@ -255,15 +255,33 @@ test('classifies upstream alerts without misattributing schema rejections', () =
   // A 400 that is NOT a schema error stays a server error.
   assert.equal(classifyUpstreamAlert(400, 'reasoning `encrypted_content` was not issued to this caller', false), 'upstream server error');
   // A context-length 400 mentions exceeds + invalid_request but no schema term:
-  // misclassifying it would send the user to drop a tool instead of shortening input.
+  // it gets the context-limit label (tested below), not the schema one.
   assert.equal(
     classifyUpstreamAlert(400, 'invalid_request_error: context length exceeds the model limit', false),
-    'upstream server error'
+    'upstream context limit exceeded (shorten the conversation, start a new chat, or pick a larger-context model)'
   );
   assert.equal(
     isSchemaValidationError(400, 'tool input failed schema validation: missing required property'),
     true,
     'explicit schema diagnostics still classify'
+  );
+});
+
+test('classifies context-length 400s as a context problem, not a server error', () => {
+  assert.equal(
+    classifyUpstreamAlert(400, 'invalid_request_error: context length exceeds the model limit', false),
+    'upstream context limit exceeded (shorten the conversation, start a new chat, or pick a larger-context model)'
+  );
+  assert.equal(isContextLengthError(400, 'context_length_exceeded: too many tokens', true), true);
+  assert.equal(isContextLengthError(400, 'plain boom', false), false);
+  assert.equal(
+    isContextLengthError(
+      400,
+      'a single enum property with more than 250 values exceeds the maximum combined enum string length of 15000 characters',
+      false
+    ),
+    false,
+    'schema-shaped messages keep the schema label'
   );
 });
 
