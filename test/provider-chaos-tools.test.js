@@ -441,3 +441,123 @@ test('Provider Chaos [Tool Calling on Responses API]: emits LanguageModelToolCal
   assert.equal(requests.length, 1);
   assert.equal(requests[0].pathname, '/zen/go/v1/responses');
 });
+
+test('Provider Chaos [Tool Calling on Responses API]: drops tool calls with unparseable arguments instead of emitting them', async () => {
+  mockServer.clearRequests();
+  mockServer.setScenario({
+    mode: 'standard',
+    chunks: [
+      {
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: { id: 'call_broken_1', type: 'function_call', name: 'web_search', arguments: '' },
+      },
+      {
+        type: 'response.output_item.done',
+        output_index: 0,
+        item: {
+          id: 'call_broken_1',
+          type: 'function_call',
+          name: 'web_search',
+          arguments: '{"query": "OpenCode',
+        },
+      },
+      {
+        type: 'response.completed',
+        response: { id: 'resp_broken_1', status: 'completed' },
+      },
+    ],
+  });
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+  const token = createMockToken();
+
+  const options = {
+    tools: [
+      {
+        name: 'web_search',
+        description: 'Search the web',
+        inputSchema: { type: 'object' },
+      },
+    ],
+  };
+
+  await provider.provideLanguageModelChatResponse(
+    GPT_RESPONSES_MODEL,
+    [createMockMessage('search web')],
+    options,
+    progress,
+    token
+  );
+
+  const toolParts = progress.parts.filter((p) => p instanceof vscode.LanguageModelToolCallPart);
+  assert.equal(toolParts.length, 0);
+});
+
+test('Provider Chaos [Tool Calling on Responses API]: logs when a relaxed-schema tool is invoked', async () => {
+  const bigEnum = Array.from({ length: 201 }, (_, i) => `model-${i}`);
+  mockServer.clearRequests();
+  mockServer.setScenario({
+    mode: 'standard',
+    chunks: [
+      {
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: { id: 'call_relaxed_1', type: 'function_call', name: 'taskroot', arguments: '' },
+      },
+      {
+        type: 'response.function_call_arguments.delta',
+        output_index: 0,
+        delta: '{"model":"model-1","task":"do it"}',
+      },
+      {
+        type: 'response.output_item.done',
+        output_index: 0,
+        item: { id: 'call_relaxed_1', type: 'function_call', name: 'taskroot' },
+      },
+      {
+        type: 'response.completed',
+        response: { id: 'resp_relaxed_1', status: 'completed' },
+      },
+    ],
+  });
+
+  const lines = [];
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context, { appendLine: (m) => lines.push(m) });
+  const progress = createMockProgress();
+  const token = createMockToken();
+
+  const options = {
+    tools: [
+      {
+        name: 'taskroot',
+        description: 'Root task tool',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            model: { enum: bigEnum },
+            task: { type: 'string' },
+          },
+        },
+      },
+    ],
+  };
+
+  await provider.provideLanguageModelChatResponse(
+    GPT_RESPONSES_MODEL,
+    [createMockMessage('run it')],
+    options,
+    progress,
+    token
+  );
+
+  const toolParts = progress.parts.filter((p) => p instanceof vscode.LanguageModelToolCallPart);
+  assert.equal(toolParts.length, 1);
+  assert.ok(
+    lines.some((l) => l.includes('Relaxed-schema tool invoked: taskroot')),
+    `expected relaxed-invocation log; got: ${JSON.stringify(lines)}`
+  );
+});

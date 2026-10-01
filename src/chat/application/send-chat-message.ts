@@ -17,6 +17,7 @@ export interface ConsumeProviderStreamOptions {
   modelId: string;
   tools: readonly vscode.LanguageModelChatTool[] | undefined;
   toolMode?: vscode.LanguageModelChatToolMode;
+  relaxedToolNames?: ReadonlySet<string>;
   progress: vscode.Progress<vscode.LanguageModelResponsePart>;
   token: vscode.CancellationToken;
   abortSignal: AbortSignal;
@@ -33,6 +34,10 @@ export type ConsumeProviderStreamResult = 'retry' | 'done';
  * class so the orchestration function stays a thin loop over small methods
  * instead of a 36-complexity closure nest.
  */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 class StreamState {
   readonly pendingToolCalls = new Map<number, QueuedToolCall>();
   readonly emittedToolCallIds = new Set<string>();
@@ -63,15 +68,25 @@ class StreamState {
   }
 
   emitSingleToolCall(id: string, name: string, args: string): void {
-    let parsedArgs: any = {};
+    let parsedArgs: unknown;
     try {
-      parsedArgs = JSON.parse(args);
+      parsedArgs = args.trim().length === 0 ? {} : JSON.parse(args);
     } catch {
-      parsedArgs = { raw: args };
+      parsedArgs = undefined;
+    }
+    // A crippled call (truncated JSON, non-object input) would fail Copilot's
+    // tool-schema validation and send the agent into a retry loop. Drop it
+    // loudly instead of emitting it with an invented shape.
+    if (!isPlainObject(parsedArgs)) {
+      this.options.log(`Dropping malformed tool call ${name} (${id}): arguments are not a JSON object`);
+      return;
     }
     if (!this.emittedToolCallIds.has(id) && !isSyntheticVerificationTool(name, this.options.tools)) {
       this.partsReportedCount++;
       this.emittedToolCallIds.add(id);
+      if (this.options.relaxedToolNames?.has(name)) {
+        this.options.log(`Relaxed-schema tool invoked: ${name} (oversized enums were stripped from its schema; invalid arguments may fail the tool call)`);
+      }
       this.options.progress.report(new vscode.LanguageModelToolCallPart(id, name, parsedArgs));
     }
   }
