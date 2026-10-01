@@ -14,7 +14,7 @@
     "complexity": 12,
     "coverage": 0.923
   },
-  "src/chat/infrastructure/responses-parser.ts:135:mergeArgumentFragments": {
+  "src/chat/infrastructure/responses-parser.ts:183:mergeArgumentFragments": {
     "crap": 12,
     "complexity": 9,
     "coverage": 0.667

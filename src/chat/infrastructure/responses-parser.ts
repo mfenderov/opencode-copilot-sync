@@ -44,25 +44,47 @@ function queueFunctionCallOutput(
   sink.queueToolCall({ ...existing, index: idx });
 }
 
+function completedPartText(part: unknown): string {
+  if (!part || typeof part !== 'object') return '';
+  const content = part as ResponsesData;
+  if ((content.type === 'output_text' || content.type === 'text') && typeof content.text === 'string') {
+    return content.text;
+  }
+  return '';
+}
+
+function completedItemText(item: unknown): string {
+  if (!item || typeof item !== 'object') return '';
+  const record = item as ResponsesData;
+  const content: unknown = record.content;
+  if (record.type === 'message' && Array.isArray(content)) {
+    let text = '';
+    for (const part of content) {
+      text += completedPartText(part);
+    }
+    return text;
+  }
+  return completedPartText(item);
+}
+
 function extractCompletedText(output: unknown): string {
   if (!Array.isArray(output)) return '';
   let text = '';
   for (const item of output) {
-    if (!item || typeof item !== 'object') continue;
-    const record = item as ResponsesData;
-    if (record.type === 'message' && Array.isArray(record.content)) {
-      for (const part of record.content) {
-        if (!part || typeof part !== 'object') continue;
-        const content = part as ResponsesData;
-        if ((content.type === 'output_text' || content.type === 'text') && typeof content.text === 'string') {
-          text += content.text;
-        }
-      }
-    } else if ((record.type === 'output_text' || record.type === 'text') && typeof record.text === 'string') {
-      text += record.text;
-    }
+    text += completedItemText(item);
   }
   return text;
+}
+
+function emitCompletedTextFallback(output: unknown[], sink: StreamSink): void {
+  // Deltas carry text in the normal path; completed carries the full text
+  // as a fallback. Emit it only when no text delta was streamed, otherwise
+  // the turn would duplicate every message.
+  if (sink.textEmitted) return;
+  const fallback = extractCompletedText(output);
+  if (fallback) {
+    sink.emitText(fallback);
+  }
 }
 
 function handleResponseCompleted(data: ResponsesData, sink: StreamSink): boolean {
@@ -77,15 +99,7 @@ function handleResponseCompleted(data: ResponsesData, sink: StreamSink): boolean
     if (entry?.type !== 'function_call') continue;
     queueFunctionCallOutput(sink, entry, entry.arguments ? asArgsString(entry.arguments) : '');
   }
-  // Deltas carry text in the normal path; completed carries the full text
-  // as a fallback. Emit it only when no text delta was streamed, otherwise
-  // the turn would duplicate every message.
-  if (!sink.textEmitted) {
-    const fallback = extractCompletedText(output);
-    if (fallback) {
-      sink.emitText(fallback);
-    }
-  }
+  emitCompletedTextFallback(output, sink);
   return true;
 }
 

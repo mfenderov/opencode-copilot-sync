@@ -397,6 +397,88 @@ test('Provider Chaos [Responses API]: emits completed message text when no outpu
   assert.match(textParts[0].value, /Fallback hello from completed/);
 });
 
+test('Provider Chaos [Responses API]: emits completed text from a bare output_text item', async () => {
+  mockServer.clearRequests();
+  mockServer.setScenario({
+    mode: 'standard',
+    chunks: [
+      {
+        type: 'response.completed',
+        response: {
+          id: 'resp_text_bare',
+          status: 'completed',
+          output: [{ type: 'output_text', text: 'Bare completed text.' }],
+          usage: { input_tokens: 3, output_tokens: 2 },
+        },
+      },
+    ],
+  });
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+  const token = createMockToken();
+
+  await provider.provideLanguageModelChatResponse(
+    MUSE_RESPONSES_MODEL,
+    [createMockMessage('hello bare')],
+    {},
+    progress,
+    token
+  );
+
+  const textParts = progress.parts.filter((p) => p instanceof vscode.LanguageModelTextPart);
+  assert.equal(textParts.length, 1);
+  assert.match(textParts[0].value, /Bare completed text/);
+});
+
+test('Provider Chaos [Responses API]: completed fallback skips non-text output items', async () => {
+  mockServer.clearRequests();
+  mockServer.setScenario({
+    mode: 'standard',
+    chunks: [
+      {
+        type: 'response.completed',
+        response: {
+          id: 'resp_text_mixed',
+          status: 'completed',
+          output: [
+            null,
+            { type: 'reasoning', text: 'silent reasoning' },
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [
+                { type: 'output_text', text: 'Kept.' },
+                null,
+                { type: 'other', text: 'dropped' },
+              ],
+            },
+          ],
+          usage: { input_tokens: 3, output_tokens: 2 },
+        },
+      },
+    ],
+  });
+
+  const context = createMockContext();
+  const provider = new OpenCodeChatProvider(context);
+  const progress = createMockProgress();
+  const token = createMockToken();
+
+  await provider.provideLanguageModelChatResponse(
+    MUSE_RESPONSES_MODEL,
+    [createMockMessage('hello mixed')],
+    {},
+    progress,
+    token
+  );
+
+  const textParts = progress.parts.filter((p) => p instanceof vscode.LanguageModelTextPart);
+  assert.equal(textParts.length, 1);
+  assert.match(textParts[0].value, /Kept\./);
+});
+
 
 
 // ============================================================================
