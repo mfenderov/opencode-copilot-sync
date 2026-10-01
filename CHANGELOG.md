@@ -2,6 +2,16 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.18.10 - 2026-10-01
+#### Bug Fixes
+- (**provider**) skip host re-announce when sync yields identical model ids - (2fa6997) - Mark Fenderov
+- (**provider**) log announced model counts on catalog updates and queries - (c040ce3) - Mark Fenderov
+- (**provider**) classify context-length 400s distinctly - (e3f5b32) - Mark Fenderov
+- (**provider**) log relaxed-schema tool invocations and tool payload size - (214db99) - Mark Fenderov
+- (**provider**) drop malformed tool calls instead of emitting them - (e11b92b) - Mark Fenderov
+
+- - -
+
 ## v0.18.9 - 2026-10-01
 #### Bug Fixes
 - (**models**) abort sync when an enabled catalog fails instead of shrinking the model list - (f8796cb) - Mark Fenderov
