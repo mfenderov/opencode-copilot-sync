@@ -2,6 +2,15 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.18.9 - 2026-10-01
+#### Bug Fixes
+- (**models**) abort sync when an enabled catalog fails instead of shrinking the model list - (f8796cb) - Mark Fenderov
+- (**provider**) emit completed message text when no output_text deltas streamed - (26c4c6a) - Mark Fenderov
+#### Refactoring
+- (**provider**) split completed-text extraction to satisfy CRAP gate - (92f12ad) - Mark Fenderov
+
+- - -
+
 ## v0.18.8 - 2026-09-29
 #### Bug Fixes
 - (**provider**) honor toolMode Required, modelOptions effort, family token estimates (#14) - (da6b246) - Mark Fenderov
