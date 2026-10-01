@@ -273,23 +273,29 @@ function stripOversizedEnums(node: unknown, path: string, onDrop: (path: string,
   return stripObjectSchema(node as Record<string, unknown>, path, onDrop, inProgress);
 }
 
-function sanitizeToolParameters(schema: unknown, toolName: string, log: (message: string) => void): unknown {
+function sanitizeToolParameters(
+  schema: unknown,
+  toolName: string,
+  log: (message: string) => void
+): { schema: unknown; relaxed: boolean } {
   // Walk the computed fallback, not the raw schema: pre-change, a schema-less
   // tool sent { type: 'object', properties: {} } on both wire formats, and the
   // walker passes non-objects (undefined, null, strings) straight through.
   const effective: unknown =
     schema && typeof schema === 'object' ? schema : { type: 'object', properties: {} };
   try {
+    let relaxed = false;
     const { node } = stripOversizedEnums(effective, 'root', (path, count) => {
+      relaxed = true;
       log(`schema relaxed: dropped oversized enum on ${toolName}${path} (${count} values)`);
     }, new Set<unknown>());
-    return node;
+    return { schema: node, relaxed };
   } catch (err) {
     // Degrade to exactly the pre-change payload rather than to an empty schema: a
     // detectable 400 beats a model invoking the tool with invented arguments.
     const detail = err instanceof Error ? err.message : String(err);
     log(`schema sanitization failed for ${toolName}: ${detail}; sending caller schema unchanged`);
-    return effective;
+    return { schema: effective, relaxed: false };
   }
 }
 
@@ -299,26 +305,39 @@ export function formatProviderTools(
   tools: readonly vscode.LanguageModelChatTool[] | undefined,
   isResponses: boolean,
   injectVerificationTools: boolean,
-  log: (message: string) => void = discardLog
+  log: (message: string) => void = discardLog,
+  relaxedToolNames?: Set<string>
 ): WireToolDefinition[] | undefined {
   let toolsPayload: WireToolDefinition[] | undefined;
   if (tools && tools.length > 0) {
     if (isResponses) {
-      toolsPayload = tools.map((tool) => ({
-        type: 'function',
-        name: clampToolName(tool.name),
-        description: tool.description,
-        parameters: sanitizeToolParameters(tool.inputSchema, tool.name, log),
-      }));
-    } else {
-      toolsPayload = tools.map((tool) => ({
-        type: 'function',
-        function: {
-          name: clampToolName(tool.name),
+      toolsPayload = tools.map((tool) => {
+        const name = clampToolName(tool.name);
+        const sanitized = sanitizeToolParameters(tool.inputSchema, tool.name, log);
+        // Record the wire (clamped) name: stream-emitted calls carry it, so
+        // relaxed-schema invocations stay greppable at emit time.
+        if (sanitized.relaxed) relaxedToolNames?.add(name);
+        return {
+          type: 'function',
+          name,
           description: tool.description,
-          parameters: sanitizeToolParameters(tool.inputSchema, tool.name, log),
-        },
-      }));
+          parameters: sanitized.schema,
+        };
+      });
+    } else {
+      toolsPayload = tools.map((tool) => {
+        const name = clampToolName(tool.name);
+        const sanitized = sanitizeToolParameters(tool.inputSchema, tool.name, log);
+        if (sanitized.relaxed) relaxedToolNames?.add(name);
+        return {
+          type: 'function',
+          function: {
+            name,
+            description: tool.description,
+            parameters: sanitized.schema,
+          },
+        };
+      });
     }
   }
 
