@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { devNull, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const workflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
@@ -17,9 +17,11 @@ function setupRepositories(t) {
   const remote = join(root, 'remote.git');
   const producer = join(root, 'producer');
   const release = join(root, 'release');
+  const config = join(root, 'gitconfig');
+  writeFileSync(config, '');
   const env = {
     ...process.env,
-    GIT_CONFIG_GLOBAL: devNull,
+    GIT_CONFIG_GLOBAL: config,
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_TERMINAL_PROMPT: '0',
   };
