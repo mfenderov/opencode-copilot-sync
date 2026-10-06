@@ -118,6 +118,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Fast-forward main after badge refresh
+        run: |
+          git fetch origin main
+          git merge --ff-only origin/main
+
       - name: Record latest tag
         id: before
         run: echo "tag=$(git describe --tags --abbrev=0 2>/dev/null || echo '')" >> "$GITHUB_OUTPUT"
