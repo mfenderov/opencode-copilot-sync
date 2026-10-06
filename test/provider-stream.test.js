@@ -28,6 +28,145 @@ function sse(data) {
   return `data: ${JSON.stringify(data)}\n\n`;
 }
 
+async function diagnosticStream(events, tools) {
+  const progress = createProgress();
+  const logs = [];
+  const result = await consumeProviderStream({
+    response: createResponse(events.map(sse)),
+    modelId: 'muse-spark-1.3-contributor',
+    tools,
+    progress,
+    token: createToken(),
+    abortSignal: new AbortController().signal,
+    idleTimeoutMs: 1000,
+    stallAttempt: 0,
+    maxStallRetries: 1,
+    log(message) { logs.push(message); },
+  });
+  return { result, parts: progress.parts, logs };
+}
+
+function responseDiagnostic(logs) {
+  const summaries = logs.filter((message) => message.startsWith('Responses stream summary: '));
+  assert.equal(summaries.length, 1, 'each Responses stream must produce one metadata summary');
+  return JSON.parse(summaries[0].slice('Responses stream summary: '.length));
+}
+
+test('diagnostics identify a completed commentary-only response without logging content or replaying text', async () => {
+  const item = {
+    id: 'msg-private', type: 'message', phase: 'commentary',
+    content: [{ type: 'output_text', text: 'PRIVATE-PROGRESS-TEXT' }],
+  };
+  const { result, parts, logs } = await diagnosticStream([
+    { type: 'response.output_item.added', output_index: 0, item: { ...item, content: [] } },
+    { type: 'response.output_text.delta', delta: 'PRIVATE-PROGRESS-TEXT' },
+    { type: 'response.output_item.done', output_index: 0, item },
+    { type: 'response.completed', response: { status: 'completed', output: [item] } },
+  ]);
+
+  assert.equal(result, 'done');
+  assert.deepEqual(parts.map((part) => part.value), ['PRIVATE-PROGRESS-TEXT']);
+  assert.deepEqual(responseDiagnostic(logs), {
+    terminalEvent: 'response.completed', status: 'completed', incompleteReason: 'none',
+    outputItems: { message: 1, reasoning: 0, function_call: 0, other: 0 },
+    messagePhases: { commentary: 1, final_answer: 0, unspecified: 0, unknown: 0 },
+    toolCalls: { received: 0, emitted: 0, malformed: 0, synthetic: 0 },
+  });
+  assert.ok(!logs.join('\n').includes('PRIVATE-PROGRESS-TEXT'));
+  assert.ok(!logs.join('\n').includes('msg-private'));
+});
+
+test('diagnostics deduplicate tool events and distinguish emitted, malformed, and synthetic calls', async () => {
+  const calls = [
+    { type: 'function_call', call_id: 'call-valid', name: 'lookup', arguments: '{"key":"PRIVATE-ARGUMENT"}' },
+    { type: 'function_call', call_id: 'call-malformed', name: 'lookup', arguments: '{"key":' },
+    { type: 'function_call', call_id: 'call-synthetic', name: 'read', arguments: '{"filePath":"PRIVATE-PATH"}' },
+  ];
+  const { parts, logs } = await diagnosticStream([
+    { type: 'response.output_item.done', output_index: 0, item: calls[0] },
+    { type: 'response.completed', response: { status: 'completed', output: calls } },
+  ], [{ name: 'lookup' }]);
+
+  const delivered = parts.filter((part) => part instanceof vscode.LanguageModelToolCallPart);
+  assert.equal(delivered.length, 1);
+  assert.deepEqual(delivered[0].input, { key: 'PRIVATE-ARGUMENT' });
+  assert.deepEqual(responseDiagnostic(logs).toolCalls, {
+    received: 3, emitted: 1, malformed: 1, synthetic: 1,
+  });
+  assert.deepEqual(responseDiagnostic(logs).outputItems, {
+    message: 0, reasoning: 0, function_call: 3, other: 0,
+  });
+  assert.ok(!logs.join('\n').includes('PRIVATE-ARGUMENT'));
+  assert.ok(!logs.join('\n').includes('PRIVATE-PATH'));
+});
+
+test('diagnostics identify tools by call identity when terminal output indexes differ', async () => {
+  const first = { type: 'function_call', call_id: 'call-first', name: 'lookup', arguments: '{}' };
+  const second = { type: 'function_call', call_id: 'call-second', name: 'lookup', arguments: '{}' };
+  const { parts, logs } = await diagnosticStream([
+    { type: 'response.output_item.done', output_index: 1, item: first },
+    { type: 'response.completed', response: { status: 'completed', output: [first, second] } },
+  ], [{ name: 'lookup' }]);
+
+  assert.equal(parts.filter((part) => part instanceof vscode.LanguageModelToolCallPart).length, 2);
+  assert.deepEqual(responseDiagnostic(logs).toolCalls, { received: 2, emitted: 2, malformed: 0, synthetic: 0 });
+});
+
+test('diagnostics distinguish incomplete, failed, and missing terminal events without changing delivery', async () => {
+  const cases = [
+    {
+      event: { type: 'response.incomplete', response: { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } } },
+      expected: { terminalEvent: 'response.incomplete', status: 'incomplete', incompleteReason: 'max_output_tokens' },
+    },
+    {
+      event: { type: 'response.failed', response: { status: 'failed', error: { message: 'PRIVATE-ERROR' } } },
+      expected: { terminalEvent: 'response.failed', status: 'failed', incompleteReason: 'none' },
+    },
+    {
+      event: undefined,
+      expected: { terminalEvent: 'missing', status: 'unknown', incompleteReason: 'none' },
+    },
+  ];
+  for (const { event, expected } of cases) {
+    const { result, parts, logs } = await diagnosticStream([
+      { type: 'response.output_text.delta', delta: 'PRIVATE-TEXT' },
+      ...(event ? [event] : []),
+    ]);
+    const summary = responseDiagnostic(logs);
+    assert.deepEqual({
+      terminalEvent: summary.terminalEvent, status: summary.status, incompleteReason: summary.incompleteReason,
+    }, expected);
+    assert.equal(result, 'done');
+    assert.deepEqual(parts.map((part) => part.value), ['PRIVATE-TEXT']);
+    assert.ok(!logs.join('\n').includes('PRIVATE-ERROR'));
+    assert.ok(!logs.join('\n').includes('PRIVATE-TEXT'));
+  }
+});
+
+test('diagnostics allowlist metadata values and keep reasoning and unfamiliar output content private', async () => {
+  const { logs } = await diagnosticStream([
+    {
+      type: 'response.completed', response: {
+        status: 'PRIVATE-STATUS', incomplete_details: { reason: 'PRIVATE-REASON' },
+        output: [
+          { type: 'reasoning', summary: [{ text: 'PRIVATE-REASONING' }], encrypted_content: 'PRIVATE-CIPHER' },
+          { type: 'message', phase: 'PRIVATE-PHASE', content: [] },
+          { type: 'message', phase: 'final_answer', content: [] },
+          { type: 'message', content: [] },
+          { type: 'PRIVATE-OUTPUT-TYPE', content: 'PRIVATE-CONTENT' },
+        ],
+      },
+    },
+  ]);
+
+  const summary = responseDiagnostic(logs);
+  assert.equal(summary.status, 'unknown');
+  assert.equal(summary.incompleteReason, 'unknown');
+  assert.deepEqual(summary.outputItems, { message: 3, reasoning: 1, function_call: 0, other: 1 });
+  assert.deepEqual(summary.messagePhases, { commentary: 0, final_answer: 1, unspecified: 1, unknown: 1 });
+  assert.ok(!logs.join('\n').includes('PRIVATE-'));
+});
+
 test('streams Chat Completions text and chunk-split inline thinking tags', async () => {
   const progress = createProgress();
   const result = await consumeProviderStream({

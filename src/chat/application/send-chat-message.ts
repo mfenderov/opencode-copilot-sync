@@ -10,6 +10,7 @@ import {
 } from '../infrastructure/sse-reader.js';
 import { processChatCompletionsEvent } from '../infrastructure/chat-completions-parser.js';
 import { processResponsesEvent } from '../infrastructure/responses-parser.js';
+import { ResponsesStreamDiagnostics } from '../infrastructure/responses-stream-diagnostics.js';
 import { buildUsagePayload } from '../infrastructure/token-usage-reporter.js';
 import { shouldRetryStall, stallInterruptionMessage } from './recover-stream.js';
 
@@ -43,6 +44,7 @@ class StreamState {
   readonly pendingToolCalls = new Map<number, QueuedToolCall>();
   readonly emittedToolCallIds = new Set<string>();
   readonly thinkParser = new ThinkTagStreamParser();
+  readonly diagnostics = new ResponsesStreamDiagnostics();
   readonly thinkingId = `thinking-${Date.now()}`;
   currentThinkingId: string;
   hasStreamError = false;
@@ -79,12 +81,18 @@ class StreamState {
     // tool-schema validation and send the agent into a retry loop. Drop it
     // loudly instead of emitting it with an invented shape.
     if (!isPlainObject(parsedArgs)) {
+      this.diagnostics.recordToolDisposition(id, 'malformed');
       this.options.log(`Dropping malformed tool call ${name} (${id}): arguments are not a JSON object`);
       return;
     }
-    if (!this.emittedToolCallIds.has(id) && !isSyntheticVerificationTool(name, this.options.tools)) {
+    if (isSyntheticVerificationTool(name, this.options.tools)) {
+      this.diagnostics.recordToolDisposition(id, 'synthetic');
+      return;
+    }
+    if (!this.emittedToolCallIds.has(id)) {
       this.partsReportedCount++;
       this.emittedToolCallIds.add(id);
+      this.diagnostics.recordToolDisposition(id, 'emitted');
       if (this.options.relaxedToolNames?.has(name)) {
         this.options.log(`Relaxed-schema tool invoked: ${name} (oversized enums were stripped from its schema; invalid arguments may fail the tool call)`);
       }
@@ -172,19 +180,20 @@ class StreamState {
   }
 }
 
-function processSseLine(line: string, sink: StreamSink): boolean {
+function processSseLine(line: string, sink: StreamSink, diagnostics: ResponsesStreamDiagnostics): boolean {
   const parsed = parseSseLine(line);
   if (parsed.kind === 'skip') return false;
   if (parsed.kind === 'done') return true;
+  diagnostics.observe(parsed.event);
   return processResponsesEvent(parsed.event, sink) || processChatCompletionsEvent(parsed.event, sink);
 }
 
-function processLineBatch(lines: string[], sink: StreamSink): boolean {
+function processLineBatch(lines: string[], sink: StreamSink, diagnostics: ResponsesStreamDiagnostics): boolean {
   for (let i = 0; i < lines.length; i++) {
-    if (!processSseLine(lines[i], sink)) continue;
+    if (!processSseLine(lines[i], sink, diagnostics)) continue;
     // Ensure any remaining lines in this batch are processed before terminating
     for (let j = i + 1; j < lines.length; j++) {
-      processSseLine(lines[j], sink);
+      processSseLine(lines[j], sink, diagnostics);
     }
     return true;
   }
@@ -215,11 +224,11 @@ function effectiveIdleTimeout(baseMs: number, reasoningActive: boolean): number 
   return reasoningActive ? baseMs * 2 : baseMs;
 }
 
-function processRemainingBuffer(buffer: { text: string }, sink: StreamSink): void {
+function processRemainingBuffer(buffer: { text: string }, sink: StreamSink, diagnostics: ResponsesStreamDiagnostics): void {
   if (!buffer.text.trim()) return;
   const remainingLines = buffer.text.split('\n');
   buffer.text = '';
-  processLineBatch(remainingLines, sink);
+  processLineBatch(remainingLines, sink, diagnostics);
 }
 
 async function pumpStream(
@@ -243,14 +252,14 @@ async function pumpStream(
     const lines = buffer.text.split('\n');
     buffer.text = lines.pop() ?? '';
 
-    if (processLineBatch(lines, sink)) {
-      processRemainingBuffer(buffer, sink);
+    if (processLineBatch(lines, sink, state.diagnostics)) {
+      processRemainingBuffer(buffer, sink, state.diagnostics);
       sink.complete();
       break;
     }
 
     if (done) {
-      processRemainingBuffer(buffer, sink);
+      processRemainingBuffer(buffer, sink, state.diagnostics);
       sink.complete();
       break;
     }
@@ -277,6 +286,8 @@ function finalizeStream(options: ConsumeProviderStreamOptions, state: StreamStat
   if (streamSettledCleanly(options, state) && state.pendingToolCalls.size > 0) {
     state.flushQueuedToolCalls();
   }
+  const summary = state.diagnostics.summary();
+  if (summary) options.log(summary);
   if (streamSettledCleanly(options, state)) {
     options.log(`Stream completed for model=${options.modelId}`);
   }
