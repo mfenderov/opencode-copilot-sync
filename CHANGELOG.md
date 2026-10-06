@@ -2,6 +2,17 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.19.0 - 2026-10-06
+#### Features
+- (**provider**) add content-free Responses stream diagnostics (#21) - (2899b7c) - Mark Fenderov
+- (**provider**) add content-free Responses stream diagnostics - (976dcb8) - Mark Fenderov
+#### Refactoring
+- (**provider**) keep stream diagnostics below complexity gate - (d3103c5) - Mark Fenderov
+#### Miscellaneous Chores
+- (**badge**) refresh CRAP badge [skip ci] - (dc9170d) - github-actions[bot]
+
+- - -
+
 ## v0.18.11 - 2026-10-06
 #### Bug Fixes
 - (**badge**) render CRAP PNG at SVG-native size - (0c77a4f) - Mark Fenderov
