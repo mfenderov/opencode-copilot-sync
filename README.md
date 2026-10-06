@@ -106,6 +106,14 @@ The extension registers a native **OpenCode** chat provider for requests and mai
 
 ---
 
+## CI & Releases
+
+CI runs lint, coverage, complexity checks, tests, and packaging on pull requests and pushes to `main`. On `main`, the quality job also commits refreshed CRAP badges. After the checks pass, the release job fast-forwards its checkout to include that badge commit before bumping the version and pushing the release tag. It never force-pushes; divergent history stops the release. The release job then dispatches the GitHub release and Marketplace publishing workflow for that tag.
+
+The release synchronization regression tests use disposable local Git repositories and run with `node --test test/ci-release.test.js` (also included in `npm test`).
+
+---
+
 ## 📄 License
 
 MIT © Mark Fenderov
