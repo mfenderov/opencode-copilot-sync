@@ -106,6 +106,20 @@ The extension registers a native **OpenCode** chat provider for requests and mai
 
 ---
 
+## Troubleshooting repeated progress messages or premature stops
+
+Check **View → Output → OpenCode Copilot Sync** after reproducing the problem. Responses API streams now log a content-free `Responses stream summary` containing:
+
+- `terminalEvent`, `status`, and `incompleteReason`: whether the gateway completed, failed, hit an output limit, or ended without a terminal event.
+- `outputItems` and `messagePhases`: counts of messages, reasoning items, function calls, and upstream `commentary` / `final_answer` labels. `unspecified` means the phase was absent; `unknown` means an unrecognized value was supplied.
+- `toolCalls`: unique calls received versus emitted to Copilot, plus malformed and synthetic verification calls that were filtered.
+
+A completed response with no emitted tools can end the Copilot turn even when its text only promises more work. Repeated progress messages across separate completed requests are not necessarily duplicated streaming text. Compare the metadata summaries with the session history before attributing the issue to retries or context compaction.
+
+These diagnostics do not log message text, reasoning content, tool arguments, or credentials, and do not change retry, tool delivery, or turn-ending behavior. Older logs cannot establish which upstream terminal status or phase was received. A summary is produced only after a Responses API event has been observed; Chat Completions streams retain their existing logging.
+
+---
+
 ## CI & Releases
 
 CI runs lint, coverage, complexity checks, tests, and packaging on pull requests and pushes to `main`. On `main`, the quality job also commits refreshed CRAP badges. After the checks pass, the release job fast-forwards its checkout to include that badge commit before bumping the version and pushing the release tag. It never force-pushes; divergent history stops the release. The release job then dispatches the GitHub release and Marketplace publishing workflow for that tag.

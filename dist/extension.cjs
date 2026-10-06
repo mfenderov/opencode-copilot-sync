@@ -29712,6 +29712,99 @@ function processResponsesEvent(event, sink) {
   return handler(data, sink);
 }
 
+// src/chat/infrastructure/responses-stream-diagnostics.ts
+var TERMINAL_EVENTS = /* @__PURE__ */ new Set(["response.completed", "response.incomplete", "response.failed"]);
+var RESPONSE_STATUSES = /* @__PURE__ */ new Set(["completed", "incomplete", "failed", "in_progress", "queued", "cancelled"]);
+var INCOMPLETE_REASONS = /* @__PURE__ */ new Set(["max_output_tokens", "content_filter"]);
+var OUTPUT_ITEM_TYPES = /* @__PURE__ */ new Set(["message", "reasoning", "function_call"]);
+var MESSAGE_PHASES = /* @__PURE__ */ new Set(["commentary", "final_answer"]);
+function diagnosticRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
+function allowedValue(value, allowed, fallback) {
+  if (value === void 0 || value === null) return fallback;
+  return typeof value === "string" && allowed.has(value) ? value : "unknown";
+}
+var ResponsesStreamDiagnostics = class {
+  seen = false;
+  terminalEvent = "missing";
+  status = "unknown";
+  incompleteReason = "none";
+  items = /* @__PURE__ */ new Map();
+  toolAliases = /* @__PURE__ */ new Map();
+  receivedToolCalls = 0;
+  dispositions = {
+    emitted: /* @__PURE__ */ new Set(),
+    malformed: /* @__PURE__ */ new Set(),
+    synthetic: /* @__PURE__ */ new Set()
+  };
+  observe(event) {
+    const data = diagnosticRecord(event.data);
+    if (!data || !event.type.startsWith("response.")) return;
+    this.seen = true;
+    if (TERMINAL_EVENTS.has(event.type)) {
+      this.terminalEvent = event.type;
+      this.observeTerminal(diagnosticRecord(data.response));
+    } else if (event.type === "response.output_item.added" || event.type === "response.output_item.done") {
+      this.observeItem(data.item, typeof data.output_index === "number" ? data.output_index : void 0);
+    }
+  }
+  observeTerminal(response) {
+    this.status = allowedValue(response?.status, RESPONSE_STATUSES, "unknown");
+    this.incompleteReason = allowedValue(diagnosticRecord(response?.incomplete_details)?.reason, INCOMPLETE_REASONS, "none");
+    if (Array.isArray(response?.output)) {
+      this.items.clear();
+      response.output.forEach((item, index) => {
+        this.observeItem(item, index);
+      });
+    }
+  }
+  observeItem(value, index) {
+    const item = diagnosticRecord(value);
+    if (!item) return;
+    const type = typeof item.type === "string" && OUTPUT_ITEM_TYPES.has(item.type) ? item.type : "other";
+    const phase = allowedValue(item.phase, MESSAGE_PHASES, "unspecified");
+    const identity = typeof item.id === "string" ? item.id : typeof item.call_id === "string" ? item.call_id : `anonymous:${this.items.size}`;
+    const key = index !== void 0 ? `index:${index}` : identity;
+    this.items.set(key, { type, phase });
+    if (type === "function_call") this.observeToolCall(item, index);
+  }
+  observeToolCall(item, index) {
+    const aliases = [];
+    if (typeof item.id === "string") aliases.push(`id:${item.id}`);
+    if (typeof item.call_id === "string") aliases.push(`call:${item.call_id}`);
+    if (aliases.length === 0 && index !== void 0) aliases.push(`index:${index}`);
+    const existing = aliases.map((alias) => this.toolAliases.get(alias)).find((id) => id !== void 0);
+    const identity = existing ?? this.receivedToolCalls++;
+    for (const alias of aliases) this.toolAliases.set(alias, identity);
+  }
+  recordToolDisposition(id, disposition) {
+    this.dispositions[disposition].add(id);
+  }
+  summary() {
+    if (!this.seen) return void 0;
+    const outputItems = { message: 0, reasoning: 0, function_call: 0, other: 0 };
+    const messagePhases = { commentary: 0, final_answer: 0, unspecified: 0, unknown: 0 };
+    for (const item of this.items.values()) {
+      outputItems[item.type]++;
+      if (item.type === "message") messagePhases[item.phase]++;
+    }
+    return `Responses stream summary: ${JSON.stringify({
+      terminalEvent: this.terminalEvent,
+      status: this.status,
+      incompleteReason: this.incompleteReason,
+      outputItems,
+      messagePhases,
+      toolCalls: {
+        received: this.receivedToolCalls,
+        emitted: this.dispositions.emitted.size,
+        malformed: this.dispositions.malformed.size,
+        synthetic: this.dispositions.synthetic.size
+      }
+    })}`;
+  }
+};
+
 // src/chat/infrastructure/token-usage-reporter.ts
 function isRecord2(value) {
   return value !== null && typeof value === "object";
@@ -29777,6 +29870,7 @@ var StreamState = class {
   pendingToolCalls = /* @__PURE__ */ new Map();
   emittedToolCallIds = /* @__PURE__ */ new Set();
   thinkParser = new ThinkTagStreamParser();
+  diagnostics = new ResponsesStreamDiagnostics();
   thinkingId = `thinking-${Date.now()}`;
   currentThinkingId;
   hasStreamError = false;
@@ -29804,12 +29898,18 @@ var StreamState = class {
       parsedArgs = void 0;
     }
     if (!isPlainObject(parsedArgs)) {
+      this.diagnostics.recordToolDisposition(id, "malformed");
       this.options.log(`Dropping malformed tool call ${name} (${id}): arguments are not a JSON object`);
       return;
     }
-    if (!this.emittedToolCallIds.has(id) && !isSyntheticVerificationTool(name, this.options.tools)) {
+    if (isSyntheticVerificationTool(name, this.options.tools)) {
+      this.diagnostics.recordToolDisposition(id, "synthetic");
+      return;
+    }
+    if (!this.emittedToolCallIds.has(id)) {
       this.partsReportedCount++;
       this.emittedToolCallIds.add(id);
+      this.diagnostics.recordToolDisposition(id, "emitted");
       if (this.options.relaxedToolNames?.has(name)) {
         this.options.log(`Relaxed-schema tool invoked: ${name} (oversized enums were stripped from its schema; invalid arguments may fail the tool call)`);
       }
@@ -29891,17 +29991,18 @@ var StreamState = class {
     };
   }
 };
-function processSseLine(line, sink) {
+function processSseLine(line, sink, diagnostics) {
   const parsed = parseSseLine(line);
   if (parsed.kind === "skip") return false;
   if (parsed.kind === "done") return true;
+  diagnostics.observe(parsed.event);
   return processResponsesEvent(parsed.event, sink) || processChatCompletionsEvent(parsed.event, sink);
 }
-function processLineBatch(lines, sink) {
+function processLineBatch(lines, sink, diagnostics) {
   for (let i = 0; i < lines.length; i++) {
-    if (!processSseLine(lines[i], sink)) continue;
+    if (!processSseLine(lines[i], sink, diagnostics)) continue;
     for (let j = i + 1; j < lines.length; j++) {
-      processSseLine(lines[j], sink);
+      processSseLine(lines[j], sink, diagnostics);
     }
     return true;
   }
@@ -29927,11 +30028,11 @@ async function readStreamChunk(reader, idleTimeoutMs, lastReadAt) {
 function effectiveIdleTimeout(baseMs, reasoningActive) {
   return reasoningActive ? baseMs * 2 : baseMs;
 }
-function processRemainingBuffer(buffer, sink) {
+function processRemainingBuffer(buffer, sink, diagnostics) {
   if (!buffer.text.trim()) return;
   const remainingLines = buffer.text.split("\n");
   buffer.text = "";
-  processLineBatch(remainingLines, sink);
+  processLineBatch(remainingLines, sink, diagnostics);
 }
 async function pumpStream(options, reader, decoder, buffer, state, sink) {
   while (true) {
@@ -29944,13 +30045,13 @@ async function pumpStream(options, reader, decoder, buffer, state, sink) {
     }
     const lines = buffer.text.split("\n");
     buffer.text = lines.pop() ?? "";
-    if (processLineBatch(lines, sink)) {
-      processRemainingBuffer(buffer, sink);
+    if (processLineBatch(lines, sink, state.diagnostics)) {
+      processRemainingBuffer(buffer, sink, state.diagnostics);
       sink.complete();
       break;
     }
     if (done) {
-      processRemainingBuffer(buffer, sink);
+      processRemainingBuffer(buffer, sink, state.diagnostics);
       sink.complete();
       break;
     }
@@ -29970,6 +30071,8 @@ function finalizeStream(options, state) {
   if (streamSettledCleanly(options, state) && state.pendingToolCalls.size > 0) {
     state.flushQueuedToolCalls();
   }
+  const summary = state.diagnostics.summary();
+  if (summary) options.log(summary);
   if (streamSettledCleanly(options, state)) {
     options.log(`Stream completed for model=${options.modelId}`);
   }
