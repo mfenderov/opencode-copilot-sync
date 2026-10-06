@@ -6,6 +6,8 @@ type ToolDisposition = 'emitted' | 'malformed' | 'synthetic';
 const TERMINAL_EVENTS = new Set(['response.completed', 'response.incomplete', 'response.failed']);
 const RESPONSE_STATUSES = new Set(['completed', 'incomplete', 'failed', 'in_progress', 'queued', 'cancelled']);
 const INCOMPLETE_REASONS = new Set(['max_output_tokens', 'content_filter']);
+const OUTPUT_ITEM_TYPES = new Set(['message', 'reasoning', 'function_call']);
+const MESSAGE_PHASES = new Set(['commentary', 'final_answer']);
 
 function diagnosticRecord(value: unknown): Metadata | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -36,25 +38,26 @@ export class ResponsesStreamDiagnostics {
     this.seen = true;
     if (TERMINAL_EVENTS.has(event.type)) {
       this.terminalEvent = event.type;
-      const response = diagnosticRecord(data.response);
-      this.status = allowedValue(response?.status, RESPONSE_STATUSES, 'unknown');
-      this.incompleteReason = allowedValue(diagnosticRecord(response?.incomplete_details)?.reason, INCOMPLETE_REASONS, 'none');
-      if (Array.isArray(response?.output)) {
-        this.items.clear();
-        response.output.forEach((item, index) => { this.observeItem(item, index); });
-      }
+      this.observeTerminal(diagnosticRecord(data.response));
     } else if (event.type === 'response.output_item.added' || event.type === 'response.output_item.done') {
       this.observeItem(data.item, typeof data.output_index === 'number' ? data.output_index : undefined);
+    }
+  }
+
+  private observeTerminal(response: Metadata | undefined): void {
+    this.status = allowedValue(response?.status, RESPONSE_STATUSES, 'unknown');
+    this.incompleteReason = allowedValue(diagnosticRecord(response?.incomplete_details)?.reason, INCOMPLETE_REASONS, 'none');
+    if (Array.isArray(response?.output)) {
+      this.items.clear();
+      response.output.forEach((item, index) => { this.observeItem(item, index); });
     }
   }
 
   private observeItem(value: unknown, index: number | undefined): void {
     const item = diagnosticRecord(value);
     if (!item) return;
-    const type = item.type === 'message' || item.type === 'reasoning' || item.type === 'function_call'
-      ? item.type : 'other';
-    const phase = item.phase === 'commentary' || item.phase === 'final_answer'
-      ? item.phase : item.phase == null ? 'unspecified' : 'unknown';
+    const type = typeof item.type === 'string' && OUTPUT_ITEM_TYPES.has(item.type) ? item.type : 'other';
+    const phase = allowedValue(item.phase, MESSAGE_PHASES, 'unspecified');
     const identity = typeof item.id === 'string' ? item.id
       : typeof item.call_id === 'string' ? item.call_id : `anonymous:${this.items.size}`;
     const key = index !== undefined ? `index:${index}` : identity;

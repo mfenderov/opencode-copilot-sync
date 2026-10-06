@@ -29716,6 +29716,8 @@ function processResponsesEvent(event, sink) {
 var TERMINAL_EVENTS = /* @__PURE__ */ new Set(["response.completed", "response.incomplete", "response.failed"]);
 var RESPONSE_STATUSES = /* @__PURE__ */ new Set(["completed", "incomplete", "failed", "in_progress", "queued", "cancelled"]);
 var INCOMPLETE_REASONS = /* @__PURE__ */ new Set(["max_output_tokens", "content_filter"]);
+var OUTPUT_ITEM_TYPES = /* @__PURE__ */ new Set(["message", "reasoning", "function_call"]);
+var MESSAGE_PHASES = /* @__PURE__ */ new Set(["commentary", "final_answer"]);
 function diagnosticRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
 }
@@ -29742,24 +29744,26 @@ var ResponsesStreamDiagnostics = class {
     this.seen = true;
     if (TERMINAL_EVENTS.has(event.type)) {
       this.terminalEvent = event.type;
-      const response = diagnosticRecord(data.response);
-      this.status = allowedValue(response?.status, RESPONSE_STATUSES, "unknown");
-      this.incompleteReason = allowedValue(diagnosticRecord(response?.incomplete_details)?.reason, INCOMPLETE_REASONS, "none");
-      if (Array.isArray(response?.output)) {
-        this.items.clear();
-        response.output.forEach((item, index) => {
-          this.observeItem(item, index);
-        });
-      }
+      this.observeTerminal(diagnosticRecord(data.response));
     } else if (event.type === "response.output_item.added" || event.type === "response.output_item.done") {
       this.observeItem(data.item, typeof data.output_index === "number" ? data.output_index : void 0);
+    }
+  }
+  observeTerminal(response) {
+    this.status = allowedValue(response?.status, RESPONSE_STATUSES, "unknown");
+    this.incompleteReason = allowedValue(diagnosticRecord(response?.incomplete_details)?.reason, INCOMPLETE_REASONS, "none");
+    if (Array.isArray(response?.output)) {
+      this.items.clear();
+      response.output.forEach((item, index) => {
+        this.observeItem(item, index);
+      });
     }
   }
   observeItem(value, index) {
     const item = diagnosticRecord(value);
     if (!item) return;
-    const type = item.type === "message" || item.type === "reasoning" || item.type === "function_call" ? item.type : "other";
-    const phase = item.phase === "commentary" || item.phase === "final_answer" ? item.phase : item.phase == null ? "unspecified" : "unknown";
+    const type = typeof item.type === "string" && OUTPUT_ITEM_TYPES.has(item.type) ? item.type : "other";
+    const phase = allowedValue(item.phase, MESSAGE_PHASES, "unspecified");
     const identity = typeof item.id === "string" ? item.id : typeof item.call_id === "string" ? item.call_id : `anonymous:${this.items.size}`;
     const key = index !== void 0 ? `index:${index}` : identity;
     this.items.set(key, { type, phase });
