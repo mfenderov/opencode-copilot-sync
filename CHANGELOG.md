@@ -2,6 +2,24 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.18.11 - 2026-10-06
+#### Bug Fixes
+- (**badge**) render CRAP PNG at SVG-native size - (0c77a4f) - Mark Fenderov
+- (**badge**) ship PNG twin since vsce refuses SVGs in README - (102f57d) - Mark Fenderov
+- (**ci**) fast-forward release checkout after badge refresh (#20) - (2d33ff4) - Mark Fenderov
+- (**ci**) restore push permissions for the release job - (8b7f682) - Mark Fenderov
+#### Refactoring
+- (**logging**) leveled LogOutputChannel and channel-routed diagnostics - (2ffa92b) - Mark Fenderov
+#### Miscellaneous Chores
+- (**badge**) refresh CRAP badge [skip ci] - (ec642cc) - github-actions[bot]
+- (**badge**) refresh CRAP badge [skip ci] - (3649baa) - github-actions[bot]
+- (**badge**) trigger CI for badge validation - (0086040) - Mark Fenderov
+- (**quality**) self-updating CRAP badge in README - (cff8a83) - Mark Fenderov
+- rebuild tracked dist bundle for E2E runner - (0c0df04) - Mark Fenderov
+- drop tracked build artifact dist/extension.cjs - (d7fe953) - Mark Fenderov
+
+- - -
+
 ## v0.18.10 - 2026-10-01
 #### Bug Fixes
 - (**provider**) skip host re-announce when sync yields identical model ids - (2fa6997) - Mark Fenderov
