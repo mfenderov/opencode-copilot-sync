@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.19.1 - 2026-10-08
+#### Bug Fixes
+- (**provider**) keep Copilot's system prompt as system, not assistant (#22) - (ecc5f14) - Mark Fenderov
+#### Miscellaneous Chores
+- (**badge**) refresh CRAP badge [skip ci] - (94ab70f) - github-actions[bot]
+
+- - -
+
 ## v0.19.0 - 2026-10-06
 #### Features
 - (**provider**) add content-free Responses stream diagnostics (#21) - (2899b7c) - Mark Fenderov
