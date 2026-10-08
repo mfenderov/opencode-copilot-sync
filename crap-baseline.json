@@ -19,12 +19,12 @@
     "complexity": 9,
     "coverage": 0.667
   },
-  "src/chat/infrastructure/message-mapper.ts:136:sanitizeResponsesInput": {
+  "src/chat/infrastructure/message-mapper.ts:151:sanitizeResponsesInput": {
     "crap": 11.02,
     "complexity": 11,
     "coverage": 0.946
   },
-  "src/chat/infrastructure/message-mapper.ts:93:formatProviderMessages": {
+  "src/chat/infrastructure/message-mapper.ts:112:formatProviderMessages": {
     "crap": 11,
     "complexity": 11,
     "coverage": 1
@@ -39,7 +39,7 @@
     "complexity": 10,
     "coverage": 1
   },
-  "src/chat/infrastructure/message-mapper.ts:174:appendAssistantInput": {
+  "src/chat/infrastructure/message-mapper.ts:189:appendAssistantInput": {
     "crap": 10,
     "complexity": 10,
     "coverage": 1
