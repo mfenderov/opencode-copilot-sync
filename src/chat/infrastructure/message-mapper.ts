@@ -18,7 +18,7 @@ export interface FormattedMessage {
 }
 
 export interface ResponsesInputMessage {
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   content: string | { type: string; text?: string; [key: string]: unknown }[];
 }
 
@@ -90,16 +90,31 @@ function isStaleThinkingPart(part: unknown): boolean {
   );
 }
 
+/**
+ * Maps a VS Code message role to the wire role. The proposed-API System role
+ * is absent from the stable enum typings, so the comparison runs on the
+ * numeric value: anything that is neither User nor Assistant is a system
+ * instruction. It must stay 'system': sending it as 'assistant' fabricates a
+ * prior assistant turn the model never made, which keeps reasoning models
+ * narrating tool calls forever instead of concluding.
+ *
+ * `1` and `2` are LanguageModelChatMessageRole.User and .Assistant. Comparing
+ * the enum members directly is a type error here: the stable typings exclude
+ * the proposed System role, so the rule sees two values with no shared enum.
+ */
+function wireRole(role: vscode.LanguageModelChatMessageRole): string {
+  const numericRole: number = role;
+  if (numericRole === 1) return 'user';
+  if (numericRole === 2) return 'assistant';
+  return 'system';
+}
+
 export function formatProviderMessages(
   messages: readonly vscode.LanguageModelChatRequestMessage[]
 ): FormattedMessage[] {
   const formattedMessages: FormattedMessage[] = [];
   for (const msg of messages) {
-    const role =
-      msg.role === vscode.LanguageModelChatMessageRole.User
-        ? 'user'
-        : 'assistant';
-
+    const role = wireRole(msg.role);
     let textContent = '';
     const toolCalls: FormattedToolCall[] = [];
 
@@ -199,8 +214,8 @@ function appendAssistantInput(
 export function buildResponsesInput(formattedMessages: FormattedMessage[]): ResponsesInputItem[] {
   const responsesInput: ResponsesInputItem[] = [];
   for (const msg of formattedMessages) {
-    if (msg.role === 'user') {
-      responsesInput.push({ role: 'user', content: msg.content ?? '' });
+    if (msg.role === 'user' || msg.role === 'system') {
+      responsesInput.push({ role: msg.role, content: msg.content ?? '' });
     } else if (msg.role === 'assistant') {
       appendAssistantInput(responsesInput, msg);
     } else if (msg.role === 'tool') {

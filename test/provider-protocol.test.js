@@ -6,6 +6,7 @@ import {
   createProviderRequest,
 } from '../out/chat/infrastructure/request-factory.js';
 import { formatProviderMessages } from '../out/chat/infrastructure/message-mapper.js';
+import { buildResponsesInput } from '../out/chat/infrastructure/message-mapper.js';
 import {
   formatProviderTools,
   isSyntheticVerificationTool,
@@ -75,6 +76,42 @@ test('formats chat messages while omitting prior reasoning and preserving tool r
       }],
     },
     { role: 'tool', tool_call_id: 'call-1', content: 'first\nsecond' },
+  ]);
+});
+
+test('preserves system instructions instead of forging assistant history', () => {
+  // The proposed-API System role (3) is absent from the stable enum typings,
+  // mirroring how the HelloFresh provider handles it: anything that is neither
+  // User nor Assistant is a system instruction. Sending it as 'assistant'
+  // fabricates a prior assistant turn the model never made, which keeps
+  // reasoning models narrating tool calls forever instead of concluding.
+  const System = 3;
+  const messages = formatProviderMessages([
+    {
+      role: System,
+      content: [new vscode.LanguageModelTextPart('Be concise')],
+    },
+    {
+      role: vscode.LanguageModelChatMessageRole.User,
+      content: [new vscode.LanguageModelTextPart('question')],
+    },
+  ]);
+
+  assert.deepEqual(messages, [
+    { role: 'system', content: 'Be concise' },
+    { role: 'user', content: 'question' },
+  ]);
+});
+
+test('passes system instructions through to Responses input', () => {
+  const input = buildResponsesInput([
+    { role: 'system', content: 'Be concise' },
+    { role: 'user', content: 'hi' },
+  ]);
+
+  assert.deepEqual(input, [
+    { role: 'system', content: 'Be concise' },
+    { role: 'user', content: 'hi' },
   ]);
 });
 
