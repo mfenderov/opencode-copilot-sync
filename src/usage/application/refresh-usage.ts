@@ -21,7 +21,7 @@ function renderUsage(targets: MeterTargets, usage: GoUsageData): void {
 
 function renderNoSubscription(targets: MeterTargets): void {
   targets.statusBarItem.text = '$(hubot) OpenCode (Zen)';
-  targets.statusBarItem.tooltip = 'OpenCode Zen (Pay-as-you-go / Free tier). Click to sync models.';
+  targets.statusBarItem.tooltip = 'OpenCode Zen (pay-as-you-go). Click to sync models.';
 }
 
 async function refreshWithKey(targets: MeterTargets, key: string): Promise<void> {

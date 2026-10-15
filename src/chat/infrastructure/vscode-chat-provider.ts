@@ -15,7 +15,7 @@ import type { WireToolDefinition } from './tool-mapper.js';
 import {
   createOpenCodeRequestHeaders,
   createProviderRequest,
-  isFreeOrZenModel,
+  isZenModel,
   isResponsesModel,
 } from './request-factory.js';
 import {
@@ -25,7 +25,7 @@ import {
 import { consumeProviderStream } from '../application/send-chat-message.js';
 import { getStreamIdleTimeoutMs } from '../application/recover-stream.js';
 import { VERIFIED_OPENCODE_MODELS } from '../../models/infrastructure/verified-catalog.js';
-import { ChatSessionCache, generateOpenCodeRequestId } from '../domain/chat-session.js';
+import { ChatSessionCache } from '../domain/chat-session.js';
 
 export type LogFn = (message: string, level?: 'info' | 'warn' | 'error') => void;
 
@@ -159,7 +159,7 @@ async function tryRepairReasoningEcho(
       attempt.url,
       {
         method: 'POST',
-        headers: { ...attempt.clientHeaders, 'x-opencode-request': generateOpenCodeRequestId() },
+        headers: { ...attempt.clientHeaders },
         body: JSON.stringify(retryBody),
         signal: attempt.abortSignal,
       },
@@ -201,14 +201,23 @@ function throwForAuthError(input: AuthErrorInput): void {
   throw new Error(errMessage);
 }
 
-function buildAlertNotice(res: Response, model: vscode.LanguageModelChatInformation, reason: string, userDetail: string): string {
-  return [
-    `> ⚠️ **OpenCode Model Alert (${res.status} ${res.statusText || 'Service Error'})**`,
-    `>`,
-    `> Unable to reach **${model.name}** (\`${model.id}\`): ${reason}.`,
-    `>`,
-    `> **Upstream detail:** \`${userDetail.slice(0, 300) || 'Internal server error'}\``,
-  ].join('\n');
+/**
+ * Verbatim upstream-failure card. Contract, do not embellish:
+ * - one blockquote line per detail line (`> ` prefixes EVERY line, so a
+ *   multi-line upstream message can never leak unquoted markdown into chat);
+ * - the upstream message is relayed verbatim, truncated to 300 chars;
+ * - empty detail falls back to `statusText`, then 'Service Error';
+ * - no invented reason is ever added (the old classifyUpstreamAlert
+ *   taxonomy was deliberately deleted with the impersonation cleanup).
+ * The `> ⚠️ \`id\` (status):` prefix is the card's identity; detectors
+ * match it with startsWith (see provider-chaos / stale-model tests), so
+ * keep the first-line shape stable.
+ */
+function buildAlertNotice(res: Response, model: vscode.LanguageModelChatInformation, userDetail: string): string {
+  const detail = userDetail.slice(0, 300) || res.statusText || 'Service Error';
+  const [first, ...rest] = detail.split('\n');
+  const head = `> ⚠️ \`${model.id}\` (${res.status}): ${first}`;
+  return [head, ...rest.map((line) => `> ${line}`)].join('\n');
 }
 
 /**
@@ -246,8 +255,7 @@ async function handleUpstreamError(
       userDetail.includes('FreeTierError') || userDetail.toLowerCase().includes('free tier');
     throwForAuthError({ res, userDetail, isFreeTierError });
 
-    const reason = classifyUpstreamAlert(res.status, userDetail, isFreeTierError);
-    progress.report(new vscode.LanguageModelTextPart(buildAlertNotice(res, ctx.model, reason, userDetail)));
+    progress.report(new vscode.LanguageModelTextPart(buildAlertNotice(res, ctx.model, userDetail)));
     return { outcome: 'handled', res, userDetail };
   }
   return { outcome: 'stream', res, userDetail };
@@ -293,11 +301,7 @@ async function postUpstreamRequest(
   token: vscode.CancellationToken,
   log: LogFn
 ): Promise<AttemptOutcome | 'cancelled'> {
-  const clientHeaders = createOpenCodeRequestHeaders(
-    input.apiKey,
-    input.sessionId,
-    generateOpenCodeRequestId()
-  );
+  const clientHeaders = createOpenCodeRequestHeaders(input.apiKey, input.sessionId);
   let res: Response;
   try {
     res = await fetchWithRetry(
@@ -463,22 +467,6 @@ export function isSchemaValidationError(status: number, detail: string): boolean
   return hasSchemaNoun && hasViolationVerb;
 }
 
-export function classifyUpstreamAlert(status: number, detail: string, isFreeTierError: boolean): string {
-  if (status === 404) {
-    return 'stale model ID (renamed or removed by a later sync; re-run sync and re-pick the model)';
-  }
-  if (isFreeTierError) {
-    return 'upstream free-tier policy error';
-  }
-  if (isSchemaValidationError(status, detail)) {
-    return 'tool schema rejected by upstream (an attached tool declares a constraint the gateway cannot accept; retry without that tool, or re-run sync)';
-  }
-  if (isContextLengthError(status, detail)) {
-    return 'upstream context limit exceeded (shorten the conversation, start a new chat, or pick a larger-context model)';
-  }
-  return 'upstream server error';
-}
-
 export function isContextLengthError(status: number, detail: string): boolean {
   // A context-length 400 means the conversation no longer fits the model's
   // window: retrying, dropping a tool, or re-running sync cannot help.
@@ -579,10 +567,10 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
 
     const meta = this._models.find((m) => m.id === model.id || model.id.endsWith('/' + m.id));
     const isResponses = isResponsesModel(model.id, meta?.apiType);
-    const isFreeOrZen = isFreeOrZenModel(model.id, meta);
+    const isZen = isZenModel(model.id, meta);
 
     const relaxedToolNames = new Set<string>();
-    const toolsPayload = formatProviderTools(options.tools, isResponses, isFreeOrZen, (message, level) => {
+    const toolsPayload = formatProviderTools(options.tools, isResponses, (message, level) => {
       this.log(message, level);
     }, relaxedToolNames);
 
@@ -601,7 +589,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
         abortController,
         meta,
         isResponses,
-        isFreeOrZen,
+        isZen,
         formattedMessages,
         toolsPayload,
         responsesInput,
@@ -622,7 +610,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     abortController: AbortController,
     meta: OpenCodeModelMeta | undefined,
     isResponses: boolean,
-    isFreeOrZen: boolean,
+    isZen: boolean,
     formattedMessages: FormattedMessage[],
     toolsPayload: WireToolDefinition[] | undefined,
     responsesInput: any[],
@@ -630,12 +618,12 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     sessionId: string,
     relaxedToolNames: ReadonlySet<string>
   ): Promise<void> {
-    // Free models and Zen-exclusive models route to zen/v1, flat-rate Go models route to zen/go/v1
+    // Zen-catalog models route to zen/v1, flat-rate Go models route to zen/go/v1
     const reasoningEffort = getReasoningEffort(options);
     const { url, body: requestBody } = createProviderRequest({
       modelId: model.id,
       isResponses,
-      isFreeOrZen,
+      isZen,
       formattedMessages,
       toolsPayload,
       responsesInput,
@@ -643,7 +631,7 @@ export class OpenCodeChatProvider implements vscode.LanguageModelChatProvider {
     });
 
     this.log(
-      `Request: model=${model.id} protocol=${isResponses ? 'responses' : 'chat-completions'} url=${url} reasoningEffort=${reasoningEffort || 'none'} tools=${toolsPayload?.length ?? 0} toolsChars=${toolsPayload ? JSON.stringify(toolsPayload).length : 0} session=${sessionId.slice(0, 12)}`
+      `Request: model=${model.id} protocol=${isResponses ? 'responses' : 'chat-completions'} url=${url} reasoningEffort=${reasoningEffort || 'none'} tools=${toolsPayload?.length ?? 0} toolsChars=${toolsPayload ? JSON.stringify(toolsPayload).length : 0}`
     );
 
     const maxStallRetries = 1;

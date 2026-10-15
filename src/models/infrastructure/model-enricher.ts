@@ -1,11 +1,10 @@
 // Models infrastructure: model metadata enrichment.
-import { isFreeTierModel, type ModelDevMetadata } from './models-dev-client.js';
+import type { ModelDevMetadata } from './models-dev-client.js';
 import { resolveModelTokenLimits } from '../domain/token-budget.js';
 import type { CustomEndpointModel } from '../domain/model.js';
 
 export interface EnrichOptions {
   isGo?: boolean;
-  isFree?: boolean;
   suffix?: string;
   modelsDevData?: ModelDevMetadata;
 }
@@ -177,11 +176,10 @@ function resolveCapabilities(
 export function enrichModel(modelId: string, options: EnrichOptions = {}): CustomEndpointModel {
   const isGo = options.isGo ?? true;
   const devMeta = options.modelsDevData;
-  const isFree = options.isFree ?? (isGo ? false : isFreeTierModel(modelId, devMeta));
 
   const { apiType, modelUrl } = resolveTransport(modelId, devMeta, isGo);
 
-  const defaultSuffix = isGo ? '(OpenCode Go)' : isFree ? '(OpenCode Free)' : '(OpenCode Zen)';
+  const defaultSuffix = isGo ? '(OpenCode Go)' : '(OpenCode Zen)';
   const suffix = options.suffix ?? defaultSuffix;
   const name = formatModelName(modelId, suffix);
 
@@ -216,14 +214,7 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
       temperature: null,
       top_p: null,
     },
-    isFree,
   };
-
-  if (isGo || isFree) {
-    model.requestHeaders = {
-      'x-opencode-session': 'vscode-copilot',
-    };
-  }
 
   return model;
 }

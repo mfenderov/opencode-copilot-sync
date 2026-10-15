@@ -125,7 +125,7 @@ const ZEN_FREE_CHAT_MODEL = {
 // 1. 500 / 502 / 503 Server Fault Tests
 // ============================================================================
 
-test('Provider Chaos [500 Fault]: does NOT throw and emits OpenCode Model Alert text part', async () => {
+test('Provider Chaos [500 Fault]: does NOT throw and emits minimal upstream card', async () => {
   mockServer.setScenario({ mode: 'fault', status: 500 });
 
   const context = createMockContext();
@@ -149,15 +149,12 @@ test('Provider Chaos [500 Fault]: does NOT throw and emits OpenCode Model Alert 
   assert.ok(progress.parts[0] instanceof vscode.LanguageModelTextPart);
 
   const alertText = progress.parts[0].value;
-  assert.match(alertText, /⚠️ \*\*OpenCode Model Alert \(500 Internal Server Error\)\*\*/);
-  assert.match(alertText, /Unable to reach \*\*DeepSeek V4 Pro \(OpenCode Go\)\*\*/);
-  assert.match(alertText, /upstream server error/);
+  assert.ok(alertText.startsWith('> \u26a0\uFE0F `deepseek-v4-pro` (500): '), `minimal card, got: ${alertText}`);
   assert.match(alertText, /Internal Server Error: OpenCode upstream cluster failed/);
-  assert.match(alertText, /\*\*Upstream detail:\*\*/);
-  assert.doesNotMatch(alertText, /Suggestions:/);
+  assert.doesNotMatch(alertText, /Model Alert/);
 });
 
-test('Provider Chaos [502 Bad Gateway Fault]: does NOT throw and emits OpenCode Model Alert', async () => {
+test('Provider Chaos [502 Bad Gateway Fault]: does NOT throw and emits minimal upstream card', async () => {
   mockServer.setScenario({ mode: 'fault', status: 502 });
 
   const context = createMockContext();
@@ -175,11 +172,12 @@ test('Provider Chaos [502 Bad Gateway Fault]: does NOT throw and emits OpenCode 
 
   assert.equal(progress.parts.length, 1);
   const alertText = progress.parts[0].value;
-  assert.match(alertText, /OpenCode Model Alert \(502 Bad Gateway\)/);
+  assert.ok(alertText.startsWith('> \u26a0\uFE0F '), `minimal card, got: ${alertText}`);
+  assert.match(alertText, /\(502\): /);
   assert.match(alertText, /Bad Gateway: Upstream OpenCode service unreachable/);
 });
 
-test('Provider Chaos [503 Service Unavailable Fault]: does NOT throw and emits OpenCode Model Alert', async () => {
+test('Provider Chaos [503 Service Unavailable Fault]: does NOT throw and emits minimal upstream card', async () => {
   mockServer.setScenario({ mode: 'fault', status: 503 });
 
   const context = createMockContext();
@@ -197,7 +195,8 @@ test('Provider Chaos [503 Service Unavailable Fault]: does NOT throw and emits O
 
   assert.equal(progress.parts.length, 1);
   const alertText = progress.parts[0].value;
-  assert.match(alertText, /OpenCode Model Alert \(503 Service Unavailable\)/);
+  assert.ok(alertText.startsWith('> \u26a0\uFE0F '), `minimal card, got: ${alertText}`);
+  assert.match(alertText, /\(503\): /);
   assert.match(alertText, /Service Unavailable: OpenCode is temporarily overloaded/);
 });
 
@@ -269,6 +268,8 @@ test('Provider Chaos [Reasoning Echo 400]: automatically repairs and retries whe
 
   const requests = mockServer.getRequests();
   assert.equal(requests.length, 2, 'Expected 2 attempts: initial failed with 400, second retried and succeeded');
+  assert.match(requests[0].headers['x-opencode-session'], /^[0-9a-f-]{36}$/);
+  assert.equal(requests[0].headers['x-opencode-session'], requests[1].headers['x-opencode-session'], 'reasoning repair retains conversation routing');
   assert.equal(progress.parts.length, 1);
   assert.match(progress.parts[0].value, /Repaired successfully/);
 });
@@ -303,7 +304,7 @@ test('Provider Chaos [403 Forbidden Fault]: throws LanguageModelError.NoPermissi
 // 3. 404 Model Fault Tests
 // ============================================================================
 
-test('Provider Chaos [404 Model Fault]: resolves with ONE alert card, never throws NotFound', async () => {
+test('Provider Chaos [404 Model Fault]: resolves with ONE minimal card, never throws NotFound', async () => {
   mockServer.setScenario({ mode: 'fault', status: 404 });
 
   const context = createMockContext();
@@ -325,12 +326,12 @@ test('Provider Chaos [404 Model Fault]: resolves with ONE alert card, never thro
 
   assert.equal(mockServer.getRequests().length, 1, 'expected exactly one upstream attempt (404 is not fetch-retried)');
   const alertCards = progress.parts.filter(
-    (p) => p instanceof vscode.LanguageModelTextPart && /OpenCode Model Alert/.test(p.value)
+    (p) => p instanceof vscode.LanguageModelTextPart && p.value.startsWith('> \u26a0\uFE0F')
   );
   assert.equal(alertCards.length, 1, 'expected exactly ONE alert card, never a retry storm');
   assert.equal(progress.parts.length, 1, 'expected no parts besides the single alert card');
-  assert.match(alertCards[0].value, /unknown-deprecated-model-xyz/);
-  assert.match(alertCards[0].value, /stale model ID/);
+  assert.match(alertCards[0].value, /`unknown-deprecated-model-xyz` \(404\): /);
+  assert.match(alertCards[0].value, /OpenCode model not found/);
 });
 
 // ============================================================================
@@ -377,12 +378,12 @@ test('Provider Chaos [429 Rate Limit Fault]: recovers after a few 429s and resol
   const textParts = progress.parts.filter((p) => p instanceof vscode.LanguageModelTextPart);
   assert.ok(textParts.length >= 1, 'expected streamed success content, not just an alert card');
   assert.ok(
-    !progress.parts.some((p) => p instanceof vscode.LanguageModelTextPart && /OpenCode Model Alert/.test(p.value)),
+    !progress.parts.some((p) => p instanceof vscode.LanguageModelTextPart && p.value.startsWith('> \u26a0\uFE0F')),
     'no alert card should be emitted once the request recovers'
   );
 });
 
-test('Provider Chaos [429 Rate Limit Fault]: exhausts the full 10-retry budget and emits OpenCode Model Alert', async () => {
+test('Provider Chaos [429 Rate Limit Fault]: exhausts the full 10-retry budget and emits minimal upstream card', async () => {
   // Every request returns 429 — forces the full patient schedule to run out
   // (1 initial attempt + 10 retries = 11 total requests) before the alert
   // card is shown. This exercises the real production schedule end-to-end,
@@ -413,6 +414,6 @@ test('Provider Chaos [429 Rate Limit Fault]: exhausts the full 10-retry budget a
   );
   assert.equal(progress.parts.length, 1, 'Expected exactly 1 alert part emitted');
   const alertText = progress.parts[0].value;
-  assert.match(alertText, /OpenCode Model Alert \(429 Too Many Requests\)/);
+  assert.ok(alertText.startsWith('> \u26a0\uFE0F `deepseek-v4-pro` (429): '), `minimal card, got: ${alertText}`);
   assert.match(alertText, /Rate limit exceeded\. Please try again later\./);
 });

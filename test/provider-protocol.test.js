@@ -9,10 +9,9 @@ import { formatProviderMessages } from '../out/chat/infrastructure/message-mappe
 import { buildResponsesInput } from '../out/chat/infrastructure/message-mapper.js';
 import {
   formatProviderTools,
-  isSyntheticVerificationTool,
-  isSyntheticVerificationTool as providerSyntheticToolFilter,
 } from '../out/chat/infrastructure/tool-mapper.js';
 import { getReasoningEffort } from '../out/chat/infrastructure/reasoning-controls.js';
+import { extensionUserAgent } from '../out/extension-version.js';
 import { resolveModelTokenLimits } from '../out/models/domain/token-budget.js';
 
 test('resolveModelTokenLimits rejects metadata that cannot preserve a positive input budget', () => {
@@ -120,7 +119,7 @@ test('formats Chat Completions tools with clamped names and caller schemas', () 
   const schema = { type: 'object', properties: { value: { type: 'string' } } };
 
   assert.deepEqual(
-    formatProviderTools([{ name: longName, description: 'A tool', inputSchema: schema }], false, false),
+    formatProviderTools([{ name: longName, description: 'A tool', inputSchema: schema }], false),
     [{
       type: 'function',
       function: { name: 'x'.repeat(64), description: 'A tool', parameters: schema },
@@ -128,9 +127,9 @@ test('formats Chat Completions tools with clamped names and caller schemas', () 
   );
 });
 
-test('formats Responses tools and adds verification tools only when requested', () => {
+test('formats Responses tools honestly: caller tools only, never synthetic', () => {
   const schema = { type: 'object', properties: {} };
-  const tools = formatProviderTools([{ name: 'search', description: 'Search', inputSchema: schema }], true, false);
+  const tools = formatProviderTools([{ name: 'search', description: 'Search', inputSchema: schema }], true);
   assert.deepEqual(tools, [{
     type: 'function',
     name: 'search',
@@ -138,15 +137,8 @@ test('formats Responses tools and adds verification tools only when requested', 
     parameters: schema,
   }]);
 
-  const verified = formatProviderTools(undefined, true, true);
-  assert.deepEqual(verified?.map((tool) => tool.name), ['bash', 'read']);
-  assert.equal(formatProviderTools(undefined, false, false), undefined);
-});
-
-test('preserves the provider export for filtering synthetic verification calls', () => {
-  assert.equal(isSyntheticVerificationTool('bash', undefined), true);
-  assert.equal(isSyntheticVerificationTool('calculator', undefined), false);
-  assert.equal(providerSyntheticToolFilter('read', [{ name: 'read' }]), false);
+  assert.equal(formatProviderTools(undefined, true), undefined, 'no caller tools means no tools payload');
+  assert.equal(formatProviderTools(undefined, false), undefined);
 });
 
 // ============================================================================
@@ -168,7 +160,7 @@ test('strips oversized enums in BOTH wire shapes, not just one branch', () => {
     const tools = formatProviderTools(
       [{ name: 'picker', description: 'Pick', inputSchema: schema }],
       isResponses,
-      false
+      undefined
     );
     const params = parametersOf(tools, isResponses);
     assert.equal(
@@ -186,7 +178,7 @@ test('drops an enum that breaches the character limit even under the count limit
   const tools = formatProviderTools(
     [{ name: 'picker', description: 'Pick', inputSchema: { type: 'object', properties: { m: { enum: long } } } }],
     true,
-    false
+    undefined
   );
   assert.equal(parametersOf(tools, true).properties.m.enum, undefined);
   assert.equal(parametersOf(tools, true).properties.m.type, 'string');
@@ -198,7 +190,7 @@ test('pins the enum limits at their boundary', () => {
       formatProviderTools(
         [{ name: 'p', description: 'P', inputSchema: { type: 'object', properties: { v: { enum: manyValues(n) } } } }],
         true,
-        false
+        undefined
       ),
       true
     ).properties.v;
@@ -217,7 +209,7 @@ test('pins the enum limits at their boundary', () => {
       formatProviderTools(
         [{ name: 'p', description: 'P', inputSchema: { type: 'object', properties: { v: { enum: values } } } }],
         true,
-        false
+        undefined
       ),
       true
     ).properties.v;
@@ -228,7 +220,7 @@ test('pins the enum limits at their boundary', () => {
 
 test('preserves legal enums and never aliases the caller schema', () => {
   const schema = { type: 'object', properties: { v: { type: 'string', enum: ['a', 'b', 'c'] } } };
-  const tools = formatProviderTools([{ name: 'p', description: 'P', inputSchema: schema }], true, false);
+  const tools = formatProviderTools([{ name: 'p', description: 'P', inputSchema: schema }], true);
   const params = parametersOf(tools, true);
 
   assert.deepEqual(params.properties.v.enum, ['a', 'b', 'c'], 'legal enum is preserved');
@@ -248,7 +240,7 @@ test('strips oversized enums at any nesting depth', () => {
     $defs: { hidden: { enum: big } },
   };
 
-  const params = parametersOf(formatProviderTools([{ name: 'p', description: 'P', inputSchema: schema }], true, false), true);
+  const params = parametersOf(formatProviderTools([{ name: 'p', description: 'P', inputSchema: schema }], true), true);
 
   assert.equal(params.properties.direct.enum, undefined);
   assert.equal(params.properties.inItems.items.enum, undefined);
@@ -266,7 +258,7 @@ test('does not inject a type into ancestors that only lost a descendant enum', (
     $defs: { wrapper: { properties: { inner: { enum: manyValues(300) } } } },
     anyOf: [{ properties: { v: { enum: manyValues(300) } } }],
   };
-  const params = parametersOf(formatProviderTools([{ name: 'p', description: 'P', inputSchema: schema }], true, false), true);
+  const params = parametersOf(formatProviderTools([{ name: 'p', description: 'P', inputSchema: schema }], true), true);
 
   assert.equal('$defs' in params, true);
   assert.equal(params.$defs.wrapper.type, undefined, 'an ancestor did not lose its own enum, so it gains no type');
@@ -282,7 +274,7 @@ test('does not impose a string type on dropped non-string enums', () => {
     formatProviderTools(
       [{ name: 'n', description: 'N', inputSchema: { type: 'object', properties: { level: { enum: numeric } } } }],
       true,
-      false
+      undefined
     ),
     true
   );
@@ -295,7 +287,7 @@ test('does not impose a string type on dropped non-string enums', () => {
     formatProviderTools(
       [{ name: 'm', description: 'M', inputSchema: { type: 'object', properties: { v: { enum: mixed } } } }],
       true,
-      false
+      undefined
     ),
     true
   );
@@ -312,7 +304,7 @@ test('does not descend into data keywords that merely contain an "enum" key', ()
     default: { enum: big },
     description: 'A tool',
   };
-  const params = parametersOf(formatProviderTools([{ name: 'p', description: 'P', inputSchema: schema }], true, false), true);
+  const params = parametersOf(formatProviderTools([{ name: 'p', description: 'P', inputSchema: schema }], true), true);
 
   assert.equal(params.examples[0].enum.length, 300, 'examples is data, not schema');
   assert.equal(params.default.enum.length, 300, 'default is data, not schema');
@@ -331,8 +323,7 @@ test('visits named schemas even when the property name collides with a keyword',
           description: 'P',
           inputSchema: { type: 'object', properties: { [name]: { enum: big } } },
         }],
-        true,
-        false
+        true
       ),
       true
     );
@@ -351,7 +342,7 @@ test('visits named schemas even when the property name collides with a keyword',
         inputSchema: { $defs: { default: { enum: big } } },
       }],
       true,
-      false
+      undefined
     ),
     true
   );
@@ -368,7 +359,7 @@ test('strips only the breaching property and logs every drop', () => {
     },
   };
   const params = parametersOf(
-    formatProviderTools([{ name: 'picker', description: 'Pick', inputSchema: schema }], true, false, (m) => logs.push(m)),
+    formatProviderTools([{ name: 'picker', description: 'Pick', inputSchema: schema }], true, (m) => logs.push(m)),
     true
   );
 
@@ -387,7 +378,7 @@ test('falls back to the caller schema and logs when sanitization throws', () => 
     },
   };
   const params = parametersOf(
-    formatProviderTools([{ name: 'bad', description: 'Bad', inputSchema: throwing }], true, false, (m) => logs.push(m)),
+    formatProviderTools([{ name: 'bad', description: 'Bad', inputSchema: throwing }], true, (m) => logs.push(m)),
     true
   );
 
@@ -398,7 +389,7 @@ test('falls back to the caller schema and logs when sanitization throws', () => 
 
 test('schema-less tools keep the pre-change empty object schema', () => {
   for (const isResponses of [true, false]) {
-    const tools = formatProviderTools([{ name: 'noschema', description: 'No schema' }], isResponses, false);
+    const tools = formatProviderTools([{ name: 'noschema', description: 'No schema' }], isResponses);
     assert.deepEqual(
       parametersOf(tools, isResponses),
       { type: 'object', properties: {} },
@@ -413,7 +404,7 @@ test('survives a cyclic schema without hanging or throwing', () => {
   node.properties = { back: cyclic };
 
   const params = parametersOf(
-    formatProviderTools([{ name: 'cyc', description: 'Cyc', inputSchema: cyclic }], true, false),
+    formatProviderTools([{ name: 'cyc', description: 'Cyc', inputSchema: cyclic }], true),
     true
   );
 
@@ -426,7 +417,7 @@ test('builds protocol-specific URLs and request bodies while sanitizing reasonin
   const responses = createProviderRequest({
     modelId: 'muse-spark-1.3',
     isResponses: true,
-    isFreeOrZen: true,
+    isZen: true,
     formattedMessages,
     toolsPayload: undefined,
     responsesInput: [
@@ -457,7 +448,7 @@ test('builds protocol-specific URLs and request bodies while sanitizing reasonin
   const chat = createProviderRequest({
     modelId: 'deepseek-v4-pro',
     isResponses: false,
-    isFreeOrZen: false,
+    isZen: false,
     formattedMessages,
     toolsPayload: undefined,
     responsesInput: [],
@@ -481,12 +472,10 @@ test('reads the first configured reasoning level and formats client headers', ()
     }),
     'high'
   );
-  assert.deepEqual(createOpenCodeRequestHeaders('test-key', 'ses_test', 'msg_test'), {
+  assert.deepEqual(createOpenCodeRequestHeaders('test-key', '72cc93f5-9d95-4a43-a94d-54c9ead4122d'), {
     Authorization: 'Bearer test-key',
     'Content-Type': 'application/json',
-    'User-Agent': 'opencode/1.18.31',
-    'x-opencode-client': 'cli',
-    'x-opencode-session': 'ses_test',
-    'x-opencode-request': 'msg_test',
+    'User-Agent': extensionUserAgent(),
+    'x-opencode-session': '72cc93f5-9d95-4a43-a94d-54c9ead4122d',
   });
 });

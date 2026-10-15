@@ -5,7 +5,6 @@ import type { CustomEndpointModel } from '../domain/model.js';
 import {
   fetchModelsDevMetadata,
   fetchOpenCodeModels,
-  isFreeTierModel,
   type ModelDevMetadata,
 } from '../infrastructure/models-dev-client.js';
 import type { OpenCodeCatalogIds, UnifiedOpenCodeModels } from '../domain/model-catalog.js';
@@ -95,9 +94,7 @@ function buildZenModels(
   for (const id of modelIds) {
     if (goModelIdSet.has(id)) continue;
 
-    const isFree = isFreeTierModel(id, metadata[id]);
-    const suffix = isFree ? '(OpenCode Free)' : '(OpenCode Zen)';
-    models.push(enrichModel(id, { isGo: false, isFree, suffix, modelsDevData: getZenModelMetadata(id, metadata) }));
+    models.push(enrichModel(id, { isGo: false, suffix: '(OpenCode Zen)', modelsDevData: getZenModelMetadata(id, metadata) }));
   }
 
   return models;

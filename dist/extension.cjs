@@ -27503,6 +27503,185 @@ async function promptAndSetApiKey(secrets, vscodeWindow) {
   return void 0;
 }
 
+// src/models/domain/token-budget.ts
+var DEFAULT_CONTEXT_WINDOW = 1048576;
+var DEFAULT_MAX_OUTPUT_TOKENS = 65536;
+var MIN_SAFE_CONTEXT_WINDOW = 4;
+var MAX_OUTPUT_CONTEXT_RATIO = 0.25;
+function resolveModelTokenLimits(contextWindow, maxOutputTokens) {
+  const context = typeof contextWindow === "number" && Number.isSafeInteger(contextWindow) && contextWindow >= MIN_SAFE_CONTEXT_WINDOW ? contextWindow : DEFAULT_CONTEXT_WINDOW;
+  const output = typeof maxOutputTokens === "number" && Number.isSafeInteger(maxOutputTokens) && maxOutputTokens > 0 ? maxOutputTokens : DEFAULT_MAX_OUTPUT_TOKENS;
+  const safeOutput = Math.min(output, Math.floor(context * MAX_OUTPUT_CONTEXT_RATIO));
+  return {
+    contextWindow: context,
+    maxInputTokens: context - safeOutput,
+    maxOutputTokens: safeOutput
+  };
+}
+
+// src/models/infrastructure/model-enricher.ts
+var FAMILY_CAPABILITIES = [
+  [/deepseek/i, { contextWindow: 1048576, maxOutputTokens: 131072, vision: (id) => id.toLowerCase().includes("vision"), thinking: true }],
+  [/glm/i, { contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true }],
+  [/kimi/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true }],
+  [/qwen/i, { contextWindow: 1e6, maxOutputTokens: 131072, vision: true, thinking: false }],
+  [/minimax/i, { contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: false }],
+  [/claude/i, { contextWindow: 1e6, maxOutputTokens: 128e3, vision: true, thinking: (id) => !id.toLowerCase().includes("haiku") }],
+  [/gpt/i, { contextWindow: 1e6, maxOutputTokens: 128e3, vision: true, thinking: true }],
+  [/gemini/i, { contextWindow: 1e6, maxOutputTokens: 65536, vision: true, thinking: (id) => id.toLowerCase().includes("thinking") }],
+  [/grok/i, { contextWindow: 1e6, maxOutputTokens: 65536, vision: true, thinking: true }],
+  [/mimo/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: (id) => id.toLowerCase().includes("omni"), thinking: true }],
+  [/nemotron/i, { contextWindow: 1e6, maxOutputTokens: 128e3, vision: false, thinking: true }],
+  [/muse/i, { contextWindow: 1e6, maxOutputTokens: 65536, vision: false, thinking: true }],
+  [/longcat/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false }],
+  [/(omen|hy4)/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true }]
+];
+var SMALL_GPT_CONTEXT = 128e3;
+var SMALL_GPT_OUTPUT = 16384;
+function resolveCapability(value, modelId) {
+  return typeof value === "function" ? value(modelId) : value;
+}
+function fallbackCapabilities(modelId) {
+  const lower = modelId.toLowerCase();
+  if (/gpt/i.test(modelId) && (lower.includes("mini") || lower.includes("nano"))) {
+    return { contextWindow: SMALL_GPT_CONTEXT, maxOutputTokens: SMALL_GPT_OUTPUT, vision: true, thinking: true };
+  }
+  if (/claude/i.test(modelId) && lower.includes("haiku")) {
+    return { contextWindow: 2e5, maxOutputTokens: 64e3, vision: true, thinking: false };
+  }
+  for (const [pattern, caps] of FAMILY_CAPABILITIES) {
+    if (pattern.test(modelId)) {
+      return {
+        contextWindow: caps.contextWindow,
+        maxOutputTokens: caps.maxOutputTokens,
+        vision: resolveCapability(caps.vision, modelId),
+        thinking: resolveCapability(caps.thinking, modelId)
+      };
+    }
+  }
+  return { contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true };
+}
+function resolveTransport(modelId, devMeta, isGo) {
+  const lower = modelId.toLowerCase();
+  const goBase = "https://opencode.ai/zen/go/v1";
+  const zenBase = "https://opencode.ai/zen/v1";
+  const isResponses = devMeta?.provider?.npm === "@ai-sdk/openai" || lower.includes("muse") || lower.includes("gpt-") || lower.includes("grok-");
+  const isMessages = devMeta?.provider?.npm === "@ai-sdk/anthropic" || lower.includes("claude");
+  if (isMessages) {
+    return { apiType: "messages", modelUrl: isGo ? goBase : zenBase };
+  }
+  if (isResponses) {
+    return { apiType: "responses", modelUrl: isGo ? goBase : zenBase };
+  }
+  return {
+    apiType: "chat-completions",
+    modelUrl: isGo ? `${goBase}/chat/completions` : `${zenBase}/chat/completions`
+  };
+}
+function resolveReasoningEfforts(thinking, devMeta, isResponses, modelId) {
+  if (!thinking) return void 0;
+  const devEffortOpt = devMeta?.reasoning_options?.find((o) => o.type === "effort");
+  if (devEffortOpt && Array.isArray(devEffortOpt.values)) {
+    const filtered = devEffortOpt.values.filter((v) => v !== "none");
+    if (filtered.length > 0) {
+      return filtered;
+    }
+    return void 0;
+  }
+  if (devMeta) return void 0;
+  const lower = modelId.toLowerCase();
+  if (isResponses) {
+    return ["minimal", "low", "medium", "high", "xhigh"];
+  }
+  if (lower.includes("deepseek") || lower.includes("kimi-k3") || lower.includes("glm")) {
+    return ["low", "medium", "high", "max"];
+  }
+  return void 0;
+}
+var TITLE_CASE_EXCEPTIONS = {
+  glm: "GLM",
+  gpt: "GPT",
+  mimo: "MiMo",
+  qwen: "Qwen",
+  kimi: "Kimi",
+  minimax: "MiniMax",
+  deepseek: "DeepSeek",
+  gemini: "Gemini",
+  claude: "Claude",
+  grok: "Grok",
+  nemotron: "Nemotron",
+  muse: "Muse",
+  spark: "Spark",
+  contributor: "Contributor",
+  free: "Free"
+};
+function titleCasePart(part) {
+  const known = TITLE_CASE_EXCEPTIONS[part.toLowerCase()];
+  if (known) return known;
+  if (/^v\d+/i.test(part)) return part.toUpperCase();
+  return part.charAt(0).toUpperCase() + part.slice(1);
+}
+function formatModelName(id, suffix = "(OpenCode)") {
+  const normalized = id.replace(/-(\d+)-(\d+)(?=-|$)/g, "-$1.$2");
+  const title = normalized.split(/[-_]/).map(titleCasePart).join(" ");
+  return `${title} ${suffix}`;
+}
+function devCapability(devValue, fallbackValue, defaultValue) {
+  return devValue ?? fallbackValue ?? defaultValue;
+}
+function resolveCapabilities(devMeta, modelId) {
+  const fallback = !devMeta ? fallbackCapabilities(modelId) : void 0;
+  return {
+    contextWindow: devCapability(devMeta?.limit?.context, fallback?.contextWindow, 1048576),
+    maxOutputTokens: devCapability(devMeta?.limit?.output, fallback?.maxOutputTokens, 65536),
+    vision: devCapability(devMeta?.modalities?.input?.includes("image"), fallback?.vision, false),
+    thinking: devCapability(devMeta?.reasoning, fallback?.thinking, true)
+  };
+}
+function enrichModel(modelId, options = {}) {
+  const isGo = options.isGo ?? true;
+  const devMeta = options.modelsDevData;
+  const { apiType, modelUrl } = resolveTransport(modelId, devMeta, isGo);
+  const defaultSuffix = isGo ? "(OpenCode Go)" : "(OpenCode Zen)";
+  const suffix = options.suffix ?? defaultSuffix;
+  const name = formatModelName(modelId, suffix);
+  const { contextWindow, maxOutputTokens, vision, thinking } = resolveCapabilities(devMeta, modelId);
+  const tokenLimits = resolveModelTokenLimits(contextWindow, maxOutputTokens);
+  const supportsReasoningEffort = resolveReasoningEfforts(
+    thinking,
+    devMeta,
+    apiType === "responses",
+    modelId
+  );
+  const model = {
+    id: modelId,
+    name,
+    // Stable per-model family matching the VERIFIED_OPENCODE_MODELS convention (family = id).
+    family: modelId,
+    url: modelUrl,
+    apiType,
+    toolCalling: true,
+    vision,
+    contextWindow: tokenLimits.contextWindow,
+    maxInputTokens: tokenLimits.maxInputTokens,
+    maxOutputTokens: tokenLimits.maxOutputTokens,
+    thinking,
+    supportsReasoningEffort,
+    reasoningEffortFormat: apiType,
+    modelOptions: {
+      temperature: null,
+      top_p: null
+    }
+  };
+  return model;
+}
+
+// src/extension-version.ts
+var EXTENSION_VERSION = true ? "0.19.1" : "dev";
+function extensionUserAgent() {
+  return `vscode-opencode-copilot-sync/${EXTENSION_VERSION}`;
+}
+
 // src/infrastructure/http/proxy-routing.ts
 var proxyAgentCtor;
 var proxyAgentLoadAttempted = false;
@@ -27710,7 +27889,7 @@ async function fetchOpenCodeModels(apiKey, catalog = "go") {
     method: "GET",
     headers: {
       Authorization: `Bearer ${apiKey}`,
-      "User-Agent": "vscode-copilot/1.0"
+      "User-Agent": extensionUserAgent()
     },
     signal: AbortSignal.timeout(CATALOG_FETCH_TIMEOUT_MS)
   });
@@ -27767,204 +27946,6 @@ async function fetchModelsDevMetadata() {
     if (catalog) return catalog;
   }
   return {};
-}
-function hasPositiveCost(cost) {
-  return typeof cost.input === "number" && cost.input > 0 || typeof cost.output === "number" && cost.output > 0;
-}
-function isFreeTierName(modelId) {
-  const lower = modelId.toLowerCase();
-  return lower.includes("free") || lower.includes("community") || lower === "big-pickle";
-}
-function isFreeTierModel(modelId, devMeta) {
-  if (devMeta?.cost) {
-    if (devMeta.cost.input === 0 && devMeta.cost.output === 0) {
-      return true;
-    }
-    if (hasPositiveCost(devMeta.cost)) {
-      return false;
-    }
-  }
-  return isFreeTierName(modelId);
-}
-
-// src/models/domain/token-budget.ts
-var DEFAULT_CONTEXT_WINDOW = 1048576;
-var DEFAULT_MAX_OUTPUT_TOKENS = 65536;
-var MIN_SAFE_CONTEXT_WINDOW = 4;
-var MAX_OUTPUT_CONTEXT_RATIO = 0.25;
-function resolveModelTokenLimits(contextWindow, maxOutputTokens) {
-  const context = typeof contextWindow === "number" && Number.isSafeInteger(contextWindow) && contextWindow >= MIN_SAFE_CONTEXT_WINDOW ? contextWindow : DEFAULT_CONTEXT_WINDOW;
-  const output = typeof maxOutputTokens === "number" && Number.isSafeInteger(maxOutputTokens) && maxOutputTokens > 0 ? maxOutputTokens : DEFAULT_MAX_OUTPUT_TOKENS;
-  const safeOutput = Math.min(output, Math.floor(context * MAX_OUTPUT_CONTEXT_RATIO));
-  return {
-    contextWindow: context,
-    maxInputTokens: context - safeOutput,
-    maxOutputTokens: safeOutput
-  };
-}
-
-// src/models/infrastructure/model-enricher.ts
-var FAMILY_CAPABILITIES = [
-  [/deepseek/i, { contextWindow: 1048576, maxOutputTokens: 131072, vision: (id) => id.toLowerCase().includes("vision"), thinking: true }],
-  [/glm/i, { contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true }],
-  [/kimi/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true }],
-  [/qwen/i, { contextWindow: 1e6, maxOutputTokens: 131072, vision: true, thinking: false }],
-  [/minimax/i, { contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: false }],
-  [/claude/i, { contextWindow: 1e6, maxOutputTokens: 128e3, vision: true, thinking: (id) => !id.toLowerCase().includes("haiku") }],
-  [/gpt/i, { contextWindow: 1e6, maxOutputTokens: 128e3, vision: true, thinking: true }],
-  [/gemini/i, { contextWindow: 1e6, maxOutputTokens: 65536, vision: true, thinking: (id) => id.toLowerCase().includes("thinking") }],
-  [/grok/i, { contextWindow: 1e6, maxOutputTokens: 65536, vision: true, thinking: true }],
-  [/mimo/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: (id) => id.toLowerCase().includes("omni"), thinking: true }],
-  [/nemotron/i, { contextWindow: 1e6, maxOutputTokens: 128e3, vision: false, thinking: true }],
-  [/muse/i, { contextWindow: 1e6, maxOutputTokens: 65536, vision: false, thinking: true }],
-  [/longcat/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false }],
-  [/(omen|hy4)/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true }]
-];
-var SMALL_GPT_CONTEXT = 128e3;
-var SMALL_GPT_OUTPUT = 16384;
-function resolveCapability(value, modelId) {
-  return typeof value === "function" ? value(modelId) : value;
-}
-function fallbackCapabilities(modelId) {
-  const lower = modelId.toLowerCase();
-  if (/gpt/i.test(modelId) && (lower.includes("mini") || lower.includes("nano"))) {
-    return { contextWindow: SMALL_GPT_CONTEXT, maxOutputTokens: SMALL_GPT_OUTPUT, vision: true, thinking: true };
-  }
-  if (/claude/i.test(modelId) && lower.includes("haiku")) {
-    return { contextWindow: 2e5, maxOutputTokens: 64e3, vision: true, thinking: false };
-  }
-  for (const [pattern, caps] of FAMILY_CAPABILITIES) {
-    if (pattern.test(modelId)) {
-      return {
-        contextWindow: caps.contextWindow,
-        maxOutputTokens: caps.maxOutputTokens,
-        vision: resolveCapability(caps.vision, modelId),
-        thinking: resolveCapability(caps.thinking, modelId)
-      };
-    }
-  }
-  return { contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true };
-}
-function resolveTransport(modelId, devMeta, isGo) {
-  const lower = modelId.toLowerCase();
-  const goBase = "https://opencode.ai/zen/go/v1";
-  const zenBase = "https://opencode.ai/zen/v1";
-  const isResponses = devMeta?.provider?.npm === "@ai-sdk/openai" || lower.includes("muse") || lower.includes("gpt-") || lower.includes("grok-");
-  const isMessages = devMeta?.provider?.npm === "@ai-sdk/anthropic" || lower.includes("claude");
-  if (isMessages) {
-    return { apiType: "messages", modelUrl: isGo ? goBase : zenBase };
-  }
-  if (isResponses) {
-    return { apiType: "responses", modelUrl: isGo ? goBase : zenBase };
-  }
-  return {
-    apiType: "chat-completions",
-    modelUrl: isGo ? `${goBase}/chat/completions` : `${zenBase}/chat/completions`
-  };
-}
-function resolveReasoningEfforts(thinking, devMeta, isResponses, modelId) {
-  if (!thinking) return void 0;
-  const devEffortOpt = devMeta?.reasoning_options?.find((o) => o.type === "effort");
-  if (devEffortOpt && Array.isArray(devEffortOpt.values)) {
-    const filtered = devEffortOpt.values.filter((v) => v !== "none");
-    if (filtered.length > 0) {
-      return filtered;
-    }
-    return void 0;
-  }
-  if (devMeta) return void 0;
-  const lower = modelId.toLowerCase();
-  if (isResponses) {
-    return ["minimal", "low", "medium", "high", "xhigh"];
-  }
-  if (lower.includes("deepseek") || lower.includes("kimi-k3") || lower.includes("glm")) {
-    return ["low", "medium", "high", "max"];
-  }
-  return void 0;
-}
-var TITLE_CASE_EXCEPTIONS = {
-  glm: "GLM",
-  gpt: "GPT",
-  mimo: "MiMo",
-  qwen: "Qwen",
-  kimi: "Kimi",
-  minimax: "MiniMax",
-  deepseek: "DeepSeek",
-  gemini: "Gemini",
-  claude: "Claude",
-  grok: "Grok",
-  nemotron: "Nemotron",
-  muse: "Muse",
-  spark: "Spark",
-  contributor: "Contributor",
-  free: "Free"
-};
-function titleCasePart(part) {
-  const known = TITLE_CASE_EXCEPTIONS[part.toLowerCase()];
-  if (known) return known;
-  if (/^v\d+/i.test(part)) return part.toUpperCase();
-  return part.charAt(0).toUpperCase() + part.slice(1);
-}
-function formatModelName(id, suffix = "(OpenCode)") {
-  const normalized = id.replace(/-(\d+)-(\d+)(?=-|$)/g, "-$1.$2");
-  const title = normalized.split(/[-_]/).map(titleCasePart).join(" ");
-  return `${title} ${suffix}`;
-}
-function devCapability(devValue, fallbackValue, defaultValue) {
-  return devValue ?? fallbackValue ?? defaultValue;
-}
-function resolveCapabilities(devMeta, modelId) {
-  const fallback = !devMeta ? fallbackCapabilities(modelId) : void 0;
-  return {
-    contextWindow: devCapability(devMeta?.limit?.context, fallback?.contextWindow, 1048576),
-    maxOutputTokens: devCapability(devMeta?.limit?.output, fallback?.maxOutputTokens, 65536),
-    vision: devCapability(devMeta?.modalities?.input?.includes("image"), fallback?.vision, false),
-    thinking: devCapability(devMeta?.reasoning, fallback?.thinking, true)
-  };
-}
-function enrichModel(modelId, options = {}) {
-  const isGo = options.isGo ?? true;
-  const devMeta = options.modelsDevData;
-  const isFree = options.isFree ?? (isGo ? false : isFreeTierModel(modelId, devMeta));
-  const { apiType, modelUrl } = resolveTransport(modelId, devMeta, isGo);
-  const defaultSuffix = isGo ? "(OpenCode Go)" : isFree ? "(OpenCode Free)" : "(OpenCode Zen)";
-  const suffix = options.suffix ?? defaultSuffix;
-  const name = formatModelName(modelId, suffix);
-  const { contextWindow, maxOutputTokens, vision, thinking } = resolveCapabilities(devMeta, modelId);
-  const tokenLimits = resolveModelTokenLimits(contextWindow, maxOutputTokens);
-  const supportsReasoningEffort = resolveReasoningEfforts(
-    thinking,
-    devMeta,
-    apiType === "responses",
-    modelId
-  );
-  const model = {
-    id: modelId,
-    name,
-    // Stable per-model family matching the VERIFIED_OPENCODE_MODELS convention (family = id).
-    family: modelId,
-    url: modelUrl,
-    apiType,
-    toolCalling: true,
-    vision,
-    contextWindow: tokenLimits.contextWindow,
-    maxInputTokens: tokenLimits.maxInputTokens,
-    maxOutputTokens: tokenLimits.maxOutputTokens,
-    thinking,
-    supportsReasoningEffort,
-    reasoningEffortFormat: apiType,
-    modelOptions: {
-      temperature: null,
-      top_p: null
-    },
-    isFree
-  };
-  if (isGo || isFree) {
-    model.requestHeaders = {
-      "x-opencode-session": "vscode-copilot"
-    };
-  }
-  return model;
 }
 
 // src/sync-writer.ts
@@ -28648,9 +28629,7 @@ function buildZenModels(modelIds, goModelIds, metadata) {
   const models = [];
   for (const id of modelIds) {
     if (goModelIdSet.has(id)) continue;
-    const isFree = isFreeTierModel(id, metadata[id]);
-    const suffix = isFree ? "(OpenCode Free)" : "(OpenCode Zen)";
-    models.push(enrichModel(id, { isGo: false, isFree, suffix, modelsDevData: getZenModelMetadata(id, metadata) }));
+    models.push(enrichModel(id, { isGo: false, suffix: "(OpenCode Zen)", modelsDevData: getZenModelMetadata(id, metadata) }));
   }
   return models;
 }
@@ -28775,8 +28754,7 @@ async function fetchOpenCodeUsage(apiKey, fetchFn = fetch) {
       method: "GET",
       headers: {
         Authorization: `Bearer ${apiKey.trim()}`,
-        "x-opencode-session": "vscode-copilot",
-        "User-Agent": "vscode-copilot/1.0"
+        "User-Agent": extensionUserAgent()
       }
     });
     return statusResult(res) ?? parseUsagePayload(await res.json());
@@ -28842,7 +28820,7 @@ function renderUsage(targets, usage) {
 }
 function renderNoSubscription(targets) {
   targets.statusBarItem.text = "$(hubot) OpenCode (Zen)";
-  targets.statusBarItem.tooltip = "OpenCode Zen (Pay-as-you-go / Free tier). Click to sync models.";
+  targets.statusBarItem.tooltip = "OpenCode Zen (pay-as-you-go). Click to sync models.";
 }
 async function refreshWithKey(targets, key) {
   const res = await fetchOpenCodeUsage(key);
@@ -28940,10 +28918,16 @@ function isStaleThinkingPart(part) {
   const ThinkingPart = vscode3.LanguageModelThinkingPart;
   return ThinkingPart && part instanceof ThinkingPart || part?.constructor?.name === "LanguageModelThinkingPart" || part?.type === "thinking" || part?.type === "reasoning";
 }
+function wireRole(role) {
+  const numericRole = role;
+  if (numericRole === 1) return "user";
+  if (numericRole === 2) return "assistant";
+  return "system";
+}
 function formatProviderMessages(messages) {
   const formattedMessages = [];
   for (const msg of messages) {
-    const role = msg.role === vscode3.LanguageModelChatMessageRole.User ? "user" : "assistant";
+    const role = wireRole(msg.role);
     let textContent = "";
     const toolCalls = [];
     for (const part of msg.content) {
@@ -29021,8 +29005,8 @@ function appendAssistantInput(responsesInput, msg) {
 function buildResponsesInput(formattedMessages) {
   const responsesInput = [];
   for (const msg of formattedMessages) {
-    if (msg.role === "user") {
-      responsesInput.push({ role: "user", content: msg.content ?? "" });
+    if (msg.role === "user" || msg.role === "system") {
+      responsesInput.push({ role: msg.role, content: msg.content ?? "" });
     } else if (msg.role === "assistant") {
       appendAssistantInput(responsesInput, msg);
     } else if (msg.role === "tool") {
@@ -29037,73 +29021,6 @@ function buildResponsesInput(formattedMessages) {
 }
 
 // src/chat/infrastructure/tool-mapper.ts
-var OPENCODE_CLIENT_VERIFICATION_TOOLS_RESPONSES = [
-  {
-    type: "function",
-    name: "bash",
-    description: "OpenCode client environment verification tool. Do not call this tool directly.",
-    parameters: {
-      type: "object",
-      properties: { command: { type: "string" } },
-      required: ["command"]
-    }
-  },
-  {
-    type: "function",
-    name: "read",
-    description: "OpenCode client environment verification tool. Do not call this tool directly.",
-    parameters: {
-      type: "object",
-      properties: { filePath: { type: "string" } },
-      required: ["filePath"]
-    }
-  }
-];
-var OPENCODE_CLIENT_VERIFICATION_TOOLS_CHAT = [
-  {
-    type: "function",
-    function: {
-      name: "bash",
-      description: "OpenCode client environment verification tool. Do not call this tool directly.",
-      parameters: {
-        type: "object",
-        properties: { command: { type: "string" } },
-        required: ["command"]
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "read",
-      description: "OpenCode client environment verification tool. Do not call this tool directly.",
-      parameters: {
-        type: "object",
-        properties: { filePath: { type: "string" } },
-        required: ["filePath"]
-      }
-    }
-  }
-];
-function injectOpenCodeVerificationTools(toolsPayload, isResponses) {
-  const base = toolsPayload ?? [];
-  if (isResponses) {
-    const existing2 = new Set(base.map((t) => typeof t.name === "string" ? t.name : ""));
-    const toAdd2 = OPENCODE_CLIENT_VERIFICATION_TOOLS_RESPONSES.filter((t) => !existing2.has(t.name));
-    return toAdd2.length > 0 ? [...base, ...toAdd2] : base;
-  }
-  const existing = new Set(
-    base.map((t) => {
-      const fn = t.function;
-      if (typeof fn === "object" && fn !== null && "name" in fn && typeof fn.name === "string") {
-        return fn.name;
-      }
-      return "";
-    })
-  );
-  const toAdd = OPENCODE_CLIENT_VERIFICATION_TOOLS_CHAT.filter((t) => !existing.has(t.function.name));
-  return toAdd.length > 0 ? [...base, ...toAdd] : base;
-}
 function clampToolName(name) {
   return name.length > 64 ? name.slice(0, 64) : name;
 }
@@ -29229,47 +29146,34 @@ function sanitizeToolParameters(schema, toolName, log) {
   }
 }
 var discardLog = () => void 0;
-function formatProviderTools(tools, isResponses, injectVerificationTools, log = discardLog, relaxedToolNames) {
-  let toolsPayload;
-  if (tools && tools.length > 0) {
-    if (isResponses) {
-      toolsPayload = tools.map((tool) => {
-        const name = clampToolName(tool.name);
-        const sanitized = sanitizeToolParameters(tool.inputSchema, tool.name, log);
-        if (sanitized.relaxed) relaxedToolNames?.add(name);
-        return {
-          type: "function",
-          name,
-          description: tool.description,
-          parameters: sanitized.schema
-        };
-      });
-    } else {
-      toolsPayload = tools.map((tool) => {
-        const name = clampToolName(tool.name);
-        const sanitized = sanitizeToolParameters(tool.inputSchema, tool.name, log);
-        if (sanitized.relaxed) relaxedToolNames?.add(name);
-        return {
-          type: "function",
-          function: {
-            name,
-            description: tool.description,
-            parameters: sanitized.schema
-          }
-        };
-      });
-    }
+function formatProviderTools(tools, isResponses, log = discardLog, relaxedToolNames) {
+  if (!tools || tools.length === 0) return void 0;
+  if (isResponses) {
+    return tools.map((tool) => {
+      const name = clampToolName(tool.name);
+      const sanitized = sanitizeToolParameters(tool.inputSchema, tool.name, log);
+      if (sanitized.relaxed) relaxedToolNames?.add(name);
+      return {
+        type: "function",
+        name,
+        description: tool.description,
+        parameters: sanitized.schema
+      };
+    });
   }
-  return injectVerificationTools ? injectOpenCodeVerificationTools(toolsPayload, isResponses) : toolsPayload;
-}
-function isSyntheticVerificationTool(toolName, callerTools) {
-  if (toolName !== "bash" && toolName !== "read") {
-    return false;
-  }
-  if (!callerTools || callerTools.length === 0) {
-    return true;
-  }
-  return !callerTools.some((tool) => clampToolName(tool.name) === toolName);
+  return tools.map((tool) => {
+    const name = clampToolName(tool.name);
+    const sanitized = sanitizeToolParameters(tool.inputSchema, tool.name, log);
+    if (sanitized.relaxed) relaxedToolNames?.add(name);
+    return {
+      type: "function",
+      function: {
+        name,
+        description: tool.description,
+        parameters: sanitized.schema
+      }
+    };
+  });
 }
 
 // src/chat/infrastructure/reasoning-controls.ts
@@ -29328,17 +29232,18 @@ function isResponsesModel(modelId, apiType) {
   const lower = modelId.toLowerCase();
   return lower.includes("muse") || lower.includes("gpt-") || lower.includes("grok-");
 }
-function isFreeOrZenModel(modelId, meta) {
-  if (meta?.catalog === "zen" || meta?.isFree) {
+function isZenModel(modelId, meta) {
+  if (meta?.catalog === "zen") {
     return true;
   }
   if (meta?.catalog === "go") {
     return false;
   }
-  return isFreeTierModel(modelId);
+  const lower = modelId.toLowerCase();
+  return lower.endsWith("-free") || lower === "big-pickle" || lower === "grok-code";
 }
 function createProviderRequest(input) {
-  const baseUrl = input.isFreeOrZen ? "https://opencode.ai/zen/v1" : "https://opencode.ai/zen/go/v1";
+  const baseUrl = input.isZen ? "https://opencode.ai/zen/v1" : "https://opencode.ai/zen/go/v1";
   const url = input.isResponses ? `${baseUrl}/responses` : `${baseUrl}/chat/completions`;
   const reasoningPayload = normalizeReasoningEffort(input.reasoningEffort, input.isResponses);
   const sanitizedInput = sanitizeResponsesInput(input.responsesInput);
@@ -29357,14 +29262,12 @@ function createProviderRequest(input) {
   };
   return { url, body };
 }
-function createOpenCodeRequestHeaders(apiKey, sessionId, requestId) {
+function createOpenCodeRequestHeaders(apiKey, sessionId) {
   return {
     Authorization: `Bearer ${apiKey}`,
     "Content-Type": "application/json",
-    "User-Agent": "opencode/1.18.31",
-    "x-opencode-client": "cli",
-    "x-opencode-session": sessionId,
-    "x-opencode-request": requestId
+    "User-Agent": extensionUserAgent(),
+    "x-opencode-session": sessionId
   };
 }
 
@@ -29735,8 +29638,7 @@ var ResponsesStreamDiagnostics = class {
   receivedToolCalls = 0;
   dispositions = {
     emitted: /* @__PURE__ */ new Set(),
-    malformed: /* @__PURE__ */ new Set(),
-    synthetic: /* @__PURE__ */ new Set()
+    malformed: /* @__PURE__ */ new Set()
   };
   observe(event) {
     const data = diagnosticRecord(event.data);
@@ -29798,8 +29700,7 @@ var ResponsesStreamDiagnostics = class {
       toolCalls: {
         received: this.receivedToolCalls,
         emitted: this.dispositions.emitted.size,
-        malformed: this.dispositions.malformed.size,
-        synthetic: this.dispositions.synthetic.size
+        malformed: this.dispositions.malformed.size
       }
     })}`;
   }
@@ -29900,10 +29801,6 @@ var StreamState = class {
     if (!isPlainObject(parsedArgs)) {
       this.diagnostics.recordToolDisposition(id, "malformed");
       this.options.log(`Dropping malformed tool call ${name} (${id}): arguments are not a JSON object`);
-      return;
-    }
-    if (isSyntheticVerificationTool(name, this.options.tools)) {
-      this.diagnostics.recordToolDisposition(id, "synthetic");
       return;
     }
     if (!this.emittedToolCallIds.has(id)) {
@@ -30171,20 +30068,12 @@ var VERIFIED_OPENCODE_MODELS = [
   { id: "hy4-preview", name: "Hy4 Preview (OpenCode Go)", family: "hy4-preview", catalog: "go", contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
   { id: "hy3", name: "Hy3 (OpenCode Go)", family: "hy3", catalog: "go", contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
   { id: "omen-alpha", name: "Omen Alpha (OpenCode Go)", family: "omen-alpha", catalog: "go", contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true },
-  // Verified OpenCode Free models (always available and visible)
-  { id: "big-pickle", name: "Big Pickle (OpenCode Free)", family: "big-pickle", catalog: "zen", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
-  { id: "mimo-v2.5-free", name: "MiMo V2.5 (OpenCode Free)", family: "mimo-v2.5-free", catalog: "zen", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true, supportsReasoningEffort: ["low", "medium", "high"] },
-  { id: "ling-3.0-flash-fin-free", name: "Ling 3.0 Flash Fin (OpenCode Free)", family: "ling-3.0-flash-fin-free", catalog: "zen", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false },
-  { id: "nemotron-3-ultra-free", name: "Nemotron 3 Ultra (OpenCode Free)", family: "nemotron-3-ultra-free", catalog: "zen", isFree: true, contextWindow: 1e6, maxOutputTokens: 128e3, vision: false, thinking: true, supportsReasoningEffort: ["low", "medium", "high"] },
-  { id: "nemotron-3.5-lightning-free", name: "Nemotron 3.5 Lightning (OpenCode Free)", family: "nemotron-3.5-lightning-free", catalog: "zen", isFree: true, contextWindow: 1e6, maxOutputTokens: 128e3, vision: false, thinking: true, supportsReasoningEffort: ["low", "medium", "high"] },
-  { id: "deepseek-v4-flash-free", name: "DeepSeek V4 Flash (OpenCode Free)", family: "deepseek-v4-flash-free", catalog: "zen", isFree: true, contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: true, supportsReasoningEffort: ["low", "high", "max"] },
   { id: "muse-spark-1.3", name: "Muse Spark 1.3 (OpenCode Zen)", family: "muse-spark-1.3", catalog: "zen", contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true, supportsReasoningEffort: ["minimal", "low", "medium", "high", "xhigh"] },
-  { id: "muse-spark-1.3-contributor", name: "Muse Spark 1.3 Contributor (OpenCode Go)", family: "muse-spark-1.3-contributor", catalog: "go", contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true, supportsReasoningEffort: ["minimal", "low", "medium", "high", "xhigh"] },
-  { id: "muse-spark-1.3-contributor-free", name: "Muse Spark 1.3 Contributor (OpenCode Free)", family: "muse-spark-1.3-contributor-free", catalog: "zen", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true, supportsReasoningEffort: ["minimal", "low", "medium", "high", "xhigh"] },
-  { id: "muse-spark-1.2-contributor-free", name: "Muse Spark 1.2 Contributor (OpenCode Free)", family: "muse-spark-1.2-contributor-free", catalog: "zen", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true, supportsReasoningEffort: ["minimal", "low", "medium", "high", "xhigh"] }
+  { id: "muse-spark-1.3-contributor", name: "Muse Spark 1.3 Contributor (OpenCode Go)", family: "muse-spark-1.3-contributor", catalog: "go", contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true, supportsReasoningEffort: ["minimal", "low", "medium", "high", "xhigh"] }
 ];
 
 // src/chat/domain/chat-session.ts
+var import_node_crypto = require("node:crypto");
 var import_vscode = require("vscode");
 function djb2Hash(str) {
   let hash = 5381;
@@ -30217,24 +30106,6 @@ function isChainContinuation(cachedChain, incomingChain) {
     if (cachedChain[i] !== incomingChain[i]) return false;
   }
   return true;
-}
-var OPENCODE_ID_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-function generateOpenCodeDescendingId() {
-  const now = Date.now();
-  const counter = Math.floor(Math.random() * 4095) + 1;
-  const val = ~(BigInt(now) * 4096n + BigInt(counter)) & 0xffffffffffffn;
-  const hexPrefix = val.toString(16).padStart(12, "0");
-  let randSuffix = "";
-  for (let i = 0; i < 14; i++) {
-    randSuffix += OPENCODE_ID_ALPHABET[Math.floor(Math.random() * OPENCODE_ID_ALPHABET.length)];
-  }
-  return `${hexPrefix}${randSuffix}`;
-}
-function generateOpenCodeSessionId() {
-  return `ses_${generateOpenCodeDescendingId()}`;
-}
-function generateOpenCodeRequestId() {
-  return `msg_${generateOpenCodeDescendingId()}`;
 }
 var ChatSessionCache = class _ChatSessionCache {
   sessions = /* @__PURE__ */ new Map();
@@ -30280,11 +30151,11 @@ var ChatSessionCache = class _ChatSessionCache {
       if (forkedSessionId !== void 0) {
         return forkedSessionId;
       }
-      const sessionId2 = generateOpenCodeSessionId();
+      const sessionId2 = (0, import_node_crypto.randomUUID)();
       this.set(`${rootKey}::${djb2Hash(chain.join("|"))}`, { sessionId: sessionId2, lastUsedAt: now, chain }, now);
       return sessionId2;
     }
-    const sessionId = generateOpenCodeSessionId();
+    const sessionId = (0, import_node_crypto.randomUUID)();
     this.set(rootKey, { sessionId, lastUsedAt: now, chain }, now);
     return sessionId;
   }
@@ -30423,7 +30294,7 @@ async function tryRepairReasoningEcho(res, userDetail, attempt, input, ctx, log)
       attempt.url,
       {
         method: "POST",
-        headers: { ...attempt.clientHeaders, "x-opencode-request": generateOpenCodeRequestId() },
+        headers: { ...attempt.clientHeaders },
         body: JSON.stringify(retryBody),
         signal: attempt.abortSignal
       },
@@ -30446,14 +30317,11 @@ function throwForAuthError(input) {
   }
   throw new Error(errMessage);
 }
-function buildAlertNotice(res, model, reason, userDetail) {
-  return [
-    `> \u26A0\uFE0F **OpenCode Model Alert (${res.status} ${res.statusText || "Service Error"})**`,
-    `>`,
-    `> Unable to reach **${model.name}** (\`${model.id}\`): ${reason}.`,
-    `>`,
-    `> **Upstream detail:** \`${userDetail.slice(0, 300) || "Internal server error"}\``
-  ].join("\n");
+function buildAlertNotice(res, model, userDetail) {
+  const detail = userDetail.slice(0, 300) || res.statusText || "Service Error";
+  const [first, ...rest] = detail.split("\n");
+  const head = `> \u26A0\uFE0F \`${model.id}\` (${res.status}): ${first}`;
+  return [head, ...rest.map((line) => `> ${line}`)].join("\n");
 }
 async function handleUpstreamError(res, errText, attempt, input, ctx, progress, log) {
   let userDetail = extractErrorMessage(errText);
@@ -30470,8 +30338,7 @@ async function handleUpstreamError(res, errText, attempt, input, ctx, progress, 
   if (!res.ok) {
     const isFreeTierError = userDetail.includes("FreeTierError") || userDetail.toLowerCase().includes("free tier");
     throwForAuthError({ res, userDetail, isFreeTierError });
-    const reason = classifyUpstreamAlert(res.status, userDetail, isFreeTierError);
-    progress.report(new vscode6.LanguageModelTextPart(buildAlertNotice(res, ctx.model, reason, userDetail)));
+    progress.report(new vscode6.LanguageModelTextPart(buildAlertNotice(res, ctx.model, userDetail)));
     return { outcome: "handled", res, userDetail };
   }
   return { outcome: "stream", res, userDetail };
@@ -30493,11 +30360,7 @@ var TRANSIENT_RETRY_POLICY = {
   rateLimitMaxWaitMs: 3e3
 };
 async function postUpstreamRequest(input, token, log) {
-  const clientHeaders = createOpenCodeRequestHeaders(
-    input.apiKey,
-    input.sessionId,
-    generateOpenCodeRequestId()
-  );
+  const clientHeaders = createOpenCodeRequestHeaders(input.apiKey, input.sessionId);
   let res;
   try {
     res = await fetchWithRetry(
@@ -30626,36 +30489,6 @@ function extractErrorMessage(rawJson) {
   }
   return rawJson;
 }
-function isSchemaValidationError(status, detail) {
-  if (status !== 400) return false;
-  if (/single enum property/i.test(detail)) return true;
-  const hasSchemaNoun = /\bschema\b|\benum\b/i.test(detail);
-  const hasViolationVerb = /exceeds|too many|invalid|failed|rejected|not allowed/i.test(detail);
-  return hasSchemaNoun && hasViolationVerb;
-}
-function classifyUpstreamAlert(status, detail, isFreeTierError) {
-  if (status === 404) {
-    return "stale model ID (renamed or removed by a later sync; re-run sync and re-pick the model)";
-  }
-  if (isFreeTierError) {
-    return "upstream free-tier policy error";
-  }
-  if (isSchemaValidationError(status, detail)) {
-    return "tool schema rejected by upstream (an attached tool declares a constraint the gateway cannot accept; retry without that tool, or re-run sync)";
-  }
-  if (isContextLengthError(status, detail)) {
-    return "upstream context limit exceeded (shorten the conversation, start a new chat, or pick a larger-context model)";
-  }
-  return "upstream server error";
-}
-function isContextLengthError(status, detail) {
-  if (status !== 400) return false;
-  if (isSchemaValidationError(status, detail)) return false;
-  if (/context_length_exceeded/i.test(detail)) return true;
-  const hasContextNoun = /\bcontext\b/i.test(detail);
-  const hasViolationVerb = /\bexceeds?\b|too many|too long|maximum/i.test(detail);
-  return hasContextNoun && hasViolationVerb;
-}
 var OpenCodeChatProvider = class {
   constructor(context, outputChannel) {
     this.context = context;
@@ -30716,9 +30549,9 @@ var OpenCodeChatProvider = class {
     const formattedMessages = formatProviderMessages(messages);
     const meta = this._models.find((m) => m.id === model.id || model.id.endsWith("/" + m.id));
     const isResponses = isResponsesModel(model.id, meta?.apiType);
-    const isFreeOrZen = isFreeOrZenModel(model.id, meta);
+    const isZen = isZenModel(model.id, meta);
     const relaxedToolNames = /* @__PURE__ */ new Set();
-    const toolsPayload = formatProviderTools(options.tools, isResponses, isFreeOrZen, (message, level) => {
+    const toolsPayload = formatProviderTools(options.tools, isResponses, (message, level) => {
       this.log(message, level);
     }, relaxedToolNames);
     const responsesInput = isResponses ? buildResponsesInput(formattedMessages) : [];
@@ -30736,7 +30569,7 @@ var OpenCodeChatProvider = class {
         abortController,
         meta,
         isResponses,
-        isFreeOrZen,
+        isZen,
         formattedMessages,
         toolsPayload,
         responsesInput,
@@ -30749,19 +30582,19 @@ var OpenCodeChatProvider = class {
       cancelListener.dispose();
     }
   }
-  async streamResponse(model, options, progress, token, abortController, meta, isResponses, isFreeOrZen, formattedMessages, toolsPayload, responsesInput, apiKey, sessionId, relaxedToolNames) {
+  async streamResponse(model, options, progress, token, abortController, meta, isResponses, isZen, formattedMessages, toolsPayload, responsesInput, apiKey, sessionId, relaxedToolNames) {
     const reasoningEffort = getReasoningEffort(options);
     const { url, body: requestBody } = createProviderRequest({
       modelId: model.id,
       isResponses,
-      isFreeOrZen,
+      isZen,
       formattedMessages,
       toolsPayload,
       responsesInput,
       reasoningEffort
     });
     this.log(
-      `Request: model=${model.id} protocol=${isResponses ? "responses" : "chat-completions"} url=${url} reasoningEffort=${reasoningEffort || "none"} tools=${toolsPayload?.length ?? 0} toolsChars=${toolsPayload ? JSON.stringify(toolsPayload).length : 0} session=${sessionId.slice(0, 12)}`
+      `Request: model=${model.id} protocol=${isResponses ? "responses" : "chat-completions"} url=${url} reasoningEffort=${reasoningEffort || "none"} tools=${toolsPayload?.length ?? 0} toolsChars=${toolsPayload ? JSON.stringify(toolsPayload).length : 0}`
     );
     const maxStallRetries = 1;
     const idleTimeoutMs = getStreamIdleTimeoutMs();
@@ -30944,12 +30777,12 @@ var OpenCodeUsageTreeProvider = class {
       goItem.description = "Flat-rate ($0/token)";
       goItem.iconPath = new vscode7.ThemeIcon("package");
       const zenItem = new OpenCodeTreeItem(
-        `Zen & Free Tier: ${this.zenModelCount} models`,
+        `OpenCode Zen: ${this.zenModelCount} models`,
         vscode7.TreeItemCollapsibleState.None,
         "catalog-item"
       );
-      zenItem.description = "Free & pay-as-you-go";
-      zenItem.iconPath = new vscode7.ThemeIcon("gift");
+      zenItem.description = "Pay-as-you-go";
+      zenItem.iconPath = new vscode7.ThemeIcon("package");
       return [goItem, zenItem];
     }
     if (element.label === "Quick Actions") {
@@ -31109,7 +30942,6 @@ async function activate(context) {
           name: model.name,
           family: getModelFamily(model),
           catalog: getModelCatalog(model),
-          isFree: !!model.isFree,
           contextWindow: model.contextWindow,
           maxOutputTokens: model.maxOutputTokens,
           vision: model.vision,

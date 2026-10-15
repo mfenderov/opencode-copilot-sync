@@ -61,7 +61,7 @@ Customize behavior via VS Code Settings (`Cmd+,` / `Ctrl+,` search for `opencode
 | :--- | :--- | :--- |
 | `opencode.autoSyncOnStartup` | `true` | Automatically sync models on VS Code launch or window reload. |
 | `opencode.includeGoModels` | `true` | Include models from the OpenCode Go subscription catalog. |
-| `opencode.includeZenModels` | `true` | Include Zen models (Free tier + Zen exclusive models). |
+| `opencode.includeZenModels` | `true` | Include OpenCode Zen catalog models as announced upstream. |
 | `opencode.additionalSyncTargets` | `[]` | Additional absolute `chatLanguageModels.json` paths to mirror to. Use this to opt in to another user profile or a sibling WSL distro. |
 | `opencode.streamIdleTimeoutSeconds` | `90` | Watchdog timeout in seconds before auto-recovering or alerting on an idle stream. |
 
@@ -71,7 +71,7 @@ Customize behavior via VS Code Settings (`Cmd+,` / `Ctrl+,` search for `opencode
 
 - **Activity Bar View**: Click the **OpenCode** hubot icon in the left Activity Bar to see:
   - 📊 Real-time Go subscription quotas (rolling 5-hour, weekly, monthly limits & reset timers)
-  - 🏷️ Active model counts (OpenCode Go flat-rate vs Zen Free tier)
+  - 🏷️ Active model counts (OpenCode Go flat-rate vs OpenCode Zen)
   - ⚡ Quick actions to sync models, update API key, and open config
 - **Status Bar Indicator**: Click `$(hubot) OpenCode` in the bottom-right status bar to trigger a live sync with spin animation.
 - **Command Palette** (`Cmd+Shift+P` / `Ctrl+Shift+P`):
@@ -81,6 +81,14 @@ Customize behavior via VS Code Settings (`Cmd+,` / `Ctrl+,` search for `opencode
   - `OpenCode: Open Copilot Models Config`: Open `chatLanguageModels.json` in editor.
 
 ---
+
+## OpenCode API identity and session routing
+
+The extension identifies itself with its own User-Agent, not as the OpenCode CLI. Chat requests include a stable UUID in `x-opencode-session`, as required by [OpenCode Go's third-party client contract](https://opencode.ai/docs/go/#where-can-i-use-it), for conversation routing and prompt caching. The ID is reused across turns and retries; no OpenCode-shaped `ses_`/`msg_` IDs or synthetic verification tools are sent.
+
+VS Code's provider API does not expose a conversation ID, so sessions are matched using message-history fingerprints. Identical histories initially share routing; diverged histories get separate UUIDs. Sessions are kept in a bounded in-memory cache and reset when the extension reloads or an entry expires.
+
+Go and Zen catalogs are synced without a separate Free tier. If upstream restricts a subsidized model to OpenCode, the extension explains that restriction instead of attempting to bypass it.
 
 ## 🪟 Windows & WSL Usage
 

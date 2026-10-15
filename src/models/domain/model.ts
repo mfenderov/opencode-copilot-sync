@@ -4,7 +4,6 @@ export interface OpenCodeModelMeta {
   name: string;
   family: string;
   catalog?: 'go' | 'zen';
-  isFree?: boolean;
   contextWindow: number;
   maxOutputTokens: number;
   vision: boolean;
@@ -28,8 +27,6 @@ export interface CustomEndpointModel {
   thinking: boolean;
   supportsReasoningEffort?: string[];
   reasoningEffortFormat?: string;
-  requestHeaders?: Record<string, string>;
-  isFree?: boolean;
   modelOptions?: {
     temperature: number | null;
     top_p: number | null;

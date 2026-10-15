@@ -8,7 +8,7 @@ test('enrichModel handles deepseek models with reasoning', () => {
   assert.equal(model.name, 'DeepSeek V4 Flash (OpenCode Go)');
   assert.equal(model.toolCalling, true);
   assert.equal(model.thinking, true);
-  assert.deepEqual(model.requestHeaders, { 'x-opencode-session': 'vscode-copilot' });
+  assert.equal(model.requestHeaders, undefined, 'honest client sends no fake session headers');
   assert.ok(model.contextWindow >= 128000);
 });
 
@@ -18,7 +18,7 @@ test('enrichModel handles vision models like kimi-k3', () => {
   assert.equal(model.name, 'Kimi K3 (OpenCode Go)');
   assert.equal(model.vision, true);
   assert.equal(model.toolCalling, true);
-  assert.deepEqual(model.requestHeaders, { 'x-opencode-session': 'vscode-copilot' });
+  assert.equal(model.requestHeaders, undefined, 'honest client sends no fake session headers');
 });
 
 test('enrichModel handles standard Zen models without session header', () => {
@@ -50,7 +50,7 @@ test('enrichModel extracts exact reasoning effort values from modelsDevData and 
       },
     ],
   };
-  const model = enrichModel('muse-spark-1.3-contributor-free', { isGo: false, isFree: true, modelsDevData: museDevData });
+  const model = enrichModel('muse-spark-1.3-contributor', { isGo: true, modelsDevData: museDevData });
   assert.equal(model.thinking, true);
   assert.deepEqual(model.supportsReasoningEffort, ['minimal', 'low', 'medium', 'high', 'xhigh']);
   assert.ok(!model.supportsReasoningEffort.includes('max'), 'Muse must not include max');
@@ -94,7 +94,7 @@ test('enrichModel assigns a distinct stable family per model id (no shared hardc
     'kimi-k3',
     'big-pickle',
     'muse-spark-1.3-contributor',
-    'muse-spark-1.3-contributor-free',
+    'ling-3.1-flash-free',
     'nemotron-3-ultra-free',
   ];
   const models = ids.map((id) => enrichModel(id, { isGo: true }));
@@ -114,8 +114,7 @@ test('enrichModel family is stable for the same model across calls and options',
   ]) {
     assert.equal(enrichModel('kimi-k3', opts).family, first, 'same model must keep same family across options');
   }
-  const free = enrichModel('muse-spark-1.3-contributor-free', { isGo: false, isFree: true }).family;
-  assert.equal(enrichModel('muse-spark-1.3-contributor-free', { isGo: true }).family, free);
-  assert.notEqual(free, enrichModel('muse-spark-1.3-contributor', { isGo: true }).family, 'free/contributor variants are distinct models');
+  const contrib = enrichModel('muse-spark-1.3-contributor', { isGo: true }).family;
+  assert.equal(enrichModel('muse-spark-1.3-contributor', { isGo: false }).family, contrib, 'same model keeps family across catalogs');
 });
 

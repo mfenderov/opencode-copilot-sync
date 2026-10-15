@@ -284,13 +284,13 @@ test('Provider [toolMode Required]: stays silent when a tool call is emitted', a
   assert.doesNotMatch(text, /toolMode Required/);
 });
 
-test('Provider [toolMode Required]: synthetic verification calls do not count', async () => {
-  // The injected bash/read tools are filtered before emission, so a model that
-  // only calls those must still trigger the Required notice.
+test('Provider [toolMode Required]: upstream tool calls pass through honestly', async () => {
+  // Honest client: every upstream tool call is delivered as-is; none are
+  // filtered as "synthetic". A bash call from upstream reaches the caller.
   mockServer.setScenario({
     mode: 'tool-call',
     toolName: 'bash',
-    toolCallId: 'call_verify_1',
+    toolCallId: 'call_bash_1',
     toolArgsPart1: '{"command":',
     toolArgsPart2: ' "echo hi"}',
   });
@@ -311,8 +311,9 @@ test('Provider [toolMode Required]: synthetic verification calls do not count', 
     createMockToken()
   );
 
-  const text = progress.parts.map((p) => p.value ?? '').join('\n');
-  assert.match(text, /no tool call although toolMode Required was requested/);
+  const toolParts = progress.parts.filter((part) => part instanceof vscode.LanguageModelToolCallPart);
+  assert.equal(toolParts.length, 1, 'upstream bash call must be delivered, not filtered');
+  assert.equal(toolParts[0].name, 'bash');
 });
 
 test('Provider Chaos [Tool Calling]: two parallel tool calls missing an explicit "index" field do not collide', async () => {

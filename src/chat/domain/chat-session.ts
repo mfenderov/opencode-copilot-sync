@@ -1,4 +1,5 @@
 // Chat domain: conversation identity (fingerprint chains, session cache).
+import { randomUUID } from 'node:crypto';
 import type * as vscode from 'vscode';
 import { LanguageModelTextPart } from 'vscode';
 
@@ -60,35 +61,9 @@ function isChainContinuation(cachedChain: readonly string[], incomingChain: read
   return true;
 }
 
-const OPENCODE_ID_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
-
-/**
- * Generates an OpenCode descending identifier (12 hex chars timestamp prefix + 14 base62 chars)
- * matching OpenCode client's `Identifier.descending()` format: `^[0-9a-f]{12}[0-9A-Za-z]{14}$`.
- */
-export function generateOpenCodeDescendingId(): string {
-  const now = Date.now();
-  const counter = Math.floor(Math.random() * 0xfff) + 1;
-  const val = (~(BigInt(now) * 4096n + BigInt(counter))) & 0xffffffffffffn;
-  const hexPrefix = val.toString(16).padStart(12, '0');
-  let randSuffix = '';
-  for (let i = 0; i < 14; i++) {
-    randSuffix += OPENCODE_ID_ALPHABET[Math.floor(Math.random() * OPENCODE_ID_ALPHABET.length)];
-  }
-  return `${hexPrefix}${randSuffix}`;
-}
-
-export function generateOpenCodeSessionId(): string {
-  return `ses_${generateOpenCodeDescendingId()}`;
-}
-
-export function generateOpenCodeRequestId(): string {
-  return `msg_${generateOpenCodeDescendingId()}`;
-}
-
 /**
  * Bounded conversation cache that maps Copilot's full-history message arrays to
- * stable OpenCode session ids. Copilot resends full conversation history each turn,
+ * stable UUID session ids. Copilot resends full conversation history each turn,
  * so a conversation's first message stays constant across its turns. Conversations
  * are bucketed by a fingerprint of that first message, since VS Code's chat
  * provider API exposes no native conversation/session id.
@@ -146,12 +121,12 @@ export class ChatSessionCache {
       if (forkedSessionId !== undefined) {
         return forkedSessionId;
       }
-      const sessionId = generateOpenCodeSessionId();
+      const sessionId = randomUUID();
       this.set(`${rootKey}::${djb2Hash(chain.join('|'))}`, { sessionId, lastUsedAt: now, chain }, now);
       return sessionId;
     }
 
-    const sessionId = generateOpenCodeSessionId();
+    const sessionId = randomUUID();
     this.set(rootKey, { sessionId, lastUsedAt: now, chain }, now);
     return sessionId;
   }

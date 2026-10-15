@@ -1,4 +1,5 @@
 // Models infrastructure: model catalog HTTP clients.
+import { extensionUserAgent } from '../../extension-version.js';
 import { fetchWithRetry, isOfflineMode } from '../../infrastructure/http/fetch-policy.js';
 import { withProxy } from '../../infrastructure/http/proxy-routing.js';
 
@@ -19,7 +20,7 @@ export async function fetchOpenCodeModels(
     method: 'GET',
     headers: {
       Authorization: `Bearer ${apiKey}`,
-      'User-Agent': 'vscode-copilot/1.0',
+      'User-Agent': extensionUserAgent(),
     },
     signal: AbortSignal.timeout(CATALOG_FETCH_TIMEOUT_MS),
   });
@@ -111,47 +112,6 @@ export async function fetchModelsDevMetadata(): Promise<Record<string, ModelDevM
     if (catalog) return catalog;
   }
   return {};
-}
-
-/**
- * Determines whether a model belongs to OpenCode's free tier.
- * Prioritizes authoritative cost metadata from models.dev / models.opencode.ai
- * (where free models have input: 0 and output: 0), falling back to name
- * heuristics when metadata is not provided or cost is undefined.
- */
-function hasPositiveCost(cost: { input?: unknown; output?: unknown }): boolean {
-  return (
-    (typeof cost.input === 'number' && cost.input > 0) ||
-    (typeof cost.output === 'number' && cost.output > 0)
-  );
-}
-
-function isFreeTierName(modelId: string): boolean {
-  const lower = modelId.toLowerCase();
-  return (
-    lower.includes('free') ||
-    lower.includes('community') ||
-    lower === 'big-pickle'
-  );
-}
-
-export function isFreeTierModel(modelId: string, devMeta?: ModelDevMetadata): boolean {
-  if (devMeta?.cost) {
-    if (devMeta.cost.input === 0 && devMeta.cost.output === 0) {
-      return true;
-    }
-    if (hasPositiveCost(devMeta.cost)) {
-      return false;
-    }
-  }
-  return isFreeTierName(modelId);
-}
-
-export function filterFreeModels(
-  modelIds: string[],
-  modelsDevMap?: Record<string, ModelDevMetadata>
-): string[] {
-  return modelIds.filter((id) => isFreeTierModel(id, modelsDevMap?.[id]));
 }
 
 export const KNOWN_UNAVAILABLE_MODELS = new Set([

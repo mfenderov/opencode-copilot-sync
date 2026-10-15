@@ -61,7 +61,7 @@ test('OpenCodeUsageTreeProvider: displays updated model counts in Model Catalogs
   const children = provider.getChildren(catalogRoot);
   assert.equal(children.length, 2);
   assert.equal(children[0].label, 'OpenCode Go: 38 models');
-  assert.equal(children[1].label, 'Zen & Free Tier: 50 models');
+  assert.equal(children[1].label, 'OpenCode Zen: 50 models');
 });
 
 test('OpenCodeUsageTreeProvider: lists quick actions with proper commands', () => {

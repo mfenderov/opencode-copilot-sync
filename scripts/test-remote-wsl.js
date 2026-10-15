@@ -308,7 +308,7 @@ async function runRemoteAssertions({ forceOffline: offlineRequested = false } = 
 
     console.log("\n[Remote-WSL E2E] >>> [4/4] Testing provider schema and protocol mappings...");
     const modelIds = [
-      "muse-spark-1.3-contributor-free",
+      "muse-spark-1.3-contributor",
       "deepseek-v4-flash",
       "kimi-k3",
       "claude-sonnet-4-6",
@@ -336,7 +336,7 @@ async function runRemoteAssertions({ forceOffline: offlineRequested = false } = 
     assert.doesNotMatch(fs.readFileSync(schemaPath, "utf-8"), /sk-wsl-schema-test/);
     assert.equal(openCodeProvider.apiType, "chat-completions");
 
-    const museModel = openCodeProvider.models.find((model) => model.id === "muse-spark-1.3-contributor-free");
+    const museModel = openCodeProvider.models.find((model) => model.id === "muse-spark-1.3-contributor");
     assert.ok(museModel, "Muse model not found in OpenCode models");
     assert.equal(museModel.apiType, "responses");
     assert.equal(museModel.url, "https://opencode.ai/zen/go/v1");
@@ -360,7 +360,7 @@ async function runRemoteAssertions({ forceOffline: offlineRequested = false } = 
     assert.equal(claudeModel.url, "https://opencode.ai/zen/go/v1");
 
     for (const model of openCodeProvider.models) {
-      assert.deepEqual(model.requestHeaders, { "x-opencode-session": "vscode-copilot" });
+      assert.equal(model.requestHeaders, undefined, `Honest client: ${model.id} must not carry fake requestHeaders`);
       assert.ok(typeof model.contextWindow === "number" && model.contextWindow > 0);
       assert.ok(typeof model.maxInputTokens === "number" && model.maxInputTokens > 0);
       assert.ok(typeof model.maxOutputTokens === "number" && model.maxOutputTokens > 0);
@@ -501,7 +501,7 @@ async function runLiveNetworkAssertions(liveApiKey) {
           "x-opencode-session": "vscode-copilot",
         },
         body: JSON.stringify({
-          model: "muse-spark-1.3-contributor-free",
+          model: "muse-spark-1.3",
           input: [{ role: "user", content: "What is 5 + 7? Give only the number." }],
           stream: false,
         }),

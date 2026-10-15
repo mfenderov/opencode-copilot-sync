@@ -1,6 +1,5 @@
 // Chat application: chat message orchestration (stream loop, watchdog).
 import * as vscode from 'vscode';
-import { isSyntheticVerificationTool } from '../infrastructure/tool-mapper.js';
 import type { LogFn } from '../infrastructure/vscode-chat-provider.js';
 import {
   ThinkTagStreamParser,
@@ -83,10 +82,6 @@ class StreamState {
     if (!isPlainObject(parsedArgs)) {
       this.diagnostics.recordToolDisposition(id, 'malformed');
       this.options.log(`Dropping malformed tool call ${name} (${id}): arguments are not a JSON object`);
-      return;
-    }
-    if (isSyntheticVerificationTool(name, this.options.tools)) {
-      this.diagnostics.recordToolDisposition(id, 'synthetic');
       return;
     }
     if (!this.emittedToolCallIds.has(id)) {
@@ -371,8 +366,7 @@ function handleStreamError(
 
 /**
  * Honors the provider contract for `toolMode: Required`: when the caller
- * demands a tool call and the stream emitted none (excluding synthetic
- * verification calls, which are filtered before emission), say so loudly
+ * demands a tool call and the stream emitted none, say so loudly
  * rather than silently returning text the caller did not ask for.
  */
 function enforceRequiredToolMode(

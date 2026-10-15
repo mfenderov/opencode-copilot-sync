@@ -1,7 +1,7 @@
 import type { SseEvent } from './sse-reader.js';
 
 type Metadata = Record<string, unknown>;
-type ToolDisposition = 'emitted' | 'malformed' | 'synthetic';
+type ToolDisposition = 'emitted' | 'malformed';
 
 const TERMINAL_EVENTS = new Set(['response.completed', 'response.incomplete', 'response.failed']);
 const RESPONSE_STATUSES = new Set(['completed', 'incomplete', 'failed', 'in_progress', 'queued', 'cancelled']);
@@ -29,7 +29,7 @@ export class ResponsesStreamDiagnostics {
   private readonly toolAliases = new Map<string, number>();
   private receivedToolCalls = 0;
   private readonly dispositions = {
-    emitted: new Set<string>(), malformed: new Set<string>(), synthetic: new Set<string>(),
+    emitted: new Set<string>(), malformed: new Set<string>(),
   };
 
   observe(event: SseEvent): void {
@@ -97,7 +97,6 @@ export class ResponsesStreamDiagnostics {
         received: this.receivedToolCalls,
         emitted: this.dispositions.emitted.size,
         malformed: this.dispositions.malformed.size,
-        synthetic: this.dispositions.synthetic.size,
       },
     })}`;
   }

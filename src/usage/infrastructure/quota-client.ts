@@ -1,4 +1,5 @@
 // Usage infrastructure: quota HTTP client.
+import { extensionUserAgent } from '../../extension-version.js';
 import { isOfflineMode } from '../../infrastructure/http/fetch-policy.js';
 import type { GoUsageData, GoUsageResult } from '../domain/usage-snapshot.js';
 
@@ -35,8 +36,7 @@ export async function fetchOpenCodeUsage(
       method: 'GET',
       headers: {
         Authorization: `Bearer ${apiKey.trim()}`,
-        'x-opencode-session': 'vscode-copilot',
-        'User-Agent': 'vscode-copilot/1.0',
+        'User-Agent': extensionUserAgent(),
       },
     });
 

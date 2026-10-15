@@ -119,7 +119,7 @@ const STALE_PINNED_MODEL = {
   family: OLD_ID,
 };
 
-test('stale model ID after resync renames it: ONE alert card, never a thrown NotFound', async () => {
+test('stale model ID after resync renames it: ONE minimal card, never a thrown NotFound', async () => {
   mockServer.setScenario({ mode: 'fault', status: 404 });
 
   const context = createMockContext();
@@ -142,12 +142,12 @@ test('stale model ID after resync renames it: ONE alert card, never a thrown Not
 
   assert.equal(mockServer.getRequests().length, 1, 'expected exactly one upstream attempt');
   const alertCards = progress.parts.filter(
-    (p) => p instanceof vscode.LanguageModelTextPart && /OpenCode Model Alert/.test(p.value)
+    (p) => p instanceof vscode.LanguageModelTextPart && p.value.startsWith('> \u26a0\uFE0F')
   );
   assert.equal(alertCards.length, 1, 'expected exactly ONE alert card, never a retry storm');
   assert.equal(progress.parts.length, 1, 'expected no parts besides the single alert card');
   assert.match(alertCards[0].value, new RegExp(OLD_ID.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  assert.match(alertCards[0].value, /stale model ID/);
+  assert.match(alertCards[0].value, /OpenCode model not found/);
 
   // The resynced catalog must list the renamed ID with family === id so saved pins survive.
   const infos = await provider.provideLanguageModelChatInformation({}, {});
@@ -176,7 +176,7 @@ test('renamed (current) model ID still streams normally after resync', async () 
   const textParts = progress.parts.filter((p) => p instanceof vscode.LanguageModelTextPart);
   assert.ok(textParts.length >= 1, 'expected streamed success content');
   assert.ok(
-    !textParts.some((p) => /OpenCode Model Alert/.test(p.value)),
+    !textParts.some((p) => p.value.startsWith('> \u26a0\uFE0F')),
     'no alert card should be emitted for a current catalog ID'
   );
 });

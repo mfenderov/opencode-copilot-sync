@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { enrichModel } from '../out/models/infrastructure/model-enricher.js';
 import {
   isResponsesModel,
-  isFreeOrZenModel,
+  isZenModel,
 } from '../out/chat/infrastructure/request-factory.js';
 import {
   normalizeReasoningEffort,
@@ -34,8 +34,8 @@ test('muse-* models MUST have apiType === "responses" and url ending with /zen/g
       `${modelId} (Go) url must not contain /chat/completions`
     );
 
-    // Zen / Free catalog variant
-    const zenModel = enrichModel(modelId, { isGo: false, isFree: true });
+    // Zen catalog variant
+    const zenModel = enrichModel(modelId, { isGo: false });
     assert.equal(zenModel.apiType, 'responses', `${modelId} (Zen) must have apiType === 'responses'`);
     assert.ok(
       zenModel.url.endsWith('/zen/v1'),
@@ -192,52 +192,21 @@ test('deepseek-*, kimi-*, glm-*, mimo-*, qwen-* MUST have apiType === "chat-comp
   }
 });
 
-test('All models MUST retain x-opencode-session: "vscode-copilot" in requestHeaders', () => {
+test('enriched models carry no fake session headers (honest client)', () => {
   const representativeModels = [
-    { id: 'muse-spark-1.3-contributor-free', options: { isFree: true } },
-    { id: 'gpt-5.5', options: { isGo: true } },
-    { id: 'grok-4.6', options: { isGo: true } },
-    { id: 'claude-sonnet-5', options: { isGo: true } },
-    { id: 'deepseek-v4.1-flash', options: { isGo: true } },
-    { id: 'kimi-k3', options: { isGo: true } },
-    { id: 'glm-5.3', options: { isGo: true } },
-    { id: 'mimo-v2.5', options: { isGo: true } },
-    { id: 'qwen3.8-flash', options: { isGo: true } },
-    { id: 'big-pickle', options: { isFree: true } },
-  ];
-
-  for (const { id, options } of representativeModels) {
-    const model = enrichModel(id, options);
-    assert.ok(
-      model.requestHeaders,
-      `Model ${id} must include requestHeaders`
-    );
-    assert.equal(
-      model.requestHeaders['x-opencode-session'],
-      'vscode-copilot',
-      `Model ${id} must retain x-opencode-session: "vscode-copilot"`
-    );
-  }
-
-  // Also verify default options (isGo defaults to true) retains header across all families
-  const defaultOptionModels = [
-    'muse-spark-1.3-contributor-free',
+    'muse-spark-1.3-contributor',
     'gpt-5.5',
-    'grok-4.6',
-    'claude-sonnet-5',
     'deepseek-v4.1-flash',
     'kimi-k3',
-    'glm-5.3',
-    'mimo-v2.5',
-    'qwen3.8-flash',
+    'big-pickle',
   ];
 
-  for (const id of defaultOptionModels) {
-    const model = enrichModel(id);
+  for (const id of representativeModels) {
+    const model = enrichModel(id, { isGo: true });
     assert.equal(
-      model.requestHeaders?.['x-opencode-session'],
-      'vscode-copilot',
-      `Default enriched model ${id} must retain x-opencode-session header`
+      model.requestHeaders,
+      undefined,
+      `Model ${id} must not carry fake session headers`
     );
   }
 });
@@ -300,7 +269,6 @@ test('VERIFIED_OPENCODE_MODELS static fallback includes all Muse models with thi
   const museIds = [
     'muse-spark-1.3',
     'muse-spark-1.3-contributor',
-    'muse-spark-1.3-contributor-free',
   ];
   for (const id of museIds) {
     const found = VERIFIED_OPENCODE_MODELS.find(m => m.id === id);
@@ -312,24 +280,26 @@ test('VERIFIED_OPENCODE_MODELS static fallback includes all Muse models with thi
   assert.equal(isResponsesModel('big-pickle'), false);
 });
 
-test('isFreeOrZenModel correctly separates Go models from Zen/Free models', () => {
-  // Go catalog models must NOT be treated as Free/Zen even if name contains contributor
-  assert.equal(isFreeOrZenModel('muse-spark-1.3-contributor', { catalog: 'go' }), false);
-  assert.equal(isFreeOrZenModel('muse-spark-1.3-contributor'), false);
-  assert.equal(isFreeOrZenModel('deepseek-v4-pro', { catalog: 'go' }), false);
-  assert.equal(isFreeOrZenModel('qwen3.7-max', { catalog: 'go' }), false);
+test('isZenModel matches only -free suffixed IDs without metadata', () => {
+  assert.equal(isZenModel('freeform-9000'), false, 'contains free but is not a Zen -free ID');
+  assert.equal(isZenModel('freedom-1'), false, 'contains free but is not a Zen -free ID');
+  assert.equal(isZenModel('mimo-v2.5-free'), true, '-free suffix still falls back to Zen');
+});
 
-  // Free/Zen models
-  assert.equal(isFreeOrZenModel('muse-spark-1.3-contributor-free', { catalog: 'zen', isFree: true }), true);
-  assert.equal(isFreeOrZenModel('muse-spark-1.3-contributor-free'), true);
-  assert.equal(isFreeOrZenModel('mimo-v2.5-free'), true);
-  assert.equal(isFreeOrZenModel('big-pickle'), true);
-  assert.equal(isFreeOrZenModel('claude-sonnet-4-6', { catalog: 'zen' }), true);
+test('isZenModel routes by catalog, with -free IDs falling back to Zen', () => {
+  assert.equal(isZenModel('muse-spark-1.3-contributor', { catalog: 'go' }), false);
+  assert.equal(isZenModel('deepseek-v4-pro', { catalog: 'go' }), false);
+  assert.equal(isZenModel('qwen3.7-max', { catalog: 'go' }), false);
 
-  // Zero-cost model from Zen correctly identified by enrichModel
-  const grokFree = enrichModel('grok-code', { isGo: false, modelsDevData: { cost: { input: 0, output: 0 } } });
-  assert.equal(grokFree.isFree, true);
-  assert.ok(grokFree.name.includes('(OpenCode Free)'));
+  assert.equal(isZenModel('muse-spark-1.3-contributor-free', { catalog: 'zen' }), true);
+  assert.equal(isZenModel('muse-spark-1.3-contributor-free'), true);
+  assert.equal(isZenModel('mimo-v2.5-free'), true);
+  assert.equal(isZenModel('big-pickle'), true);
+  assert.equal(isZenModel('claude-sonnet-4-6', { catalog: 'zen' }), true);
+
+  // Zen IDs keep the Zen suffix with no tier concept
+  const grok = enrichModel('grok-code', { isGo: false });
+  assert.ok(grok.name.includes('(OpenCode Zen)'), `got: ${grok.name}`);
 });
 
 test('normalizeReasoningEffort correctly normalizes "max" to "high" and handles all valid efforts', () => {

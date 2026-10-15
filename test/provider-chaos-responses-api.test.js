@@ -1,5 +1,6 @@
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import * as vscode from 'vscode';
 import { OpenCodeChatProvider, charsPerToken, AGENT_MODE_INFO_KEYS } from '../out/chat/infrastructure/vscode-chat-provider.js';
@@ -42,6 +43,15 @@ after(async () => {
 beforeEach(() => {
   mockServer.resetScenarios();
   mockServer.clearRequests();
+  // Model-cache isolation: provider tests that call updateModels persist a
+  // models_cache.json into the shared storage dir. A leftover cache from a
+  // previous run (or an earlier test in this file) would override the
+  // VERIFIED catalog default and poison routing assertions. Reset it so every
+  // test starts from the default catalog.
+  try {
+    const cacheFile = path.resolve(process.cwd(), '.test-user-data', 'chaos-responses-storage', 'models_cache.json');
+    if (fs.existsSync(cacheFile)) fs.rmSync(cacheFile);
+  } catch {}
 });
 
 /**
@@ -65,7 +75,7 @@ function createMockContext(apiKey = 'sk-test-key-12345') {
       },
     },
     globalStorageUri: {
-      fsPath: path.resolve(process.cwd(), '.test-user-data', 'chaos-storage'),
+      fsPath: path.resolve(process.cwd(), '.test-user-data', 'chaos-responses-storage'),
     },
   };
 }
@@ -115,10 +125,10 @@ const GO_CHAT_MODEL = {
   family: 'deepseek-v4-pro',
 };
 
-const MUSE_RESPONSES_MODEL = {
-  id: 'muse-spark-1.3-contributor-free',
-  name: 'Muse Spark 1.3 Contributor (OpenCode Free)',
-  family: 'muse-spark-1.3-contributor-free',
+const MUSE_ZEN_MODEL = {
+  id: 'muse-spark-1.3',
+  name: 'Muse Spark 1.3 (OpenCode Zen)',
+  family: 'muse-spark-1.3',
 };
 
 const MUSE_GO_MODEL = {
@@ -144,7 +154,7 @@ test('Provider Chaos [Responses API (Muse)]: streams response.output_text.delta 
   const token = createMockToken();
 
   await provider.provideLanguageModelChatResponse(
-    MUSE_RESPONSES_MODEL,
+    MUSE_ZEN_MODEL,
     [createMockMessage('compose a haiku')],
     {},
     progress,
@@ -155,7 +165,7 @@ test('Provider Chaos [Responses API (Muse)]: streams response.output_text.delta 
   const requests = mockServer.getRequests();
   assert.equal(requests.length, 1);
   assert.equal(requests[0].pathname, '/zen/v1/responses');
-  assert.equal(requests[0].body.model, 'muse-spark-1.3-contributor-free');
+  assert.equal(requests[0].body.model, 'muse-spark-1.3');
 
   // Verify text parts emitted
   const textParts = progress.parts.filter((p) => p instanceof vscode.LanguageModelTextPart);
@@ -204,7 +214,7 @@ test('Provider Chaos [Responses API]: merges item.arguments on response.output_i
   const token = createMockToken();
 
   await provider.provideLanguageModelChatResponse(
-    MUSE_RESPONSES_MODEL,
+    MUSE_ZEN_MODEL,
     [createMockMessage('weather in Berlin')],
     {},
     progress,
@@ -252,7 +262,7 @@ test('Provider Chaos [Responses API]: uses item.arguments on response.output_ite
   const token = createMockToken();
 
   await provider.provideLanguageModelChatResponse(
-    MUSE_RESPONSES_MODEL,
+    MUSE_ZEN_MODEL,
     [createMockMessage('stock price of AAPL')],
     {},
     progress,
@@ -295,7 +305,7 @@ test('Provider Chaos [Responses API]: flushes pending tool calls on response.com
   const token = createMockToken();
 
   await provider.provideLanguageModelChatResponse(
-    MUSE_RESPONSES_MODEL,
+    MUSE_ZEN_MODEL,
     [createMockMessage('calculate 42 * 2')],
     {},
     progress,
@@ -343,7 +353,7 @@ test('Provider Chaos [Responses API]: parses all remaining buffer lines and flus
   const token = createMockToken();
 
   await provider.provideLanguageModelChatResponse(
-    MUSE_RESPONSES_MODEL,
+    MUSE_ZEN_MODEL,
     [createMockMessage('call buffer tool')],
     {},
     progress,
@@ -385,7 +395,7 @@ test('Provider Chaos [Responses API]: emits completed message text when no outpu
   const token = createMockToken();
 
   await provider.provideLanguageModelChatResponse(
-    MUSE_RESPONSES_MODEL,
+    MUSE_ZEN_MODEL,
     [createMockMessage('hello with no deltas')],
     {},
     progress,
@@ -420,7 +430,7 @@ test('Provider Chaos [Responses API]: emits completed text from a bare output_te
   const token = createMockToken();
 
   await provider.provideLanguageModelChatResponse(
-    MUSE_RESPONSES_MODEL,
+    MUSE_ZEN_MODEL,
     [createMockMessage('hello bare')],
     {},
     progress,
@@ -467,7 +477,7 @@ test('Provider Chaos [Responses API]: completed fallback skips non-text output i
   const token = createMockToken();
 
   await provider.provideLanguageModelChatResponse(
-    MUSE_RESPONSES_MODEL,
+    MUSE_ZEN_MODEL,
     [createMockMessage('hello mixed')],
     {},
     progress,
@@ -816,15 +826,15 @@ test('Provider [Go Contributor Isolation]: muse-spark-1.3-contributor never inje
   assert.equal(reqs2[0].pathname, '/zen/go/v1/responses');
   assert.strictEqual(reqs2[0].body.tools, undefined, 'tools must be undefined when no caller tools on Go model');
 
-  // Case C: Contrast with Free/Zen tier model muse-spark-1.3-contributor-free -> DOES inject verification tools
+  // Case C: Zen-catalog model also sends no synthetic tools — honest client everywhere
   mockServer.clearRequests();
-  mockServer.setScenario({ mode: 'standard', content: 'free model response' });
+  mockServer.setScenario({ mode: 'standard', content: 'zen model response' });
   const progress3 = createMockProgress();
   const token3 = createMockToken();
 
   await provider.provideLanguageModelChatResponse(
-    MUSE_RESPONSES_MODEL,
-    [createMockMessage('free model request')],
+    MUSE_ZEN_MODEL,
+    [createMockMessage('zen model request')],
     {},
     progress3,
     token3
@@ -832,11 +842,7 @@ test('Provider [Go Contributor Isolation]: muse-spark-1.3-contributor never inje
 
   const reqs3 = mockServer.getRequests();
   assert.equal(reqs3.length, 1);
-  assert.equal(reqs3[0].pathname, '/zen/v1/responses');
-  assert.ok(Array.isArray(reqs3[0].body.tools), 'Free model must inject verification tools');
-  const freeToolNames = reqs3[0].body.tools.map((t) => t.name);
-  assert.ok(freeToolNames.includes('bash'), 'Free tier must have bash injected');
-  assert.ok(freeToolNames.includes('read'), 'Free tier must have read injected');
+  assert.strictEqual(reqs3[0].body.tools, undefined, 'Zen model must send no synthetic tools either');
 });
 
 test('Provider [Reasoning Replay Prevention]: never replays LanguageModelThinkingPart from prior turns into message text or responsesInput', async () => {

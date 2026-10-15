@@ -1,15 +1,15 @@
 {
-  "src/models/infrastructure/model-enricher.ts:70:resolveTransport": {
+  "src/models/infrastructure/model-enricher.ts:69:resolveTransport": {
     "crap": 14,
     "complexity": 14,
     "coverage": 1
   },
-  "src/models/infrastructure/model-enricher.ts:164:resolveCapabilities": {
+  "src/models/infrastructure/model-enricher.ts:163:resolveCapabilities": {
     "crap": 14,
     "complexity": 14,
     "coverage": 1
   },
-  "src/models/infrastructure/model-enricher.ts:94:resolveReasoningEfforts": {
+  "src/models/infrastructure/model-enricher.ts:93:resolveReasoningEfforts": {
     "crap": 12.07,
     "complexity": 12,
     "coverage": 0.923
@@ -24,11 +24,6 @@
     "complexity": 11,
     "coverage": 0.946
   },
-  "src/chat/infrastructure/message-mapper.ts:112:formatProviderMessages": {
-    "crap": 11,
-    "complexity": 11,
-    "coverage": 1
-  },
   "src/chat/infrastructure/chat-completions-parser.ts:46:accumulateToolCall": {
     "crap": 10,
     "complexity": 10,
@@ -39,12 +34,12 @@
     "complexity": 10,
     "coverage": 1
   },
-  "src/chat/infrastructure/message-mapper.ts:189:appendAssistantInput": {
+  "src/chat/infrastructure/message-mapper.ts:112:formatProviderMessages": {
     "crap": 10,
     "complexity": 10,
     "coverage": 1
   },
-  "src/models/infrastructure/model-enricher.ts:177:enrichModel": {
+  "src/chat/infrastructure/message-mapper.ts:189:appendAssistantInput": {
     "crap": 10,
     "complexity": 10,
     "coverage": 1

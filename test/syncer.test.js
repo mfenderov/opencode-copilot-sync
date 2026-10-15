@@ -90,7 +90,7 @@ test('buildUnifiedModels gives Go catalog models priority over Zen overlap', () 
   assert.deepEqual(models.map((model) => model.id), ['kimi-k3', 'deepseek-v4-flash', 'big-pickle']);
   assert.equal(models[0].url, 'https://opencode.ai/zen/go/v1/chat/completions');
   assert.equal(models[2].url, 'https://opencode.ai/zen/v1/chat/completions');
-  assert.equal(models[2].isFree, true);
+  assert.equal(models[2].name, 'Big Pickle (OpenCode Zen)');
   assert.equal(zenCount, 1);
 });
 
@@ -299,7 +299,7 @@ test('writeProvidersToConfig updates temp config without touching real files', (
   assert.equal(updated[1].apiKey, '${input:chat.lm.secret.7f3a2c91}');
   assert.doesNotMatch(fs.readFileSync(testFile, 'utf-8'), /sk-test-key/);
   assert.equal(updated[1].models.length, 2);
-  assert.deepEqual(updated[1].models[0].requestHeaders, { 'x-opencode-session': 'vscode-copilot' });
+  assert.equal(updated[1].models[0].requestHeaders, undefined, 'honest client stores no fake session headers');
 
   // Clean up
   fs.rmSync(tmpDir, { recursive: true, force: true });

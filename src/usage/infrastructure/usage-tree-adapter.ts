@@ -160,12 +160,12 @@ export class OpenCodeUsageTreeProvider implements vscode.TreeDataProvider<OpenCo
       goItem.iconPath = new vscode.ThemeIcon('package');
 
       const zenItem = new OpenCodeTreeItem(
-        `Zen & Free Tier: ${this.zenModelCount} models`,
+        `OpenCode Zen: ${this.zenModelCount} models`,
         vscode.TreeItemCollapsibleState.None,
         'catalog-item'
       );
-      zenItem.description = 'Free & pay-as-you-go';
-      zenItem.iconPath = new vscode.ThemeIcon('gift');
+      zenItem.description = 'Pay-as-you-go';
+      zenItem.iconPath = new vscode.ThemeIcon('package');
 
       return [goItem, zenItem];
     }

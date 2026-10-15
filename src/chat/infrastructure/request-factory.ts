@@ -1,5 +1,5 @@
 // Chat infrastructure: provider request construction and routing.
-import { isFreeTierModel } from '../../models/infrastructure/models-dev-client.js';
+import { extensionUserAgent } from '../../extension-version.js';
 import type { OpenCodeModelMeta } from '../../models/domain/model.js';
 import type { FormattedMessage } from './message-mapper.js';
 import { sanitizeResponsesInput } from './message-mapper.js';
@@ -20,23 +20,29 @@ export function isResponsesModel(modelId: string, apiType?: string): boolean {
 }
 
 /**
- * Determines whether a model belongs to OpenCode Zen catalog or Free tier,
- * which routes to https://opencode.ai/zen/v1 instead of the flat-rate Go gateway.
+ * Determines whether a model belongs to the OpenCode Zen catalog, which
+ * routes to https://opencode.ai/zen/v1 instead of the flat-rate Go gateway.
+ * Routing follows the catalog the model synced from. IDs without metadata
+ * fall back to a `-free` suffix check (the Zen catalog's legacy free IDs
+ * live there regardless of tier policy) plus two named exceptions:
+ * `big-pickle` and `grok-code`, which are Zen-only IDs without the suffix.
+ * Everything else defaults to Go.
  */
-export function isFreeOrZenModel(modelId: string, meta?: OpenCodeModelMeta): boolean {
-  if (meta?.catalog === 'zen' || meta?.isFree) {
+export function isZenModel(modelId: string, meta?: OpenCodeModelMeta): boolean {
+  if (meta?.catalog === 'zen') {
     return true;
   }
   if (meta?.catalog === 'go') {
     return false;
   }
-  return isFreeTierModel(modelId);
+  const lower = modelId.toLowerCase();
+  return lower.endsWith('-free') || lower === 'big-pickle' || lower === 'grok-code';
 }
 
 export interface ProviderRequestInput {
   modelId: string;
   isResponses: boolean;
-  isFreeOrZen: boolean;
+  isZen: boolean;
   formattedMessages: FormattedMessage[];
   toolsPayload: WireToolDefinition[] | undefined;
   responsesInput: unknown[];
@@ -49,7 +55,7 @@ export interface ProviderRequest {
 }
 
 export function createProviderRequest(input: ProviderRequestInput): ProviderRequest {
-  const baseUrl = input.isFreeOrZen
+  const baseUrl = input.isZen
     ? 'https://opencode.ai/zen/v1'
     : 'https://opencode.ai/zen/go/v1';
   const url = input.isResponses ? `${baseUrl}/responses` : `${baseUrl}/chat/completions`;
@@ -79,15 +85,12 @@ export function createProviderRequest(input: ProviderRequestInput): ProviderRequ
 
 export function createOpenCodeRequestHeaders(
   apiKey: string,
-  sessionId: string,
-  requestId: string
+  sessionId: string
 ): Record<string, string> {
   return {
     Authorization: `Bearer ${apiKey}`,
     'Content-Type': 'application/json',
-    'User-Agent': 'opencode/1.18.31',
-    'x-opencode-client': 'cli',
+    'User-Agent': extensionUserAgent(),
     'x-opencode-session': sessionId,
-    'x-opencode-request': requestId,
   };
 }

@@ -1,8 +1,9 @@
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import * as vscode from 'vscode';
-import { OpenCodeChatProvider, classifyUpstreamAlert, isContextLengthError, isSchemaValidationError } from '../out/chat/infrastructure/vscode-chat-provider.js';
+import { OpenCodeChatProvider, isContextLengthError, isSchemaValidationError } from '../out/chat/infrastructure/vscode-chat-provider.js';
 import { startMockServer } from './helpers/mock-opencode-server.js';
 
 let mockServer;
@@ -42,6 +43,15 @@ after(async () => {
 beforeEach(() => {
   mockServer.resetScenarios();
   mockServer.clearRequests();
+  // Model-cache isolation: provider tests that call updateModels persist a
+  // models_cache.json into the shared storage dir. A leftover cache from a
+  // previous run (or an earlier test in this file) would override the
+  // VERIFIED catalog default and poison routing assertions. Reset it so every
+  // test starts from the default catalog.
+  try {
+    const cacheFile = path.resolve(process.cwd(), '.test-user-data', 'honest-client-storage', 'models_cache.json');
+    if (fs.existsSync(cacheFile)) fs.rmSync(cacheFile);
+  } catch {}
 });
 
 function createMockContext(apiKey = 'sk-test-key-12345') {
@@ -61,7 +71,7 @@ function createMockContext(apiKey = 'sk-test-key-12345') {
       },
     },
     globalStorageUri: {
-      fsPath: path.resolve(process.cwd(), '.test-user-data', 'chaos-storage'),
+      fsPath: path.resolve(process.cwd(), '.test-user-data', 'honest-client-storage'),
     },
   };
 }
@@ -95,15 +105,15 @@ function createMockMessage(text, role = vscode.LanguageModelChatMessageRole.User
   };
 }
 
-const MUSE_FREE_MODEL = {
-  id: 'muse-spark-1.3-contributor-free',
-  name: 'Muse Spark 1.3 Contributor (OpenCode Free)',
-  family: 'muse-spark-1.3-contributor-free',
+const MUSE_ZEN_MODEL = {
+  id: 'muse-spark-1.3',
+  name: 'Muse Spark 1.3 (OpenCode Zen)',
+  family: 'muse-spark-1.3',
 };
 
-const MIMO_FREE_MODEL = {
+const MIMO_ZEN_MODEL = {
   id: 'mimo-v2.5-free',
-  name: 'MiMo V2.5 (OpenCode Free)',
+  name: 'MiMo V2.5 Free (OpenCode Zen)',
   family: 'mimo-v2.5-free',
 };
 
@@ -113,14 +123,14 @@ const GO_MODEL = {
   family: 'deepseek-v4-pro',
 };
 
-test('Free Tier Verification: injects bash and read tools into Responses payload when caller passes no tools', async () => {
+test('Honest client: no synthetic bash/read tools in Responses payload when caller passes no tools', async () => {
   const context = createMockContext();
   const provider = new OpenCodeChatProvider(context);
   const progress = createMockProgress();
   const token = createMockToken();
 
   await provider.provideLanguageModelChatResponse(
-    MUSE_FREE_MODEL,
+    MUSE_ZEN_MODEL,
     [createMockMessage('hello')],
     {},
     progress,
@@ -130,21 +140,17 @@ test('Free Tier Verification: injects bash and read tools into Responses payload
   assert.equal(mockServer.requests.length, 1);
   const req = mockServer.requests[0];
   assert.equal(req.pathname, '/zen/v1/responses');
-  assert.ok(Array.isArray(req.body.tools), 'Expected tools array to be present in body');
-
-  const toolNames = req.body.tools.map((t) => t.name);
-  assert.ok(toolNames.includes('bash'), 'Expected bash tool in verification tools');
-  assert.ok(toolNames.includes('read'), 'Expected read tool in verification tools');
+  assert.equal(req.body.tools, undefined, 'honest client sends no tools when caller passes none');
 });
 
-test('Free Tier Verification: injects bash and read tools into Chat Completions payload when caller passes no tools', async () => {
+test('Honest client: no synthetic bash/read tools in Chat Completions payload when caller passes no tools', async () => {
   const context = createMockContext();
   const provider = new OpenCodeChatProvider(context);
   const progress = createMockProgress();
   const token = createMockToken();
 
   await provider.provideLanguageModelChatResponse(
-    MIMO_FREE_MODEL,
+    MIMO_ZEN_MODEL,
     [createMockMessage('hello')],
     {},
     progress,
@@ -154,14 +160,10 @@ test('Free Tier Verification: injects bash and read tools into Chat Completions 
   assert.equal(mockServer.requests.length, 1);
   const req = mockServer.requests[0];
   assert.equal(req.pathname, '/zen/v1/chat/completions');
-  assert.ok(Array.isArray(req.body.tools), 'Expected tools array to be present in body');
-
-  const toolNames = req.body.tools.map((t) => t.function?.name);
-  assert.ok(toolNames.includes('bash'), 'Expected bash tool in verification tools');
-  assert.ok(toolNames.includes('read'), 'Expected read tool in verification tools');
+  assert.equal(req.body.tools, undefined, 'honest client sends no tools when caller passes none');
 });
 
-test('Free Tier Verification: appends bash and read tools alongside caller tools if missing', async () => {
+test('Honest client: forwards caller tools unchanged, adds nothing synthetic', async () => {
   const context = createMockContext();
   const provider = new OpenCodeChatProvider(context);
   const progress = createMockProgress();
@@ -178,7 +180,7 @@ test('Free Tier Verification: appends bash and read tools alongside caller tools
   };
 
   await provider.provideLanguageModelChatResponse(
-    MUSE_FREE_MODEL,
+    MUSE_ZEN_MODEL,
     [createMockMessage('hello')],
     options,
     progress,
@@ -188,9 +190,7 @@ test('Free Tier Verification: appends bash and read tools alongside caller tools
   assert.equal(mockServer.requests.length, 1);
   const req = mockServer.requests[0];
   const toolNames = req.body.tools.map((t) => t.name);
-  assert.ok(toolNames.includes('customTool'), 'Expected caller customTool to be preserved');
-  assert.ok(toolNames.includes('bash'), 'Expected bash tool to be appended');
-  assert.ok(toolNames.includes('read'), 'Expected read tool to be appended');
+  assert.deepEqual(toolNames, ['customTool']);
 });
 
 test('Free Tier Verification: strips oversized enums from the wire payload in both protocols', async () => {
@@ -200,8 +200,8 @@ test('Free Tier Verification: strips oversized enums from the wire payload in bo
   const provider = new OpenCodeChatProvider(context);
 
   for (const [model, path] of [
-    [MUSE_FREE_MODEL, '/zen/v1/responses'],
-    [MIMO_FREE_MODEL, '/zen/v1/chat/completions'],
+    [MUSE_ZEN_MODEL, '/zen/v1/responses'],
+    [MIMO_ZEN_MODEL, '/zen/v1/chat/completions'],
   ]) {
     mockServer.requests.length = 0;
 
@@ -237,41 +237,7 @@ test('Free Tier Verification: strips oversized enums from the wire payload in bo
   }
 });
 
-test('classifies upstream alerts without misattributing schema rejections', () => {
-  assert.equal(
-    classifyUpstreamAlert(
-      400,
-      'a single enum property with more than 250 values exceeds the maximum combined enum string length of 15000 characters',
-      false
-    ),
-    'tool schema rejected by upstream (an attached tool declares a constraint the gateway cannot accept; retry without that tool, or re-run sync)'
-  );
-  assert.equal(
-    classifyUpstreamAlert(404, 'not found', false),
-    'stale model ID (renamed or removed by a later sync; re-run sync and re-pick the model)'
-  );
-  assert.equal(classifyUpstreamAlert(403, 'FreeTierError: nope', true), 'upstream free-tier policy error');
-  assert.equal(classifyUpstreamAlert(500, 'boom', false), 'upstream server error');
-  // A 400 that is NOT a schema error stays a server error.
-  assert.equal(classifyUpstreamAlert(400, 'reasoning `encrypted_content` was not issued to this caller', false), 'upstream server error');
-  // A context-length 400 mentions exceeds + invalid_request but no schema term:
-  // it gets the context-limit label (tested below), not the schema one.
-  assert.equal(
-    classifyUpstreamAlert(400, 'invalid_request_error: context length exceeds the model limit', false),
-    'upstream context limit exceeded (shorten the conversation, start a new chat, or pick a larger-context model)'
-  );
-  assert.equal(
-    isSchemaValidationError(400, 'tool input failed schema validation: missing required property'),
-    true,
-    'explicit schema diagnostics still classify'
-  );
-});
-
-test('classifies context-length 400s as a context problem, not a server error', () => {
-  assert.equal(
-    classifyUpstreamAlert(400, 'invalid_request_error: context length exceeds the model limit', false),
-    'upstream context limit exceeded (shorten the conversation, start a new chat, or pick a larger-context model)'
-  );
+test('context-length helpers still detect window overruns for logging', () => {
   assert.equal(isContextLengthError(400, 'context_length_exceeded: too many tokens', true), true);
   assert.equal(isContextLengthError(400, 'plain boom', false), false);
   assert.equal(
@@ -302,7 +268,7 @@ test('Free Tier Verification [400 schema error]: reports a tool schema rejection
   const progress = createMockProgress();
 
   await provider.provideLanguageModelChatResponse(
-    MUSE_FREE_MODEL,
+    MUSE_ZEN_MODEL,
     [createMockMessage('hello')],
     {},
     progress,
@@ -310,8 +276,9 @@ test('Free Tier Verification [400 schema error]: reports a tool schema rejection
   );
 
   const text = progress.parts.map((p) => p.value ?? '').join('\n');
-  assert.match(text, /tool schema rejected by upstream/);
-  assert.doesNotMatch(text, /upstream server error/);
+  assert.match(text, /> \u26a0\uFE0F `muse-spark-1\.3` \(400\): /);
+  assert.match(text, /a single enum property with more than 250 values/);
+  assert.doesNotMatch(text, /Model Alert/);
 });
 
 test('Free Tier Verification [403 FreeTierError]: streams alert card and does NOT throw NoPermissions', async () => {
@@ -334,7 +301,7 @@ test('Free Tier Verification [403 FreeTierError]: streams alert card and does NO
 
   // Must NOT throw: clean resolution bypasses Copilot's retry loop
   await provider.provideLanguageModelChatResponse(
-    MUSE_FREE_MODEL,
+    MUSE_ZEN_MODEL,
     [createMockMessage('hello')],
     {},
     progress,
@@ -344,7 +311,10 @@ test('Free Tier Verification [403 FreeTierError]: streams alert card and does NO
   assert.equal(progress.parts.length, 1, 'Expected alert part to be emitted');
   assert.ok(progress.parts[0] instanceof vscode.LanguageModelTextPart);
   const alertText = progress.parts[0].value;
-  assert.match(alertText, /⚠️ \*\*OpenCode Model Alert \(403/);
+  assert.ok(alertText.startsWith('> \u26a0\uFE0F `'), `card is minimal with warning sign, got: ${alertText}`);
+  assert.match(alertText, /`muse-spark-1\.3` \(403\): /);
   assert.match(alertText, /free tier can only be used from within OpenCode/);
-  assert.doesNotMatch(alertText, /Suggestions:/);
+  assert.doesNotMatch(alertText, /Model Alert/);
+  assert.doesNotMatch(alertText, /Upstream detail/);
+  assert.doesNotMatch(alertText, /Unable to reach/);
 });

@@ -150,11 +150,13 @@ test('Idle-timeout auto-recovery: when stream stalls with zero bytes, retries on
 
   const requests = mockServer.getRequests();
   assert.equal(requests.length, 2, 'expected exactly 2 upstream requests (initial stall + auto-retry)');
-  assert.notEqual(
-    requests[0].headers['x-opencode-request'],
-    requests[1].headers['x-opencode-request'],
-    'retry must use a fresh request ID'
+  assert.ok(
+    requests[0].headers['authorization'] && requests[1].headers['authorization'],
+    'retry must re-authenticate honestly like the initial request'
   );
+
+  assert.match(requests[0].headers['x-opencode-session'], /^[0-9a-f-]{36}$/);
+  assert.equal(requests[0].headers['x-opencode-session'], requests[1].headers['x-opencode-session'], 'stall recovery retains conversation routing');
 
   const textParts = progress.parts.filter((p) => p instanceof vscode.LanguageModelTextPart);
   const combined = textParts.map((p) => p.value).join('');

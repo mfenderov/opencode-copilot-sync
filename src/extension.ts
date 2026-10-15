@@ -170,7 +170,6 @@ export async function activate(context: vscode.ExtensionContext) {
           name: model.name,
           family: getModelFamily(model),
           catalog: getModelCatalog(model),
-          isFree: !!model.isFree,
           contextWindow: model.contextWindow,
           maxOutputTokens: model.maxOutputTokens,
           vision: model.vision,

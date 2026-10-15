@@ -121,7 +121,7 @@
         "opencode.includeZenModels": {
           "type": "boolean",
           "default": true,
-          "description": "Include OpenCode Zen models (Free tier + Zen exclusive models, de-duplicated against Go)."
+          "description": "Include OpenCode Zen catalog models as announced upstream (de-duplicated against Go)."
         },
         "opencode.additionalSyncTargets": {
           "type": "array",
@@ -140,7 +140,7 @@
     }
   },
   "scripts": {
-    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.cjs --external:vscode --format=cjs --platform=node",
+    "build": "node scripts/build.mjs",
     "package": "npm run build && npx @vscode/vsce package --no-dependencies",
     "test": "npx tsc && node --test test/*.test.js",
     "test:coverage": "npx tsc && c8 node --test test/*.test.js",

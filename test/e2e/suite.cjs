@@ -54,15 +54,16 @@ exports.run = async function () {
   }
   assert.ok(opencodeModels.length >= 20, `Must discover at least 20 native OpenCode models, got ${opencodeModels.length}`);
 
-  const freeModels = opencodeModels.filter(m => m.id.includes('free') || m.id === 'big-pickle');
-  console.log(`\n[E2E] Discovered ${freeModels.length} verified free models:`);
-  for (const fm of freeModels) {
-    console.log(`  - [FREE] ${fm.name} (${fm.id})`);
+  const zenModels = opencodeModels.filter(m => m.name.includes('(OpenCode Zen)'));
+  console.log(`\n[E2E] Discovered ${zenModels.length} announced Zen models:`);
+  for (const zm of zenModels) {
+    console.log(`  - [ZEN] ${zm.name} (${zm.id})`);
   }
-  assert.ok(freeModels.length >= 6, `Must include at least 6 free models, got ${freeModels.length}`);
-  const muse13 = freeModels.find(m => m.id.includes('muse-spark-1.3'));
-  console.log('[E2E] Muse 1.3 Contributor Free discovered:', !!muse13);
-  assert.ok(muse13, 'muse-spark-1.3-contributor-free must be present in free models list');
+  assert.ok(zenModels.length >= 1, `Must announce at least 1 Zen model as-is, got ${zenModels.length}`);
+  assert.ok(
+    !opencodeModels.some(m => m.name.includes('(OpenCode Free)')),
+    'Honest client: no model may carry the removed (OpenCode Free) suffix'
+  );
 
   const liveChecksEnabled = shouldRunLiveChecks();
 
@@ -84,30 +85,30 @@ exports.run = async function () {
       assert.ok(streamedText.length > 0, 'Model must stream back a non-empty response');
     }
 
-    // Test live request to a Free model (routes to zen/v1)
-    let testedFree = false;
-    for (const freeLive of freeModels.slice(0, 3)) {
+    // Test live request to a Zen model (routes to zen/v1, announced as-is)
+    let testedZen = false;
+    for (const zenLive of zenModels.slice(0, 3)) {
       try {
-        console.log(`\n[E2E] >>> Sending live prompt to Free model: ${freeLive.name} (${freeLive.id})...`);
-        const freeResp = await freeLive.sendRequest(
-          [vscode.LanguageModelChatMessage.User('Hello! Please reply with "FreeOK" and nothing else.')],
+        console.log(`\n[E2E] >>> Sending live prompt to Zen model: ${zenLive.name} (${zenLive.id})...`);
+        const zenResp = await zenLive.sendRequest(
+          [vscode.LanguageModelChatMessage.User('Hello! Please reply with "ZenOK" and nothing else.')],
           {},
           new vscode.CancellationTokenSource().token
         );
-        let freeText = '';
-        for await (const chunk of freeResp.text) {
-          freeText += chunk;
+        let zenText = '';
+        for await (const chunk of zenResp.text) {
+          zenText += chunk;
         }
-        console.log(`[E2E] >>> Free model streamed response: "${freeText.trim()}"`);
-        if (freeText.length > 0) {
-          testedFree = true;
+        console.log(`[E2E] >>> Zen model streamed response: "${zenText.trim()}"`);
+        if (zenText.length > 0) {
+          testedZen = true;
           break;
         }
       } catch (err) {
-        console.log(`[E2E] Free model ${freeLive.id} returned rate limit or error (${err.message}). Trying next free model...`);
+        console.log(`[E2E] Zen model ${zenLive.id} returned rate limit or error (${err.message}). Trying next Zen model...`);
       }
     }
-    console.log('[E2E] Free model live connectivity tested:', testedFree || 'Rate limited on public free endpoints');
+    console.log('[E2E] Zen model live connectivity tested:', testedZen || 'Rate limited on public endpoints');
 
     const api = syncExt.exports;
 
@@ -277,11 +278,11 @@ exports.run = async function () {
         console.log('[E2E] >>> [AGENT MODE] PASSED! Model completed full multi-turn Agent workflow with 131 tools.');
       }
       // =========================================================
-      // 5. RESPONSES API E2E: Muse Spark 1.3 Contributor Free
+      // 5. RESPONSES API E2E: Muse Spark 1.3 (announced as-is with Zen suffix)
       // =========================================================
       console.log(`\n=============================================`);
       console.log(`[E2E] >>> [RESPONSES API] Testing Muse Spark 1.3 via /responses transport...`);
-      const museMeta = { id: 'muse-spark-1.3-contributor-free', name: 'Muse Spark 1.3 Contributor (OpenCode Free)', family: 'muse-spark-1.3-contributor-free' };
+      const museMeta = { id: 'muse-spark-1.3', name: 'Muse Spark 1.3 (OpenCode Zen)', family: 'muse-spark-1.3' };
       await withRetry(
         async () => {
           const museParts = [];

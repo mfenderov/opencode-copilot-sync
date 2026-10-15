@@ -70,17 +70,17 @@ test('diagnostics identify a completed commentary-only response without logging 
     terminalEvent: 'response.completed', status: 'completed', incompleteReason: 'none',
     outputItems: { message: 1, reasoning: 0, function_call: 0, other: 0 },
     messagePhases: { commentary: 1, final_answer: 0, unspecified: 0, unknown: 0 },
-    toolCalls: { received: 0, emitted: 0, malformed: 0, synthetic: 0 },
+    toolCalls: { received: 0, emitted: 0, malformed: 0 },
   });
   assert.ok(!logs.join('\n').includes('PRIVATE-PROGRESS-TEXT'));
   assert.ok(!logs.join('\n').includes('msg-private'));
 });
 
-test('diagnostics deduplicate tool events and distinguish emitted, malformed, and synthetic calls', async () => {
+test('diagnostics deduplicate tool events and distinguish emitted and malformed calls', async () => {
   const calls = [
     { type: 'function_call', call_id: 'call-valid', name: 'lookup', arguments: '{"key":"PRIVATE-ARGUMENT"}' },
     { type: 'function_call', call_id: 'call-malformed', name: 'lookup', arguments: '{"key":' },
-    { type: 'function_call', call_id: 'call-synthetic', name: 'read', arguments: '{"filePath":"PRIVATE-PATH"}' },
+    { type: 'function_call', call_id: 'call-dropped', name: 'lookup', arguments: 'not-json-at-all' },
   ];
   const { parts, logs } = await diagnosticStream([
     { type: 'response.output_item.done', output_index: 0, item: calls[0] },
@@ -91,7 +91,7 @@ test('diagnostics deduplicate tool events and distinguish emitted, malformed, an
   assert.equal(delivered.length, 1);
   assert.deepEqual(delivered[0].input, { key: 'PRIVATE-ARGUMENT' });
   assert.deepEqual(responseDiagnostic(logs).toolCalls, {
-    received: 3, emitted: 1, malformed: 1, synthetic: 1,
+    received: 3, emitted: 1, malformed: 2,
   });
   assert.deepEqual(responseDiagnostic(logs).outputItems, {
     message: 0, reasoning: 0, function_call: 3, other: 0,
@@ -109,7 +109,7 @@ test('diagnostics identify tools by call identity when terminal output indexes d
   ], [{ name: 'lookup' }]);
 
   assert.equal(parts.filter((part) => part instanceof vscode.LanguageModelToolCallPart).length, 2);
-  assert.deepEqual(responseDiagnostic(logs).toolCalls, { received: 2, emitted: 2, malformed: 0, synthetic: 0 });
+  assert.deepEqual(responseDiagnostic(logs).toolCalls, { received: 2, emitted: 2, malformed: 0 });
 });
 
 test('diagnostics distinguish incomplete, failed, and missing terminal events without changing delivery', async () => {

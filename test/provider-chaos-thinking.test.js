@@ -270,8 +270,8 @@ test('Provider Chaos [Thinking Effort: "max" on Responses API (Muse)]: normalize
   assert.strictEqual(reqs[0].body.reasoning_effort, undefined);
 
   // Must stream cleanly without error alert
-  const alert = progress.parts.find(p => p.value?.includes('OpenCode Model Alert'));
-  assert.strictEqual(alert, undefined, 'Must not emit OpenCode Model Alert');
+  const alert = progress.parts.find(p => p.value?.startsWith('> \u26a0\uFE0F'));
+  assert.strictEqual(alert, undefined, 'Must not emit an error card');
 });
 
 test('Provider Chaos [Thinking Effort: "max" on Chat Completions]: normalizes "max" to "high" to prevent 400', async () => {
