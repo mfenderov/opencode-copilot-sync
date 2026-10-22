@@ -2,16 +2,15 @@ import * as vscode from 'vscode';
 import { resolveApiKey, promptAndSetApiKey } from './infrastructure/vscode/secret-store.js';
 import {
   syncOpenCodeModels,
-  getModelFamily,
-  getModelCatalog,
   type SyncOpenCodeOptions,
   type SyncOpenCodeResult,
 } from './models/application/synchronize-models.js';
 import { getChatLanguageModelsPath } from './sync-targets.js';
 import { formatSyncFailureMessage, formatSyncFailureTooltip } from './sync-status.js';
 import { buildSyncOptions, shouldPromptForApiKey } from './sync-options.js';
+import { OpenCodeChatAdapter } from './infrastructure/vscode/open-code-chat-adapter.js';
+import type { CustomEndpointModel } from './models/domain/model.js';
 import { updateUsageMeter } from './usage/application/refresh-usage.js';
-import { OpenCodeChatProvider } from './chat/infrastructure/vscode-chat-provider.js';
 import { setVSCodeProxyUrl, setProxyWarningHandler } from './infrastructure/http/proxy-routing.js';
 import { OpenCodeUsageTreeProvider } from './usage/infrastructure/usage-tree-adapter.js';
 
@@ -41,16 +40,10 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Register first-class native Language Model Chat Provider in VS Code
-  const chatProvider = new OpenCodeChatProvider(context, outputChannel);
-  context.subscriptions.push(
-    vscode.lm.registerLanguageModelChatProvider('opencode', chatProvider)
-  );
-  // Announce the cached models immediately so Agent Mode sees them before the
-  // delayed startup sync finishes; otherwise restored sessions fail model
-  // lookup until the first post-sync refresh.
-  chatProvider.refresh();
-  outputChannel.info('Registered native OpenCode LanguageModelChatProvider with VS Code.');
+  const chatProvider = new OpenCodeChatAdapter(context);
+  chatProvider.updateModels(context.globalState.get<CustomEndpointModel[]>('opencode.models', []));
+  context.subscriptions.push(chatProvider, vscode.lm.registerLanguageModelChatProvider('opencode', chatProvider));
+  outputChannel.info('OpenCode model sync active: SDK adapter supplies conversation headers and forwards responses.');
 
   // Auto-enable VS Code's experimental Agent Host BYOK bridge so custom models appear in Agent Mode
   try {
@@ -137,7 +130,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   function logSyncResult(syncResult: SyncOpenCodeResult, interactive: boolean): void {
     outputChannel.info(
-      `${interactive ? '' : '[Startup] '}Synced ${syncResult.totalCount} unified OpenCode models (${syncResult.goCount} Go + ${syncResult.zenCount} Zen) to native provider.`
+      `${interactive ? '' : '[Startup] '}Synced ${syncResult.totalCount} unified OpenCode models (${syncResult.goCount} Go + ${syncResult.zenCount} Zen) to OpenCode.`
     );
     syncResult.warnings.forEach((warning) => {
       outputChannel.warn(`[Compatibility mirror] ${warning}`);
@@ -163,25 +156,7 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 
   function updateModelCatalog(syncResult: SyncOpenCodeResult): void {
-    if (syncResult.models.length > 0) {
-      chatProvider.updateModels(
-        syncResult.models.map((model) => ({
-          id: model.id,
-          name: model.name,
-          family: getModelFamily(model),
-          catalog: getModelCatalog(model),
-          contextWindow: model.contextWindow,
-          maxOutputTokens: model.maxOutputTokens,
-          vision: model.vision,
-          thinking: model.thinking,
-          supportsReasoningEffort: model.supportsReasoningEffort,
-          apiType: model.apiType,
-        }))
-      );
-      usageTreeProvider.updateModelCounts(syncResult.goCount, syncResult.zenCount);
-      return;
-    }
-    chatProvider.refresh();
+    usageTreeProvider.updateModelCounts(syncResult.goCount, syncResult.zenCount);
   }
 
   function reportSyncFailure(error: unknown, interactive: boolean): void {
@@ -209,6 +184,8 @@ export async function activate(context: vscode.ExtensionContext) {
     statusBarItem.text = '$(sync~spin) OpenCode';
     statusBarItem.tooltip = 'Syncing OpenCode models...';
     const syncResult = await runSyncWithProgress(interactive, apiKey, syncOptions);
+    chatProvider.updateModels(syncResult.models);
+    await context.globalState.update('opencode.models', syncResult.models);
     reportSyncResult(syncResult, interactive);
     updateModelCatalog(syncResult);
     await updateUsageMeter(statusBarItem, usageTreeProvider, context.secrets, apiKey);

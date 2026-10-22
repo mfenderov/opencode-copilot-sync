@@ -19,6 +19,7 @@ export interface CustomEndpointModel {
   url: string;
   family?: string;
   apiType: 'chat-completions' | 'messages' | 'responses';
+  statefulResponses?: boolean;
   toolCalling: boolean;
   vision: boolean;
   contextWindow: number;

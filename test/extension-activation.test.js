@@ -50,6 +50,14 @@ function createMockContext() {
       delete: async (key) => { secretsMap.delete(key); },
     },
     globalStorageUri: { fsPath: storageDir },
+    globalState: {
+      get: (key, fallback) => key === 'opencode.models' ? [{
+        id: 'cached-model', name: 'Cached model', family: 'cached-model', apiType: 'responses',
+        url: 'https://opencode.ai/zen/go/v1', maxInputTokens: 112000, maxOutputTokens: 16000,
+        contextWindow: 128000, vision: false, thinking: false, toolCalling: true,
+      }] : fallback,
+      update: async () => {},
+    },
     subscriptions: [],
   };
 }
@@ -58,11 +66,11 @@ test('activation announces provider models before any network call', async () =>
   const context = createMockContext();
   const { chatProvider } = await activate(context);
 
-  // _onDidChange is TS-private but runtime-accessible; identity check is the
-  // only way to attribute the fire to the chat provider's emitter.
-  assert.ok(
-    firedEmitters.includes(chatProvider._onDidChange),
-    'expected the chat provider change event to fire during activation'
-  );
+  const models = chatProvider.provideLanguageModelChatInformation();
+  assert.equal(models.length, 1);
+  assert.equal(models[0].id, 'cached-model');
+  assert.equal(models[0].maxInputTokens, 112000);
   assert.equal(fetchCalls.length, 0);
+  for (const disposable of context.subscriptions) disposable.dispose?.();
+  fs.rmSync(context.globalStorageUri.fsPath, { recursive: true, force: true });
 });

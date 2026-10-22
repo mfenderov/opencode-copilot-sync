@@ -4,6 +4,7 @@ out/**
 coverage/**
 node_modules/**
 scripts/**
+docs/superpowers/specs/2026-10-19-metadata-first-routing-design.md
 tsconfig.json
 .gitignore
 .c8rc.json

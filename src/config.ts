@@ -31,7 +31,7 @@ function isUnifiedOpenCodeProvider(entry: unknown): entry is Record<string, unkn
   return isRecord(entry) && entry.name === 'OpenCode' && entry.vendor === 'customendpoint';
 }
 
-const VS_CODE_SECRET_INPUT_REFERENCE = /^\$\{input:chat\.lm\.secret\.[0-9a-f]+\}$/;
+const VS_CODE_SECRET_INPUT_REFERENCE = /^\$\{input:chat\.lm\.secret\.-?[0-9a-f]+\}$/;
 
 export function parseVSCodeSecretInputReference(value: unknown): VSCodeSecretInputReference | undefined {
   if (typeof value !== 'string' || !VS_CODE_SECRET_INPUT_REFERENCE.test(value)) return undefined;

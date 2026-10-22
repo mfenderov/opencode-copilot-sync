@@ -17,7 +17,7 @@ A lightweight VS Code extension that automatically synchronizes model catalogs f
 
 - **Unified model catalog:** Automatically syncs OpenCode Go and Zen models under one **OpenCode** provider, preferring the Go flat subscription when a model is covered.
 - **Secure credentials:** Stores API keys in VS Code's encrypted SecretStorage and supports `OPENCODE_API_KEY` for automation.
-- **Reliable requests:** Supports tools, vision, and reasoning controls, and recovers automatically from stalled streams.
+- **Lean chat adapter:** Registers enriched models with VS Code, adds OpenCode's required conversation header, and delegates protocol encoding and stream parsing to the official provider SDKs.
 - **Usage at a glance:** Shows Go subscription quotas and reset timers in the OpenCode sidebar.
 - **Safe mirroring:** Preserves unrelated providers and destination-local secrets when syncing VS Code profiles and the associated WSL distro.
 
@@ -47,7 +47,7 @@ code --install-extension opencode-copilot-sync-*.vsix
 
 ### Dependencies
 
-- Requires VS Code `1.125` or later.
+- This local spike targets VS Code `1.142` or later (the latest stable version at build time).
 - Building, testing, and packaging from source requires Node.js and npm. `npm ci` installs the locked runtime and development dependencies, including `undici` and the build/test tools.
 - `npm run package` bundles the HTTP client into the VSIX; end users do not need to install a separate runtime package.
 
@@ -63,7 +63,6 @@ Customize behavior via VS Code Settings (`Cmd+,` / `Ctrl+,` search for `opencode
 | `opencode.includeGoModels` | `true` | Include models from the OpenCode Go subscription catalog. |
 | `opencode.includeZenModels` | `true` | Include OpenCode Zen catalog models as announced upstream. |
 | `opencode.additionalSyncTargets` | `[]` | Additional absolute `chatLanguageModels.json` paths to mirror to. Use this to opt in to another user profile or a sibling WSL distro. |
-| `opencode.streamIdleTimeoutSeconds` | `90` | Watchdog timeout in seconds before auto-recovering or alerting on an idle stream. |
 
 ---
 
@@ -82,13 +81,15 @@ Customize behavior via VS Code Settings (`Cmd+,` / `Ctrl+,` search for `opencode
 
 ---
 
-## OpenCode API identity and session routing
+## Model registration and chat transport
 
-The extension identifies itself with its own User-Agent, not as the OpenCode CLI. Chat requests include a stable UUID in `x-opencode-session`, as required by [OpenCode Go's third-party client contract](https://opencode.ai/docs/go/#where-can-i-use-it), for conversation routing and prompt caching. The ID is reused across turns and retries; no OpenCode-shaped `ses_`/`msg_` IDs or synthetic verification tools are sent.
+The extension fetches the Go and Zen catalogs, enriches models with metadata, and registers them under the native **OpenCode** provider. The last synced catalog is cached for reloads. The primary profile's old OpenCode Custom Endpoint entry is removed to avoid offering a duplicate path that cannot supply conversation headers; unrelated providers and optional profile mirrors are preserved.
 
-VS Code's provider API does not expose a conversation ID, so sessions are matched using message-history fingerprints. Identical histories initially share routing; diverged histories get separate UUIDs. Sessions are kept in a bounded in-memory cache and reset when the extension reloads or an entry expires.
+A small adapter adds `x-opencode-session`, translates VS Code message parts to SDK messages, and forwards SDK response parts. It does not compact or truncate history, set idle timers, replay failed requests, or implement automatic retries. Cancellation comes from VS Code. The official OpenAI and Anthropic provider SDKs handle wire formats and stream parsing.
 
-Go and Zen catalogs are synced without a separate Free tier. If upstream restricts a subsidized model to OpenCode, the extension explains that restriction instead of attempting to bypass it.
+Where VS Code supplies `modelOptions._conversationId`, that ID is used unchanged. Current stable Agents sessions require the approved history-based fallback: bounded message-hash chains and UUIDs are persisted, without message text. Identical histories cannot be distinguished until they diverge; truncated or rewritten history can also lose continuity. This is an approximation, not an exact host session identity. It is not a profile-wide shared UUID. Responses requests send full history with `store: false` and no `previous_response_id`.
+
+Go and Zen models remain subject to OpenCode's access restrictions; this extension does not bypass them.
 
 ## 🪟 Windows & WSL Usage
 
@@ -110,21 +111,15 @@ This is a confirmed upstream VS Code limitation, not a bug in this extension: un
 
 ## 🛠️ How It Works Under the Hood
 
-The extension registers a native **OpenCode** chat provider for requests and maintains optional `chatLanguageModels.json` mirrors for profile compatibility. It fetches OpenCode's model catalogs, sends the required session header with chat requests, and merges only its own entries; unrelated providers are preserved, and raw API keys are never copied between profiles.
+The extension registers the native **OpenCode** provider through a thin SDK adapter and maintains optional `chatLanguageModels.json` mirrors for profile compatibility. Unrelated providers are preserved, and raw API keys are never copied between profiles. Protocol classification and catalog enrichment remain separate from this transport experiment.
 
 ---
 
 ## Troubleshooting repeated progress messages or premature stops
 
-Check **View → Output → OpenCode Copilot Sync** after reproducing the problem. Responses API streams now log a content-free `Responses stream summary` containing:
+Check **View → Output → OpenCode Copilot Sync** for catalog-fetch and registration errors, and VS Code's Copilot logs for request failures. If models are missing, run **OpenCode: Sync Models to Copilot** and select a model under the native OpenCode provider, not the headerless Custom Endpoint experiment.
 
-- `terminalEvent`, `status`, and `incompleteReason`: whether the gateway completed, failed, hit an output limit, or ended without a terminal event.
-- `outputItems` and `messagePhases`: counts of messages, reasoning items, function calls, and upstream `commentary` / `final_answer` labels. `unspecified` means the phase was absent; `unknown` means an unrecognized value was supplied.
-- `toolCalls`: unique calls received versus emitted to Copilot, plus malformed and synthetic verification calls that were filtered.
-
-A completed response with no emitted tools can end the Copilot turn even when its text only promises more work. Repeated progress messages across separate completed requests are not necessarily duplicated streaming text. Compare the metadata summaries with the session history before attributing the issue to retries or context compaction.
-
-These diagnostics do not log message text, reasoning content, tool arguments, or credentials, and do not change retry, tool delivery, or turn-ending behavior. Older logs cannot establish which upstream terminal status or phase was received. A summary is produced only after a Responses API event has been observed; Chat Completions streams retain their existing logging.
+The original premature-stop cause remains unconfirmed. This local spike removes the old custom stream/recovery implementation so its behavior can be compared with SDK-managed streaming; successful registration and mock requests do not prove live-stream reliability.
 
 ---
 
