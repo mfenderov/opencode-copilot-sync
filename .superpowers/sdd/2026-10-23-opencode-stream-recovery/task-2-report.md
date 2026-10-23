@@ -39,4 +39,15 @@ None.
 
 ## Commit
 
-`feat: recover timed out chat streams`
+`feat: recover timed out chat streams` (`b9afb9b`, implementation base)
+
+## Task Review Fix Evidence
+
+- **RED (reviewed behavior):** Against the original implementation at Task 2 base `b9afb9b5d8d23e1e991c4427f1eb491fded05036`, ran `node --test --test-timeout=1000 --test-name-pattern='terminal protocol completion' test/lean-chat-adapter.test.js`. The test failed with `provider waited for HTTP EOF after terminal completion`, reproducing the 900-second idle wait after raw `response.completed`. The partial fix was restored after the reproduction.
+- **Fix:** Preserve terminal raw completion reporting and break the async iteration immediately, while letting `response.incomplete` continue to SDK `finish` so output-limit details and usage are retained. Set the exact required continuation instruction: “The previous response was interrupted. Continue from where you left off without repeating completed content.”
+- **Regression coverage:** The terminal test keeps the HTTP body open with a 900,000ms chunk timeout, verifies provider completion within 100ms, verifies response handler remains open and only one request occurs. Existing continuation test asserts the exact assistant text plus separate user instruction.
+- **Adjacent regression found/fixed:** First full test run exposed an output-limit truncation regression caused by treating `response.incomplete` as immediate terminal. It was excluded from the raw early-break path; focused check `node --test --test-timeout=5000 --test-name-pattern='terminal protocol completion|output-limit truncation' test/lean-chat-adapter.test.js` passed 2/2.
+- **GREEN:** Focused `npx tsc && node --test --test-name-pattern='chat adapter|stream fetch timeout' test/lean-chat-adapter.test.js` — 16/16 passed. `npx eslint src/infrastructure/vscode/open-code-chat-adapter.ts` and `npx tsc` passed. Final `npm test` — 197/197 passed, 0 failures. `git diff --check` passed.
+- Changed files remain `src/infrastructure/vscode/open-code-chat-adapter.ts` and `test/lean-chat-adapter.test.js`. No remaining concerns.
+
+Fix commit: `fix: stop consuming stream on completion` (recorded in the Task 2 fix-round ledger).

@@ -23,7 +23,7 @@ export interface ChatStreamPolicy extends StreamTimeoutOptions {
 }
 
 const MAX_STREAM_RETRIES = 3;
-const CONTINUATION_INSTRUCTION = 'Continue your previous response from exactly where it stopped. Do not repeat any text.';
+const CONTINUATION_INSTRUCTION = 'The previous response was interrupted. Continue from where you left off without repeating completed content.';
 const STREAM_INTERRUPTION_NOTICE = '\n\nOpenCode: The response was interrupted after repeated stream timeouts.';
 
 const defaultChatStreamPolicy: ChatStreamPolicy = {
@@ -586,12 +586,19 @@ export class OpenCodeChatAdapter implements vscode.LanguageModelChatProvider<Reg
             },
           });
           for await (const part of stream) {
-            if (part.type === 'finish') finished = true;
-            if (part.type === 'raw' && isRawCompletion(part.rawValue)) finished = true;
+            const terminal = part.type === 'finish' || (part.type === 'raw' && isRawCompletion(part.rawValue) &&
+              !(record(part.rawValue) && part.rawValue.type === 'response.incomplete'));
             if (part.type === 'text-delta' && part.delta) {
               attemptText += part.delta;
             }
-            reportPart(part, progress, reportState);
+            if (part.type === 'raw') reportPart(part, progress, reportState);
+            if (terminal) {
+              finished = true;
+              if (part.type === 'finish') reportPart(part, progress, reportState);
+              else if (reportState.diagnostics) reportState.diagnostics.finishSeen = true;
+              break;
+            }
+            if (part.type !== 'raw') reportPart(part, progress, reportState);
           }
           if (toolCalls.length) {
             reportToolCalls(toolCalls, progress);

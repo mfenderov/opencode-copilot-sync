@@ -162,13 +162,20 @@ test('chat adapter continues timed-out partial text in a separate prompt message
   assert.equal(parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''), 'partial completion');
   assert.deepEqual(requests[1].body.input.slice(-2), [
     { role: 'assistant', content: [{ type: 'output_text', text: 'partial ' }] },
-    { role: 'user', content: [{ type: 'input_text', text: 'Continue your previous response from exactly where it stopped. Do not repeat any text.' }] },
+    { role: 'user', content: [{ type: 'input_text', text: 'The previous response was interrupted. Continue from where you left off without repeating completed content.' }] },
   ]);
 });
 
-test('chat adapter treats SDK finish as completion before delayed HTTP cleanup', async (t) => {
+test('chat adapter resolves on terminal protocol completion while the HTTP body remains open', async (t) => {
+  let markResponseSent;
+  const responseSent = new Promise((resolve) => { markResponseSent = resolve; });
+  let responseEnded = false;
+  let openResponse;
+  const terminalPolicy = { ...testStreamPolicy, chunkTimeoutMs: 900_000 };
   const { run, requests } = await setup(t, (req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream' });
+    openResponse = res;
+    res.on('finish', () => { responseEnded = true; });
     const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
     const text = 'Finished before idle timeout';
     emit({ type: 'response.created', response: { id: 'resp_finish_idle', created_at: 1, model: req.body.model } });
@@ -176,12 +183,18 @@ test('chat adapter treats SDK finish as completion before delayed HTTP cleanup',
     emit({ type: 'response.output_text.delta', item_id: 'msg_finish_idle', output_index: 0, content_index: 0, delta: text });
     emit({ type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: 'msg_finish_idle', role: 'assistant', content: [{ type: 'output_text', text, annotations: [] }] } });
     emit({ type: 'response.completed', response: { id: 'resp_finish_idle', status: 'completed', usage: { input_tokens: 10, output_tokens: 5 } } });
-    setTimeout(() => res.end(), 20);
-  }, testStreamPolicy);
-  const parts = await run('finish-before-cleanup', 'finish this');
+    markResponseSent();
+  }, terminalPolicy);
+  const partsPromise = run('finish-before-cleanup', 'finish this');
+  const parts = await Promise.race([
+    partsPromise,
+    responseSent.then(() => new Promise((_resolve, reject) => setTimeout(() => reject(new Error('provider waited for HTTP EOF after terminal completion')), 100))),
+  ]);
 
+  assert.equal(responseEnded, false, 'the handler must leave the HTTP response open');
   assert.equal(requests.length, 1);
   assert.equal(parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''), 'Finished before idle timeout');
+  openResponse.end();
 });
 
 test('chat adapter hands timed-out tool calls to VS Code for the next turn', async (t) => {
