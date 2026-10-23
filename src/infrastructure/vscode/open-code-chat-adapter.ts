@@ -6,16 +6,58 @@ import type { CustomEndpointModel } from '../../models/domain/model.js';
 import { extensionUserAgent } from '../../extension-version.js';
 import { resolveApiKey } from './secret-store.js';
 import { withProxy } from '../http/proxy-routing.js';
+import {
+  createStreamTimeoutFetch,
+  OPEN_CODE_CHUNK_TIMEOUT_MS,
+  OPEN_CODE_HEADER_TIMEOUT_MS,
+  StreamTimeoutError,
+  type StreamTimeoutOptions,
+} from '../http/stream-timeout-fetch.js';
 import { ConversationIdentity } from './conversation-identity.js';
 
 export type RegisteredModel = CustomEndpointModel & vscode.LanguageModelChatInformation;
 type AssistantContent = Extract<LanguageModelV3Prompt[number], { role: 'assistant' }>['content'];
+
+export interface ChatStreamPolicy extends StreamTimeoutOptions {
+  retryDelayMs(retryNumber: number): number;
+}
+
+const MAX_STREAM_RETRIES = 3;
+const CONTINUATION_INSTRUCTION = 'Continue your previous response from exactly where it stopped. Do not repeat any text.';
+const STREAM_INTERRUPTION_NOTICE = '\n\nOpenCode: The response was interrupted after repeated stream timeouts.';
+
+const defaultChatStreamPolicy: ChatStreamPolicy = {
+  headerTimeoutMs: OPEN_CODE_HEADER_TIMEOUT_MS,
+  chunkTimeoutMs: OPEN_CODE_CHUNK_TIMEOUT_MS,
+  retryDelayMs(retryNumber) {
+    const backoff = Math.min(2_000 * 2 ** (retryNumber - 1), 10_000);
+    return backoff + Math.random() * Math.min(100, 10_000 - backoff);
+  },
+};
 const thinkingPart = (vscode as typeof vscode & {
   LanguageModelThinkingPart?: new (value: string, id: string) => vscode.LanguageModelResponsePart;
 }).LanguageModelThinkingPart;
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isStreamTimeout(error: unknown): boolean {
+  const visited = new Set<unknown>();
+  while (record(error) && !visited.has(error)) {
+    if (error instanceof StreamTimeoutError) return true;
+    visited.add(error);
+    error = error.cause;
+  }
+  return error instanceof StreamTimeoutError;
+}
+
+function isRawCompletion(rawValue: unknown): boolean {
+  if (!record(rawValue)) return false;
+  if (rawValue.type === 'response.completed' || rawValue.type === 'response.incomplete') return true;
+  return Array.isArray(rawValue.choices) && rawValue.choices.some((choice) =>
+    record(choice) && choice.finish_reason !== null && choice.finish_reason !== undefined
+  );
 }
 
 // Leave headroom below OpenCode's 250-value and 15,000-character gateway limits.
@@ -225,6 +267,7 @@ interface StreamDiagnostics {
 interface StreamReportState {
   textEmitted: boolean;
   diagnostics?: StreamDiagnostics;
+  onToolCall?(part: Extract<LanguageModelV3StreamPart, { type: 'tool-call' }>): void;
 }
 
 function createStreamDiagnostics(
@@ -333,6 +376,32 @@ export function toSDKPrompt(messages: readonly vscode.LanguageModelChatRequestMe
   return prompt;
 }
 
+function waitForRetry(delayMs: number, token: vscode.CancellationToken): Promise<boolean> {
+  if (token.isCancellationRequested) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      subscription.dispose();
+      resolve(false);
+    }, delayMs);
+    const subscription = token.onCancellationRequested(() => {
+      clearTimeout(timeout);
+      subscription.dispose();
+      resolve(true);
+    });
+  });
+}
+
+function reportToolCalls(
+  parts: readonly Extract<LanguageModelV3StreamPart, { type: 'tool-call' }>[],
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>
+): void {
+  for (const part of parts) {
+    const input: unknown = JSON.parse(part.input);
+    if (!record(input)) throw new Error(`Invalid tool arguments for ${part.toolName}`);
+    progress.report(new vscode.LanguageModelToolCallPart(part.toolCallId, part.toolName, input));
+  }
+}
+
 function reportPart(
   part: LanguageModelV3StreamPart,
   progress: vscode.Progress<vscode.LanguageModelResponsePart>,
@@ -350,6 +419,10 @@ function reportPart(
       break;
     case 'tool-call': {
       noteStreamPart(state.diagnostics, 'tool-call');
+      if (state.onToolCall) {
+        state.onToolCall(part);
+        break;
+      }
       const input: unknown = JSON.parse(part.input);
       if (!record(input)) throw new Error(`Invalid tool arguments for ${part.toolName}`);
       progress.report(new vscode.LanguageModelToolCallPart(part.toolCallId, part.toolName, input));
@@ -400,12 +473,13 @@ function reportPart(
   }
 }
 
-function protocolModel(model: CustomEndpointModel, apiKey: string): LanguageModelV3 {
+function protocolModel(model: CustomEndpointModel, apiKey: string, streamPolicy: StreamTimeoutOptions): LanguageModelV3 {
   const baseURL = model.url.replace(/\/(chat\/completions|responses|messages)\/?$/, '');
-  const sdkFetch: typeof fetch = async (input, init) => {
+  const proxyFetch: typeof fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     return fetch(input, await withProxy(url, { ...init }));
   };
+  const sdkFetch = createStreamTimeoutFetch(proxyFetch, streamPolicy);
   if (model.apiType === 'messages') return createAnthropic({ baseURL, authToken: apiKey, fetch: sdkFetch })(model.id);
   const openai = createOpenAI({ baseURL, apiKey, fetch: sdkFetch });
   return model.apiType === 'responses' ? openai.responses(model.id) : openai.chat(model.id);
@@ -417,12 +491,15 @@ export class OpenCodeChatAdapter implements vscode.LanguageModelChatProvider<Reg
   readonly onDidChangeLanguageModelChatInformation = this.changed.event;
 
   private readonly identities: ConversationIdentity;
+  private readonly streamPolicy: ChatStreamPolicy;
 
   constructor(
     private readonly context: Pick<vscode.ExtensionContext, 'secrets'> & Partial<Pick<vscode.ExtensionContext, 'globalState'>>,
-    private readonly log?: (message: string) => void
+    private readonly log?: (message: string) => void,
+    streamPolicy: Partial<ChatStreamPolicy> = {}
   ) {
     this.identities = new ConversationIdentity(context.globalState);
+    this.streamPolicy = { ...defaultChatStreamPolicy, ...streamPolicy };
   }
 
   updateModels(models: CustomEndpointModel[]): void {
@@ -457,8 +534,8 @@ export class OpenCodeChatAdapter implements vscode.LanguageModelChatProvider<Reg
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Cancellation can change during the awaits above.
     if (token.isCancellationRequested) return;
     if (!apiKey) throw new Error('Configure the OpenCode API key before sending a request.');
-    const controller = new AbortController();
-    const subscription = token.onCancellationRequested(() => { controller.abort(); });
+    const subscription = token.onCancellationRequested(() => { activeController?.abort(); });
+    let activeController: AbortController | undefined;
     try {
       const tools: LanguageModelV3FunctionTool[] | undefined = options.tools?.map((tool) => ({
         type: 'function', name: tool.name, description: tool.description,
@@ -470,47 +547,84 @@ export class OpenCodeChatAdapter implements vscode.LanguageModelChatProvider<Reg
       const configuration = (options as { modelConfiguration?: Record<string, unknown> }).modelConfiguration;
       const effort: unknown = configuration?.reasoningEffort ?? options.modelOptions?.reasoningEffort;
       const requestReasoning = typeof effort === 'string' ? { reasoningEffort: effort } : {};
-      const { stream } = await protocolModel(model, apiKey).doStream({
-        prompt: toSDKPrompt(messages), tools,
-        toolChoice: { type: options.toolMode === vscode.LanguageModelChatToolMode.Required ? 'required' : 'auto' },
-        maxOutputTokens: model.maxOutputTokens,
-        headers: { 'x-opencode-session': sessionId, 'User-Agent': extensionUserAgent() },
-        abortSignal: controller.signal,
-        includeRawChunks: model.apiType !== 'messages',
-        providerOptions: {
-          openai: {
-            store: false, strictJsonSchema: false, forceReasoning: model.thinking, systemMessageMode: 'system',
-            ...requestReasoning,
-            // Summaries are the only reasoning output the Responses stream
-            // parser surfaces as deltas; without this the model reasons
-            // silently and no thinking parts ever reach VS Code.
-            ...(model.apiType === 'responses' && model.thinking ? { reasoningSummary: 'auto' } : {}),
-          },
-          anthropic: typeof effort === 'string' ? { effort } : {},
-        },
-      });
-      const reportState: StreamReportState = {
-        textEmitted: false,
-        diagnostics: createStreamDiagnostics(this.log, {
-          modelId: model.id,
-          apiType: model.apiType,
-          sessionId,
-          maxOutputTokens: model.maxOutputTokens,
-          toolCount: tools?.length ?? 0,
-        }),
-      };
-      try {
-        for await (const part of stream) {
-          if (controller.signal.aborted) {
-            if (reportState.diagnostics) summarizeStream(reportState.diagnostics, 'aborted');
+      const initialPrompt = toSDKPrompt(messages);
+      const prompt = structuredClone(initialPrompt);
+
+      for (let attempt = 0; attempt <= MAX_STREAM_RETRIES; attempt += 1) {
+        const controller = new AbortController();
+        activeController = controller;
+        const timedModel = protocolModel(model, apiKey, this.streamPolicy);
+        let finished = false;
+        let attemptText = '';
+        const toolCalls: Extract<LanguageModelV3StreamPart, { type: 'tool-call' }>[] = [];
+        const reportState: StreamReportState = {
+          textEmitted: false,
+          onToolCall: (part) => toolCalls.push(part),
+          diagnostics: createStreamDiagnostics(this.log, {
+            modelId: model.id,
+            apiType: model.apiType,
+            sessionId,
+            maxOutputTokens: model.maxOutputTokens,
+            toolCount: tools?.length ?? 0,
+          }),
+        };
+        try {
+          const { stream } = await timedModel.doStream({
+            prompt, tools,
+            toolChoice: { type: options.toolMode === vscode.LanguageModelChatToolMode.Required ? 'required' : 'auto' },
+            maxOutputTokens: model.maxOutputTokens,
+            headers: { 'x-opencode-session': sessionId, 'User-Agent': extensionUserAgent() },
+            abortSignal: controller.signal,
+            includeRawChunks: model.apiType !== 'messages',
+            providerOptions: {
+              openai: {
+                store: false, strictJsonSchema: false, forceReasoning: model.thinking, systemMessageMode: 'system',
+                ...requestReasoning,
+                ...(model.apiType === 'responses' && model.thinking ? { reasoningSummary: 'auto' } : {}),
+              },
+              anthropic: typeof effort === 'string' ? { effort } : {},
+            },
+          });
+          for await (const part of stream) {
+            if (part.type === 'finish') finished = true;
+            if (part.type === 'raw' && isRawCompletion(part.rawValue)) finished = true;
+            if (part.type === 'text-delta' && part.delta) {
+              attemptText += part.delta;
+            }
+            reportPart(part, progress, reportState);
+          }
+          if (toolCalls.length) {
+            reportToolCalls(toolCalls, progress);
+            if (reportState.diagnostics) summarizeStream(reportState.diagnostics, 'completed');
             return;
           }
-          reportPart(part, progress, reportState);
+          if (reportState.diagnostics) summarizeStream(reportState.diagnostics, 'completed');
+          return;
+        } catch (error) {
+          const timedOut = isStreamTimeout(error);
+          if (reportState.diagnostics) summarizeStream(reportState.diagnostics, finished ? 'completed' : timedOut ? 'aborted' : 'errored');
+          if (!timedOut) throw error;
+          if (finished) {
+            if (toolCalls.length) reportToolCalls(toolCalls, progress);
+            return;
+          }
+          if (toolCalls.length) {
+            reportToolCalls(toolCalls, progress);
+            return;
+          }
+          if (attempt === MAX_STREAM_RETRIES) {
+            progress.report(new vscode.LanguageModelTextPart(STREAM_INTERRUPTION_NOTICE));
+            return;
+          }
+          const delayMs = Math.max(0, this.streamPolicy.retryDelayMs(attempt + 1));
+          if (await waitForRetry(delayMs, token)) return;
+          if (attemptText) {
+            prompt.push({ role: 'assistant', content: [{ type: 'text', text: attemptText }] });
+            prompt.push({ role: 'user', content: [{ type: 'text', text: CONTINUATION_INSTRUCTION }] });
+          }
+        } finally {
+          if (activeController === controller) activeController = undefined;
         }
-        if (reportState.diagnostics) summarizeStream(reportState.diagnostics, 'completed');
-      } catch (error) {
-        if (reportState.diagnostics) summarizeStream(reportState.diagnostics, 'errored');
-        throw error;
       }
     } finally {
       subscription.dispose();

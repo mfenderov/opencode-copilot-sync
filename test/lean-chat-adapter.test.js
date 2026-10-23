@@ -27,7 +27,7 @@ async function createTimeoutServer(t, handler) {
   return server;
 }
 
-async function setup(t, handler) {
+async function setup(t, handler, streamPolicy = {}) {
   const requests = [];
   const server = http.createServer(async (req, res) => {
     let data = '';
@@ -39,7 +39,7 @@ async function setup(t, handler) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }));
   const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
-  const provider = new OpenCodeChatAdapter({ secrets: { get: async () => 'sk-local-test' } });
+  const provider = new OpenCodeChatAdapter({ secrets: { get: async () => 'sk-local-test' } }, undefined, streamPolicy);
   const model = {
     id: 'new-model-with-no-known-prefix', name: 'New model', family: 'new-model-with-no-known-prefix',
     apiType: 'responses', url: `http://127.0.0.1:${server.address().port}/v1`,
@@ -56,6 +56,163 @@ async function setup(t, handler) {
   };
   return { provider, model, requests, run, sendResponses };
 }
+
+const testStreamPolicy = {
+  headerTimeoutMs: 35,
+  chunkTimeoutMs: 35,
+  retryDelayMs: () => 0,
+};
+
+test('chat adapter retries a header timeout with the original prompt and session', async (t) => {
+  const { run, requests, model } = await setup(t, (req, res) => {
+    if (requests.length === 1) return;
+    sendResponses(res, req.body.model, 'Recovered answer');
+  }, testStreamPolicy);
+  const parts = await run('retry-session', 'original question');
+
+  assert.equal(requests.length, 2);
+  assert.ok(requests.every((request) => request.headers['x-opencode-session'] === 'retry-session'));
+  assert.deepEqual(requests[1].body.input, requests[0].body.input);
+  assert.equal(parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''), 'Recovered answer');
+});
+
+test('chat adapter stops after three timeout retries and reports one interruption notice', async (t) => {
+  const { run, requests } = await setup(t, (_req, res) => {
+    if (requests.length !== 1) return;
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write(`data: ${JSON.stringify({ type: 'response.created', response: { id: 'resp_exhausted', created_at: 1, model: 'new-model-with-no-known-prefix' } })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'response.output_text.delta', item_id: 'msg_exhausted', delta: 'unfinished' })}\n\n`);
+  }, testStreamPolicy);
+  const parts = await run('retry-exhaustion', 'keep trying');
+
+  assert.equal(requests.length, 4);
+  const text = parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join('');
+  assert.equal(text, 'unfinished\n\nOpenCode: The response was interrupted after repeated stream timeouts.');
+});
+
+test('chat adapter does not retry a caller-cancelled pending request', async (t) => {
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const { provider, model, requests } = await setup(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.flushHeaders();
+    markStarted();
+  }, testStreamPolicy);
+  const emitter = new vscode.EventEmitter();
+  const cancel = { isCancellationRequested: false, onCancellationRequested: emitter.event };
+  const parts = [];
+  t.after(() => emitter.dispose());
+  const pending = provider.provideLanguageModelChatResponse(model, messages('cancel this'), {
+    modelOptions: { _conversationId: 'cancel-timeout-session' }, toolMode: 1,
+  }, { report: (part) => parts.push(part) }, cancel);
+  const settled = pending.then(() => 'resolved', (error) => { assert.match(error.name, /Abort/); return 'aborted'; });
+  await started;
+  cancel.isCancellationRequested = true;
+  emitter.fire();
+  assert.equal(await settled, 'aborted');
+  assert.equal(requests.length, 1);
+  assert.deepEqual(parts, []);
+});
+
+test('chat adapter defaults to OpenCode capped exponential retry delays with bounded jitter', async (t) => {
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  const originalRandom = Math.random;
+  let randomValue = 0;
+  Math.random = () => randomValue++ === 0 ? 0 : 1;
+  const provider = new OpenCodeChatAdapter({ secrets: { get: async () => 'sk-local-test' } }, undefined, { headerTimeoutMs: 1 });
+  t.after(() => { Math.random = originalRandom; provider.dispose(); });
+  const policy = provider['streamPolicy'];
+
+  assert.equal(policy.headerTimeoutMs, 1);
+  assert.equal(policy.chunkTimeoutMs, 900_000);
+  assert.deepEqual([policy.retryDelayMs(1), policy.retryDelayMs(2), policy.retryDelayMs(3), policy.retryDelayMs(4)], [2000, 4100, 8100, 10000]);
+});
+
+test('chat adapter cancellation during retry backoff prevents the next attempt', async (t) => {
+  let markClosed;
+  const requestClosed = new Promise((resolve) => { markClosed = resolve; });
+  const policy = { ...testStreamPolicy, retryDelayMs: () => 100 };
+  const { provider, model, requests } = await setup(t, (_req, res) => res.on('close', markClosed), policy);
+  const emitter = new vscode.EventEmitter();
+  const cancel = { isCancellationRequested: false, onCancellationRequested: emitter.event };
+  t.after(() => emitter.dispose());
+  const pending = provider.provideLanguageModelChatResponse(model, messages('cancel during backoff'), {
+    modelOptions: { _conversationId: 'cancel-backoff-session' }, toolMode: 1,
+  }, { report() {} }, cancel);
+  await requestClosed;
+  cancel.isCancellationRequested = true;
+  emitter.fire();
+  await pending;
+  assert.equal(requests.length, 1);
+});
+
+test('chat adapter continues timed-out partial text in a separate prompt message', async (t) => {
+  const { run, requests } = await setup(t, (req, res) => {
+    if (requests.length === 1) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ type: 'response.created', response: { id: 'resp_partial', created_at: 1, model: req.body.model } })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: 'response.output_text.delta', item_id: 'msg_partial', delta: 'partial ' })}\n\n`);
+      return;
+    }
+    sendResponses(res, req.body.model, 'completion');
+  }, testStreamPolicy);
+  const parts = await run('partial-session', 'original question');
+
+  assert.equal(requests.length, 2);
+  assert.equal(parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''), 'partial completion');
+  assert.deepEqual(requests[1].body.input.slice(-2), [
+    { role: 'assistant', content: [{ type: 'output_text', text: 'partial ' }] },
+    { role: 'user', content: [{ type: 'input_text', text: 'Continue your previous response from exactly where it stopped. Do not repeat any text.' }] },
+  ]);
+});
+
+test('chat adapter treats SDK finish as completion before delayed HTTP cleanup', async (t) => {
+  const { run, requests } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+    const text = 'Finished before idle timeout';
+    emit({ type: 'response.created', response: { id: 'resp_finish_idle', created_at: 1, model: req.body.model } });
+    emit({ type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: 'msg_finish_idle', role: 'assistant', content: [] } });
+    emit({ type: 'response.output_text.delta', item_id: 'msg_finish_idle', output_index: 0, content_index: 0, delta: text });
+    emit({ type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: 'msg_finish_idle', role: 'assistant', content: [{ type: 'output_text', text, annotations: [] }] } });
+    emit({ type: 'response.completed', response: { id: 'resp_finish_idle', status: 'completed', usage: { input_tokens: 10, output_tokens: 5 } } });
+    setTimeout(() => res.end(), 20);
+  }, testStreamPolicy);
+  const parts = await run('finish-before-cleanup', 'finish this');
+
+  assert.equal(requests.length, 1);
+  assert.equal(parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''), 'Finished before idle timeout');
+});
+
+test('chat adapter hands timed-out tool calls to VS Code for the next turn', async (t) => {
+  const { run, requests, provider, model } = await setup(t, (req, res) => {
+    if (requests.length > 1) return sendResponses(res, req.body.model, 'Tool result received');
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+    const item = { type: 'function_call', id: 'fc_timeout', call_id: 'call_timeout', name: 'calculator', arguments: '{"value":4}', status: 'completed' };
+    emit({ type: 'response.created', response: { id: 'resp_tool_timeout', created_at: 1, model: req.body.model } });
+    emit({ type: 'response.output_item.added', output_index: 0, item: { ...item, arguments: '', status: 'in_progress' } });
+    emit({ type: 'response.function_call_arguments.delta', output_index: 0, item_id: 'fc_timeout', delta: '{"value":4}' });
+    emit({ type: 'response.output_item.done', output_index: 0, item });
+  }, testStreamPolicy);
+  const calls = (await run('tool-timeout-session', 'calculate', {
+    tools: [{ name: 'calculator', description: 'calculate', inputSchema: { type: 'object', properties: { value: { type: 'number' } } } }],
+    toolMode: vscode.LanguageModelChatToolMode.Required,
+  })).filter((part) => part instanceof vscode.LanguageModelToolCallPart);
+
+  assert.equal(requests.length, 1, 'a ready tool call must stop retry and continuation');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].callId, 'call_timeout');
+  const output = [];
+  await provider.provideLanguageModelChatResponse(model, [
+    ...messages('calculate'),
+    { role: 2, content: calls },
+    { role: 1, content: [new vscode.LanguageModelToolResultPart('call_timeout', [new vscode.LanguageModelTextPart('4')])] },
+  ], { modelOptions: { _conversationId: 'tool-timeout-session' }, toolMode: 1 }, { report: (part) => output.push(part) }, token());
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].headers['x-opencode-session'], 'tool-timeout-session');
+  assert.ok(requests[1].body.input.some((part) => part.type === 'function_call_output' && part.call_id === 'call_timeout' && part.output === '4'));
+});
 
 test('stream fetch timeout rejects when response headers never arrive', async (t) => {
   const {
