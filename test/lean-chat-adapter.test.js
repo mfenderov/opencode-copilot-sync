@@ -17,6 +17,16 @@ function sendResponses(res, model, text = 'Hello from upstream') {
   res.end();
 }
 
+async function createTimeoutServer(t, handler) {
+  const server = http.createServer(handler);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => {
+    server.close(resolve);
+    server.closeAllConnections();
+  }));
+  return server;
+}
+
 async function setup(t, handler) {
   const requests = [];
   const server = http.createServer(async (req, res) => {
@@ -46,6 +56,145 @@ async function setup(t, handler) {
   };
   return { provider, model, requests, run, sendResponses };
 }
+
+test('stream fetch timeout rejects when response headers never arrive', async (t) => {
+  const {
+    createStreamTimeoutFetch,
+    StreamTimeoutError,
+    OPEN_CODE_HEADER_TIMEOUT_MS,
+    OPEN_CODE_CHUNK_TIMEOUT_MS,
+  } = await import('../out/infrastructure/http/stream-timeout-fetch.js');
+  assert.equal(OPEN_CODE_HEADER_TIMEOUT_MS, 300_000);
+  assert.equal(OPEN_CODE_CHUNK_TIMEOUT_MS, 900_000);
+  let markClosed;
+  const requestClosed = new Promise((resolve) => { markClosed = resolve; });
+  const server = await createTimeoutServer(t, (_req, res) => res.on('close', markClosed));
+  const fetchWithTimeout = createStreamTimeoutFetch(fetch, { headerTimeoutMs: 40, chunkTimeoutMs: 100 });
+  const url = `http://127.0.0.1:${server.address().port}/headers`;
+
+  await assert.rejects(fetchWithTimeout(url), (error) => {
+    assert.ok(error instanceof StreamTimeoutError);
+    assert.match(error.message, /header/i);
+    return true;
+  });
+  await requestClosed;
+});
+
+test('stream fetch timeout rejects when response body becomes idle', async (t) => {
+  const { createStreamTimeoutFetch, StreamTimeoutError } = await import('../out/infrastructure/http/stream-timeout-fetch.js');
+  let markRequestAborted;
+  const requestAborted = new Promise((resolve) => { markRequestAborted = resolve; });
+  const server = await createTimeoutServer(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.write('first chunk');
+    res.on('close', markRequestAborted);
+  });
+  const fetchWithTimeout = createStreamTimeoutFetch(fetch, { headerTimeoutMs: 100, chunkTimeoutMs: 40 });
+  const response = await fetchWithTimeout(`http://127.0.0.1:${server.address().port}/body`);
+
+  await assert.rejects(response.text(), (error) => {
+    assert.ok(error instanceof StreamTimeoutError);
+    assert.match(error.message, /chunk|idle|body/i);
+    return true;
+  });
+  await requestAborted;
+});
+
+test('stream fetch timeout resets the body idle deadline after each chunk', async (t) => {
+  const { createStreamTimeoutFetch } = await import('../out/infrastructure/http/stream-timeout-fetch.js');
+  const server = await createTimeoutServer(t, (_req, res) => {
+    res.writeHead(201, { 'content-type': 'text/plain', 'x-stream-test': 'preserved' });
+    res.write('first');
+    setTimeout(() => res.write(' second'), 25);
+    setTimeout(() => res.end(), 65);
+  });
+  const fetchWithTimeout = createStreamTimeoutFetch(fetch, { headerTimeoutMs: 100, chunkTimeoutMs: 45 });
+  const response = await fetchWithTimeout(`http://127.0.0.1:${server.address().port}/reset`);
+
+  assert.equal(response.status, 201);
+  assert.equal(response.headers.get('x-stream-test'), 'preserved');
+  assert.equal(await response.text(), 'first second');
+});
+
+test('stream fetch timeout preserves response metadata and completes on normal EOF', async (t) => {
+  const { createStreamTimeoutFetch } = await import('../out/infrastructure/http/stream-timeout-fetch.js');
+  const server = await createTimeoutServer(t, (_req, res) => {
+    res.writeHead(202, 'Accepted for test', { 'x-stream-test': 'eof' });
+    res.end('complete');
+  });
+  const fetchWithTimeout = createStreamTimeoutFetch(fetch, { headerTimeoutMs: 100, chunkTimeoutMs: 35 });
+  const response = await fetchWithTimeout(`http://127.0.0.1:${server.address().port}/eof`);
+
+  assert.equal(response.status, 202);
+  assert.equal(response.statusText, 'Accepted for test');
+  assert.equal(response.headers.get('x-stream-test'), 'eof');
+  assert.equal(await response.text(), 'complete');
+});
+
+test('stream fetch timeout preserves caller cancellation while waiting for headers', async (t) => {
+  const { createStreamTimeoutFetch, StreamTimeoutError } = await import('../out/infrastructure/http/stream-timeout-fetch.js');
+  let markRequestAborted;
+  let markRequestStarted;
+  const requestAborted = new Promise((resolve) => { markRequestAborted = resolve; });
+  const requestStarted = new Promise((resolve) => { markRequestStarted = resolve; });
+  const server = await createTimeoutServer(t, (_req, res) => {
+    markRequestStarted();
+    res.on('close', markRequestAborted);
+  });
+  const controller = new AbortController();
+  const fetchWithTimeout = createStreamTimeoutFetch(fetch, { headerTimeoutMs: 100, chunkTimeoutMs: 100 });
+  const pending = fetchWithTimeout(`http://127.0.0.1:${server.address().port}/cancel-headers`, { signal: controller.signal });
+  await requestStarted;
+  controller.abort();
+
+  await assert.rejects(pending, (error) => {
+    assert.ok(!(error instanceof StreamTimeoutError));
+    assert.equal(error.name, 'AbortError');
+    return true;
+  });
+  await requestAborted;
+});
+
+test('stream fetch timeout preserves caller cancellation while reading the body', async (t) => {
+  const { createStreamTimeoutFetch, StreamTimeoutError } = await import('../out/infrastructure/http/stream-timeout-fetch.js');
+  let markRequestAborted;
+  const requestAborted = new Promise((resolve) => { markRequestAborted = resolve; });
+  const server = await createTimeoutServer(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.write('first');
+    res.on('close', markRequestAborted);
+  });
+  const controller = new AbortController();
+  const fetchWithTimeout = createStreamTimeoutFetch(fetch, { headerTimeoutMs: 100, chunkTimeoutMs: 100 });
+  const response = await fetchWithTimeout(`http://127.0.0.1:${server.address().port}/cancel-body`, { signal: controller.signal });
+  const reader = response.body.getReader();
+  assert.equal(new TextDecoder().decode((await reader.read()).value), 'first');
+  const pendingRead = reader.read();
+  controller.abort();
+
+  await assert.rejects(pendingRead, (error) => {
+    assert.ok(!(error instanceof StreamTimeoutError));
+    assert.equal(error.name, 'AbortError');
+    return true;
+  });
+  await requestAborted;
+});
+
+test('stream fetch timeout body cancellation aborts the underlying request', async (t) => {
+  const { createStreamTimeoutFetch } = await import('../out/infrastructure/http/stream-timeout-fetch.js');
+  let markRequestAborted;
+  const requestAborted = new Promise((resolve) => { markRequestAborted = resolve; });
+  const server = await createTimeoutServer(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.write('first');
+    res.on('close', markRequestAborted);
+  });
+  const fetchWithTimeout = createStreamTimeoutFetch(fetch, { headerTimeoutMs: 100, chunkTimeoutMs: 100 });
+  const response = await fetchWithTimeout(`http://127.0.0.1:${server.address().port}/cancel-body-stream`);
+
+  await response.body.cancel();
+  await requestAborted;
+});
 
 test('stream diagnostics record request, parts and completion without changing output', async (t) => {
   const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
