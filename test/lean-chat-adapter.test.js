@@ -238,6 +238,58 @@ test('chat adapter resolves on terminal protocol completion while the HTTP body 
   assert.equal(responseEnded, false, 'the handler must leave the HTTP response open');
   assert.equal(requests.length, 1);
   assert.equal(parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''), 'Finished before idle timeout');
+  const usage = parts.find((part) => part instanceof vscode.LanguageModelDataPart && part.mimeType === 'usage');
+  assert.ok(usage, 'SDK finish must report usage even when the body stays open');
+  const usageValue = JSON.parse(new TextDecoder().decode(usage.data));
+  assert.equal(usageValue.prompt_tokens, 10);
+  assert.equal(usageValue.completion_tokens, 5);
+  openResponse.end();
+});
+
+test('chat-completions terminal chunk flushes buffered tool calls and usage on an open body', async (t) => {
+  let markResponseSent;
+  const responseSent = new Promise((resolve) => { markResponseSent = resolve; });
+  let openResponse;
+  const terminalPolicy = { ...testStreamPolicy, chunkTimeoutMs: 900_000 };
+  const { provider, model, requests } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    openResponse = res;
+    const emit = (chunk) => res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    emit({
+      id: 'chatcmpl-terminal-tool', object: 'chat.completion.chunk', created: 1, model: req.body.model,
+      choices: [{
+        index: 0,
+        delta: { tool_calls: [{ index: 0, id: 'call_terminal', type: 'function', function: { name: 'calculator', arguments: '{"value":7}' } }] },
+        finish_reason: 'tool_calls',
+      }],
+      usage: { prompt_tokens: 12, completion_tokens: 6, total_tokens: 18 },
+    });
+    markResponseSent();
+  }, terminalPolicy);
+  const chatModel = { ...model, apiType: 'chat-completions' };
+  provider.updateModels([chatModel]);
+  const partsPromise = provider.provideLanguageModelChatResponse(chatModel, messages('calculate'), {
+    modelOptions: { _conversationId: 'chat-terminal-tool' },
+    toolMode: vscode.LanguageModelChatToolMode.Auto,
+    tools: [{ name: 'calculator', description: 'calculate', inputSchema: { type: 'object', properties: { value: { type: 'number' } } } }],
+  }, { report: (part) => parts.push(part) }, token());
+  const parts = [];
+  await Promise.race([
+    partsPromise,
+    responseSent.then(() => new Promise((_resolve, reject) => setTimeout(() => reject(new Error('provider waited for HTTP EOF after finish_reason')), 100))),
+  ]);
+
+  assert.equal(requests.length, 1);
+  const call = parts.find((part) => part instanceof vscode.LanguageModelToolCallPart);
+  assert.ok(call, 'SDK flush must emit the buffered tool call');
+  assert.equal(call.callId, 'call_terminal');
+  assert.equal(call.name, 'calculator');
+  assert.deepEqual(call.input, { value: 7 });
+  const usage = parts.find((part) => part instanceof vscode.LanguageModelDataPart && part.mimeType === 'usage');
+  assert.ok(usage, 'SDK finish must report usage from the terminal chunk');
+  const usageValue = JSON.parse(new TextDecoder().decode(usage.data));
+  assert.equal(usageValue.prompt_tokens, 12);
+  assert.equal(usageValue.completion_tokens, 6);
   openResponse.end();
 });
 
@@ -710,9 +762,14 @@ test('emits completed Responses text when the SDK stream has no text delta', asy
   );
 });
 
-test('surfaces Responses output-limit truncation after partial text', async (t) => {
+test('surfaces Responses output-limit truncation promptly when an incomplete response leaves the body open', async (t) => {
+  let markResponseSent;
+  const responseSent = new Promise((resolve) => { markResponseSent = resolve; });
+  let openResponse;
+  const terminalPolicy = { ...testStreamPolicy, chunkTimeoutMs: 900_000 };
   const { run } = await setup(t, (req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream' });
+    openResponse = res;
     const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
     emit({ type: 'response.created', response: { id: 'resp_incomplete', created_at: 1, model: req.body.model } });
     emit({ type: 'response.output_text.delta', item_id: 'msg_incomplete', delta: 'Partial answer' });
@@ -724,14 +781,23 @@ test('surfaces Responses output-limit truncation after partial text', async (t) 
         usage: { input_tokens: 10, output_tokens: 5 },
       },
     });
-    res.end();
-  });
+    markResponseSent();
+  }, terminalPolicy);
 
-  const parts = await run('incomplete-session');
+  const parts = await Promise.race([
+    run('incomplete-session'),
+    responseSent.then(() => new Promise((_resolve, reject) => setTimeout(() => reject(new Error('provider waited for HTTP EOF after response.incomplete')), 100))),
+  ]);
   const text = parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join('');
   assert.match(text, /Partial answer/);
   assert.match(text, /output token limit/i);
   assert.match(text, /may be incomplete/i);
+  const usage = parts.find((part) => part instanceof vscode.LanguageModelDataPart && part.mimeType === 'usage');
+  assert.ok(usage, 'SDK finish must report usage for an incomplete response');
+  const usageValue = JSON.parse(new TextDecoder().decode(usage.data));
+  assert.equal(usageValue.prompt_tokens, 10);
+  assert.equal(usageValue.completion_tokens, 5);
+  openResponse.end();
 });
 
 test('surfaces when a Responses stream closes without a completion event', async (t) => {

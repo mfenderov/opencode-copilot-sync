@@ -62,14 +62,6 @@ function isStreamTimeout(error: unknown): boolean {
   return error instanceof StreamTimeoutError;
 }
 
-function isRawCompletion(rawValue: unknown): boolean {
-  if (!record(rawValue)) return false;
-  if (rawValue.type === 'response.completed' || rawValue.type === 'response.incomplete') return true;
-  return Array.isArray(rawValue.choices) && rawValue.choices.some((choice) =>
-    record(choice) && choice.finish_reason !== null && choice.finish_reason !== undefined
-  );
-}
-
 // Leave headroom below OpenCode's 250-value and 15,000-character gateway limits.
 const MAX_TOOL_ENUM_VALUES = 200;
 const MAX_TOOL_ENUM_CHARS = 12000;
@@ -537,13 +529,77 @@ function reportPart(
   }
 }
 
+function isTerminalOpenAIEvent(frame: string, apiType: CustomEndpointModel['apiType']): boolean {
+  const data = frame.split(/\r\n|\r|\n/)
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).replace(/^ /, ''))
+    .join('\n');
+  if (apiType === 'chat-completions' && data === '[DONE]') return true;
+  if (!data) return false;
+  let rawValue: unknown;
+  try {
+    rawValue = JSON.parse(data);
+  } catch {
+    return false;
+  }
+  if (!record(rawValue)) return false;
+  if (apiType === 'responses') return rawValue.type === 'response.completed' || rawValue.type === 'response.incomplete';
+  return Array.isArray(rawValue.choices) && rawValue.choices.some((choice) =>
+    record(choice) && choice.finish_reason !== null && choice.finish_reason !== undefined
+  );
+}
+
+// Close OpenAI SSE input at protocol completion so SDK transforms flush without waiting for HTTP EOF.
+function createProtocolCompletionFetch(baseFetch: typeof fetch, apiType: CustomEndpointModel['apiType']): typeof fetch {
+  if (apiType === 'messages') return baseFetch;
+  return async (input, init) => {
+    const response = await baseFetch(input, init);
+    if (!response.body) return response;
+
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+    let incompleteFrame = '';
+    const body = (response.body as ReadableStream<Uint8Array>).pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          const text = decoder.decode(chunk, { stream: true });
+          const previousIncompleteLength = incompleteFrame.length;
+          const bufferedText = incompleteFrame + text;
+          const separatorPattern = /\r\n\r\n|\n\n|\r\r/g;
+          let frameStart = 0;
+          for (const separator of bufferedText.matchAll(separatorPattern)) {
+            const frameEnd = separator.index;
+            const nextFrameStart = frameEnd + separator[0].length;
+            if (isTerminalOpenAIEvent(bufferedText.slice(frameStart, frameEnd), apiType)) {
+              const currentTextEnd = Math.max(0, nextFrameStart - previousIncompleteLength);
+              if (currentTextEnd > 0) controller.enqueue(encoder.encode(text.slice(0, currentTextEnd)));
+              controller.terminate();
+              return;
+            }
+            frameStart = nextFrameStart;
+          }
+
+          incompleteFrame = bufferedText.slice(frameStart);
+          if (text) controller.enqueue(encoder.encode(text));
+        },
+        flush(controller) {
+          const remainder = decoder.decode();
+          if (remainder) controller.enqueue(encoder.encode(remainder));
+        },
+      })
+    );
+    return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+  };
+}
+
 function protocolModel(model: CustomEndpointModel, apiKey: string, streamPolicy: StreamTimeoutOptions): LanguageModelV3 {
   const baseURL = model.url.replace(/\/(chat\/completions|responses|messages)\/?$/, '');
   const proxyFetch: typeof fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     return fetch(input, await withProxy(url, { ...init }));
   };
-  const sdkFetch = createStreamTimeoutFetch(proxyFetch, streamPolicy);
+  const timeoutFetch = createStreamTimeoutFetch(proxyFetch, streamPolicy);
+  const sdkFetch = createProtocolCompletionFetch(timeoutFetch, model.apiType);
   if (model.apiType === 'messages') return createAnthropic({ baseURL, authToken: apiKey, fetch: sdkFetch })(model.id);
   const openai = createOpenAI({ baseURL, apiKey, fetch: sdkFetch });
   return model.apiType === 'responses' ? openai.responses(model.id) : openai.chat(model.id);
@@ -612,8 +668,7 @@ function createStreamAttemptState(request: StreamAttemptRequest): StreamAttemptS
 }
 
 function isTerminalPart(part: LanguageModelV3StreamPart): boolean {
-  return part.type === 'finish' || (part.type === 'raw' && isRawCompletion(part.rawValue) &&
-    !(record(part.rawValue) && part.rawValue.type === 'response.incomplete'));
+  return part.type === 'finish';
 }
 
 async function requestStream(request: StreamAttemptRequest): Promise<AsyncIterable<LanguageModelV3StreamPart>> {
