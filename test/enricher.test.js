@@ -28,6 +28,16 @@ test('enrichModel handles standard Zen models without session header', () => {
   assert.equal(model.url, 'https://opencode.ai/zen/v1/chat/completions');
 });
 
+test('synced Responses models delegate full-history transport to VS Code', () => {
+  const model = enrichModel('muse-spark-1.3-contributor', {
+    isGo: true,
+    modelsDevData: { provider: { npm: '@ai-sdk/openai' } },
+  });
+  assert.equal(model.apiType, 'responses');
+  assert.equal(model.statefulResponses, false);
+  assert.equal(enrichModel('kimi-k3', { isGo: true }).statefulResponses, undefined);
+});
+
 test('enrichModel preserves version decimals in display name', () => {
   const model = enrichModel('minimax-m2.7', { isGo: true });
   assert.equal(model.name, 'MiniMax M2.7 (OpenCode Go)');

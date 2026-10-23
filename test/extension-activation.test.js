@@ -50,6 +50,14 @@ function createMockContext() {
       delete: async (key) => { secretsMap.delete(key); },
     },
     globalStorageUri: { fsPath: storageDir },
+    globalState: {
+      get: (key, fallback) => key === 'opencode.models' ? [{
+        id: 'cached-model', name: 'Cached model', family: 'cached-model', apiType: 'responses',
+        url: 'https://opencode.ai/zen/go/v1', maxInputTokens: 112000, maxOutputTokens: 16000,
+        contextWindow: 128000, vision: false, thinking: false, toolCalling: true,
+      }] : fallback,
+      update: async () => {},
+    },
     subscriptions: [],
   };
 }
@@ -58,11 +66,49 @@ test('activation announces provider models before any network call', async () =>
   const context = createMockContext();
   const { chatProvider } = await activate(context);
 
-  // _onDidChange is TS-private but runtime-accessible; identity check is the
-  // only way to attribute the fire to the chat provider's emitter.
-  assert.ok(
-    firedEmitters.includes(chatProvider._onDidChange),
-    'expected the chat provider change event to fire during activation'
-  );
+  const models = chatProvider.provideLanguageModelChatInformation();
+  assert.equal(models.length, 1);
+  assert.equal(models[0].id, 'cached-model');
+  assert.equal(models[0].maxInputTokens, 112000);
   assert.equal(fetchCalls.length, 0);
+  for (const disposable of context.subscriptions) disposable.dispose?.();
+  fs.rmSync(context.globalStorageUri.fsPath, { recursive: true, force: true });
+});
+
+test('activation wires stream diagnostics logging when the setting is enabled', async () => {
+  const context = createMockContext();
+  const configValues = new Map([['opencode.streamDiagnostics', true]]);
+  const originalGetConfiguration = vscode.workspace.getConfiguration;
+  vscode.workspace.getConfiguration = (section) => ({
+    get: (key, defaultValue) => {
+      const fullKey = section ? `${section}.${key}` : key;
+      return configValues.has(fullKey) ? configValues.get(fullKey) : defaultValue;
+    },
+    update: async () => {},
+  });
+  try {
+    const logged = [];
+    const originalCreateChannel = vscode.window.createOutputChannel;
+    vscode.window.createOutputChannel = () => {
+      const channel = originalCreateChannel();
+      const originalInfo = channel.info.bind(channel);
+      channel.info = (message) => {
+        logged.push(String(message));
+        return originalInfo(message);
+      };
+      return channel;
+    };
+    try {
+      const { chatProvider } = await activate(context);
+      const seen = logged.some((line) => line.includes('[Stream]'));
+      assert.equal(seen, false, 'activation itself must not emit stream lines');
+      assert.ok(chatProvider, 'provider must be constructed with diagnostics wiring');
+    } finally {
+      vscode.window.createOutputChannel = originalCreateChannel;
+    }
+  } finally {
+    vscode.workspace.getConfiguration = originalGetConfiguration;
+  }
+  for (const disposable of context.subscriptions) disposable.dispose?.();
+  fs.rmSync(context.globalStorageUri.fsPath, { recursive: true, force: true });
 });

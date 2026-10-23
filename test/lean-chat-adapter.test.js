@@ -1,0 +1,1054 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import * as vscode from 'vscode';
+
+const messages = (text) => [{ role: vscode.LanguageModelChatMessageRole.User, content: [new vscode.LanguageModelTextPart(text)] }];
+const token = () => ({ isCancellationRequested: false, onCancellationRequested: new vscode.EventEmitter().event });
+
+function sendResponses(res, model, text = 'Hello from upstream') {
+  res.writeHead(200, { 'content-type': 'text/event-stream' });
+  const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+  emit({ type: 'response.created', response: { id: 'resp_test', created_at: 1, model } });
+  emit({ type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: 'msg_test', role: 'assistant', content: [] } });
+  emit({ type: 'response.output_text.delta', item_id: 'msg_test', output_index: 0, content_index: 0, delta: text });
+  emit({ type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: 'msg_test', role: 'assistant', content: [{ type: 'output_text', text, annotations: [] }] } });
+  emit({ type: 'response.completed', response: { id: 'resp_test', status: 'completed', usage: { input_tokens: 10, output_tokens: 5, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } } } });
+  res.end();
+}
+
+async function createTimeoutServer(t, handler) {
+  const server = http.createServer(handler);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => {
+    server.close(resolve);
+    server.closeAllConnections();
+  }));
+  return server;
+}
+
+async function setup(t, handler, streamPolicy = {}) {
+  const requests = [];
+  const server = http.createServer(async (req, res) => {
+    let data = '';
+    for await (const chunk of req) data += chunk;
+    const request = { headers: req.headers, body: JSON.parse(data), path: req.url };
+    requests.push(request);
+    handler(request, res);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }));
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  const provider = new OpenCodeChatAdapter({ secrets: { get: async () => 'sk-local-test' } }, undefined, streamPolicy);
+  const model = {
+    id: 'new-model-with-no-known-prefix', name: 'New model', family: 'new-model-with-no-known-prefix',
+    apiType: 'responses', url: `http://127.0.0.1:${server.address().port}/v1`,
+    maxInputTokens: 112000, maxOutputTokens: 16000, contextWindow: 128000,
+    vision: false, thinking: false, toolCalling: true,
+  };
+  provider.updateModels([model]);
+  const run = async (session, text = 'hello', extra = {}) => {
+    const parts = [];
+    await provider.provideLanguageModelChatResponse(model, messages(text), {
+      modelOptions: { _conversationId: session }, toolMode: vscode.LanguageModelChatToolMode.Auto, ...extra,
+    }, { report: (part) => parts.push(part) }, token());
+    return parts;
+  };
+  return { provider, model, requests, run, sendResponses };
+}
+
+const testStreamPolicy = {
+  headerTimeoutMs: 35,
+  chunkTimeoutMs: 35,
+  retryDelayMs: () => 0,
+};
+
+test('chat adapter estimates string token counts by model family and fallback', async () => {
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  const provider = new OpenCodeChatAdapter({ secrets: { get: async () => 'sk-local-test' } });
+  const input = 'x'.repeat(360);
+  const estimates = [
+    ['gpt-5.5', 90],
+    ['muse-spark-1.3', 90],
+    ['gemini-2.5-pro', 90],
+    ['claude-3.7-sonnet', 98],
+    ['grok-4', 106],
+    ['deepseek-v4-pro', 106],
+    ['qwen3.7-max', 106],
+    ['llama-3.3', 106],
+    ['mimo-v2.5', 106],
+    ['mixtral-8x7b', 106],
+    ['kimi-k3', 106],
+    ['glm-5.3', 106],
+    ['something-new-99', 100],
+  ];
+
+  for (const [id, expected] of estimates) {
+    assert.equal(await provider.provideTokenCount({ id }, input, token()), expected, id);
+  }
+  provider.dispose();
+});
+
+test('chat adapter estimates message token counts from serialized content', async () => {
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  const provider = new OpenCodeChatAdapter({ secrets: { get: async () => 'sk-local-test' } });
+  const input = messages('x'.repeat(360))[0];
+
+  assert.equal(await provider.provideTokenCount({ id: 'gpt-5.5' }, input, token()), 99);
+  assert.equal(await provider.provideTokenCount({ id: 'deepseek-v4-pro' }, input, token()), 117);
+  provider.dispose();
+});
+
+test('chat adapter estimates at least one token for empty string input', async () => {
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  const provider = new OpenCodeChatAdapter({ secrets: { get: async () => 'sk-local-test' } });
+
+  assert.equal(await provider.provideTokenCount({ id: 'gpt-5.5' }, '', token()), 1);
+  provider.dispose();
+});
+
+test('chat adapter retries a header timeout with the original prompt and session', async (t) => {
+  const { run, requests, model } = await setup(t, (req, res) => {
+    if (requests.length === 1) return;
+    sendResponses(res, req.body.model, 'Recovered answer');
+  }, testStreamPolicy);
+  const parts = await run('retry-session', 'original question');
+
+  assert.equal(requests.length, 2);
+  assert.ok(requests.every((request) => request.headers['x-opencode-session'] === 'retry-session'));
+  assert.deepEqual(requests[1].body.input, requests[0].body.input);
+  assert.equal(parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''), 'Recovered answer');
+});
+
+test('chat adapter stops after three timeout retries and reports one interruption notice', async (t) => {
+  const { run, requests } = await setup(t, (_req, res) => {
+    if (requests.length !== 1) return;
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write(`data: ${JSON.stringify({ type: 'response.created', response: { id: 'resp_exhausted', created_at: 1, model: 'new-model-with-no-known-prefix' } })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'response.output_text.delta', item_id: 'msg_exhausted', delta: 'unfinished' })}\n\n`);
+  }, testStreamPolicy);
+  const parts = await run('retry-exhaustion', 'keep trying');
+
+  assert.equal(requests.length, 4);
+  const text = parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join('');
+  assert.equal(text, 'unfinished\n\nOpenCode: The response was interrupted after repeated stream timeouts.');
+});
+
+test('chat adapter does not retry a caller-cancelled pending request', async (t) => {
+  let markStarted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const { provider, model, requests } = await setup(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.flushHeaders();
+    markStarted();
+  }, testStreamPolicy);
+  const emitter = new vscode.EventEmitter();
+  const cancel = { isCancellationRequested: false, onCancellationRequested: emitter.event };
+  const parts = [];
+  t.after(() => emitter.dispose());
+  const pending = provider.provideLanguageModelChatResponse(model, messages('cancel this'), {
+    modelOptions: { _conversationId: 'cancel-timeout-session' }, toolMode: 1,
+  }, { report: (part) => parts.push(part) }, cancel);
+  const settled = pending.then(() => 'resolved', (error) => { assert.match(error.name, /Abort/); return 'aborted'; });
+  await started;
+  cancel.isCancellationRequested = true;
+  emitter.fire();
+  assert.equal(await settled, 'aborted');
+  assert.equal(requests.length, 1);
+  assert.deepEqual(parts, []);
+});
+
+test('chat adapter defaults to OpenCode capped exponential retry delays with bounded jitter', async (t) => {
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  const originalRandom = Math.random;
+  let randomValue = 0;
+  Math.random = () => randomValue++ === 0 ? 0 : 1;
+  const provider = new OpenCodeChatAdapter({ secrets: { get: async () => 'sk-local-test' } }, undefined, { headerTimeoutMs: 1 });
+  t.after(() => { Math.random = originalRandom; provider.dispose(); });
+  const policy = provider['streamPolicy'];
+
+  assert.equal(policy.headerTimeoutMs, 1);
+  assert.equal(policy.chunkTimeoutMs, 900_000);
+  assert.deepEqual([policy.retryDelayMs(1), policy.retryDelayMs(2), policy.retryDelayMs(3), policy.retryDelayMs(4)], [2000, 4100, 8100, 10000]);
+});
+
+test('chat adapter cancellation during retry backoff prevents the next attempt', async (t) => {
+  let markClosed;
+  const requestClosed = new Promise((resolve) => { markClosed = resolve; });
+  const policy = { ...testStreamPolicy, retryDelayMs: () => 100 };
+  const { provider, model, requests } = await setup(t, (_req, res) => res.on('close', markClosed), policy);
+  const emitter = new vscode.EventEmitter();
+  const cancel = { isCancellationRequested: false, onCancellationRequested: emitter.event };
+  t.after(() => emitter.dispose());
+  const pending = provider.provideLanguageModelChatResponse(model, messages('cancel during backoff'), {
+    modelOptions: { _conversationId: 'cancel-backoff-session' }, toolMode: 1,
+  }, { report() {} }, cancel);
+  await requestClosed;
+  cancel.isCancellationRequested = true;
+  emitter.fire();
+  await pending;
+  assert.equal(requests.length, 1);
+});
+
+test('chat adapter continues timed-out partial text in a separate prompt message', async (t) => {
+  const { run, requests } = await setup(t, (req, res) => {
+    if (requests.length === 1) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ type: 'response.created', response: { id: 'resp_partial', created_at: 1, model: req.body.model } })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: 'response.output_text.delta', item_id: 'msg_partial', delta: 'partial ' })}\n\n`);
+      return;
+    }
+    sendResponses(res, req.body.model, 'completion');
+  }, testStreamPolicy);
+  const parts = await run('partial-session', 'original question');
+
+  assert.equal(requests.length, 2);
+  assert.equal(parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''), 'partial completion');
+  assert.deepEqual(requests[1].body.input.slice(-2), [
+    { role: 'assistant', content: [{ type: 'output_text', text: 'partial ' }] },
+    { role: 'user', content: [{ type: 'input_text', text: 'The previous response was interrupted. Continue from where you left off without repeating completed content.' }] },
+  ]);
+});
+
+test('chat adapter resolves on terminal protocol completion while the HTTP body remains open', async (t) => {
+  let markResponseSent;
+  const responseSent = new Promise((resolve) => { markResponseSent = resolve; });
+  let responseEnded = false;
+  let openResponse;
+  const terminalPolicy = { ...testStreamPolicy, chunkTimeoutMs: 900_000 };
+  const { run, requests } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    openResponse = res;
+    res.on('finish', () => { responseEnded = true; });
+    const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+    const text = 'Finished before idle timeout';
+    emit({ type: 'response.created', response: { id: 'resp_finish_idle', created_at: 1, model: req.body.model } });
+    emit({ type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: 'msg_finish_idle', role: 'assistant', content: [] } });
+    emit({ type: 'response.output_text.delta', item_id: 'msg_finish_idle', output_index: 0, content_index: 0, delta: text });
+    emit({ type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: 'msg_finish_idle', role: 'assistant', content: [{ type: 'output_text', text, annotations: [] }] } });
+    emit({ type: 'response.completed', response: { id: 'resp_finish_idle', status: 'completed', usage: { input_tokens: 10, output_tokens: 5 } } });
+    markResponseSent();
+  }, terminalPolicy);
+  const partsPromise = run('finish-before-cleanup', 'finish this');
+  const parts = await Promise.race([
+    partsPromise,
+    responseSent.then(() => new Promise((_resolve, reject) => setTimeout(() => reject(new Error('provider waited for HTTP EOF after terminal completion')), 100))),
+  ]);
+
+  assert.equal(responseEnded, false, 'the handler must leave the HTTP response open');
+  assert.equal(requests.length, 1);
+  assert.equal(parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''), 'Finished before idle timeout');
+  const usage = parts.find((part) => part instanceof vscode.LanguageModelDataPart && part.mimeType === 'usage');
+  assert.ok(usage, 'SDK finish must report usage even when the body stays open');
+  const usageValue = JSON.parse(new TextDecoder().decode(usage.data));
+  assert.equal(usageValue.prompt_tokens, 10);
+  assert.equal(usageValue.completion_tokens, 5);
+  openResponse.end();
+});
+
+test('chat-completions finish_reason preserves a following usage-only chunk on an open body', async (t) => {
+  let markResponseSent;
+  const responseSent = new Promise((resolve) => { markResponseSent = resolve; });
+  let openResponse;
+  const terminalPolicy = { ...testStreamPolicy, chunkTimeoutMs: 900_000 };
+  const { provider, model, requests } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    openResponse = res;
+    const emit = (chunk) => res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    emit({
+      id: 'chatcmpl-separate-usage', object: 'chat.completion.chunk', created: 1, model: req.body.model,
+      choices: [{ index: 0, delta: { content: 'Answer' }, finish_reason: 'stop' }],
+    });
+    emit({
+      id: 'chatcmpl-separate-usage', object: 'chat.completion.chunk', created: 1, model: req.body.model,
+      choices: [], usage: { prompt_tokens: 12, completion_tokens: 6, total_tokens: 18 },
+    });
+    markResponseSent();
+  }, terminalPolicy);
+  const chatModel = { ...model, apiType: 'chat-completions' };
+  provider.updateModels([chatModel]);
+  const parts = [];
+  const partsPromise = provider.provideLanguageModelChatResponse(chatModel, messages('answer'), {
+    modelOptions: { _conversationId: 'chat-separate-usage' }, toolMode: 1,
+  }, { report: (part) => parts.push(part) }, token());
+  await Promise.race([
+    partsPromise,
+    responseSent.then(() => new Promise((_resolve, reject) => setTimeout(() => reject(new Error('provider waited for HTTP EOF after the usage trailer')), 300))),
+  ]);
+
+  assert.equal(requests.length, 1);
+  assert.equal(parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''), 'Answer');
+  const usage = parts.find((part) => part instanceof vscode.LanguageModelDataPart && part.mimeType === 'usage');
+  assert.ok(usage, 'SDK finish must report usage from the trailing chunk');
+  const usageValue = JSON.parse(new TextDecoder().decode(usage.data));
+  assert.equal(usageValue.prompt_tokens, 12);
+  assert.equal(usageValue.completion_tokens, 6);
+  openResponse.end();
+});
+
+test('chat-completions finish_reason without a trailer completes promptly on an open body', async (t) => {
+  let openResponse;
+  const terminalPolicy = { ...testStreamPolicy, chunkTimeoutMs: 900_000 };
+  const { provider, model, requests } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    openResponse = res;
+    res.write(`data: ${JSON.stringify({
+      id: 'chatcmpl-no-trailer', object: 'chat.completion.chunk', created: 1, model: req.body.model,
+      choices: [{ index: 0, delta: { content: 'Answer' }, finish_reason: 'stop' }],
+    })}\n\n`);
+  }, terminalPolicy);
+  const chatModel = { ...model, apiType: 'chat-completions' };
+  provider.updateModels([chatModel]);
+  const parts = [];
+  await Promise.race([
+    provider.provideLanguageModelChatResponse(chatModel, messages('answer'), {
+      modelOptions: { _conversationId: 'chat-no-trailer' }, toolMode: 1,
+    }, { report: (part) => parts.push(part) }, token()),
+    new Promise((_resolve, reject) => setTimeout(() => reject(new Error('provider waited for the long chunk timeout after finish_reason')), 300)),
+  ]);
+
+  assert.equal(requests.length, 1, 'a protocol finish must not be retried');
+  assert.equal(parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''), 'Answer');
+  const usage = parts.find((part) => part instanceof vscode.LanguageModelDataPart && part.mimeType === 'usage');
+  assert.ok(usage, 'SDK finish must flush after the trailer grace period');
+  openResponse.end();
+});
+
+test('chat-completions terminal chunk flushes buffered tool calls and usage on an open body', async (t) => {
+  let markResponseSent;
+  const responseSent = new Promise((resolve) => { markResponseSent = resolve; });
+  let openResponse;
+  const terminalPolicy = { ...testStreamPolicy, chunkTimeoutMs: 900_000 };
+  const { provider, model, requests } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    openResponse = res;
+    const emit = (chunk) => res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    emit({
+      id: 'chatcmpl-terminal-tool', object: 'chat.completion.chunk', created: 1, model: req.body.model,
+      choices: [{
+        index: 0,
+        delta: { tool_calls: [{ index: 0, id: 'call_terminal', type: 'function', function: { name: 'calculator', arguments: '{"value":7}' } }] },
+        finish_reason: 'tool_calls',
+      }],
+      usage: { prompt_tokens: 12, completion_tokens: 6, total_tokens: 18 },
+    });
+    markResponseSent();
+  }, terminalPolicy);
+  const chatModel = { ...model, apiType: 'chat-completions' };
+  provider.updateModels([chatModel]);
+  const partsPromise = provider.provideLanguageModelChatResponse(chatModel, messages('calculate'), {
+    modelOptions: { _conversationId: 'chat-terminal-tool' },
+    toolMode: vscode.LanguageModelChatToolMode.Auto,
+    tools: [{ name: 'calculator', description: 'calculate', inputSchema: { type: 'object', properties: { value: { type: 'number' } } } }],
+  }, { report: (part) => parts.push(part) }, token());
+  const parts = [];
+  await Promise.race([
+    partsPromise,
+    responseSent.then(() => new Promise((_resolve, reject) => setTimeout(() => reject(new Error('provider waited for HTTP EOF after finish_reason')), 100))),
+  ]);
+
+  assert.equal(requests.length, 1);
+  const call = parts.find((part) => part instanceof vscode.LanguageModelToolCallPart);
+  assert.ok(call, 'SDK flush must emit the buffered tool call');
+  assert.equal(call.callId, 'call_terminal');
+  assert.equal(call.name, 'calculator');
+  assert.deepEqual(call.input, { value: 7 });
+  const usage = parts.find((part) => part instanceof vscode.LanguageModelDataPart && part.mimeType === 'usage');
+  assert.ok(usage, 'SDK finish must report usage from the terminal chunk');
+  const usageValue = JSON.parse(new TextDecoder().decode(usage.data));
+  assert.equal(usageValue.prompt_tokens, 12);
+  assert.equal(usageValue.completion_tokens, 6);
+  openResponse.end();
+});
+
+test('chat adapter hands timed-out tool calls to VS Code for the next turn', async (t) => {
+  const { run, requests, provider, model } = await setup(t, (req, res) => {
+    if (requests.length > 1) return sendResponses(res, req.body.model, 'Tool result received');
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+    const item = { type: 'function_call', id: 'fc_timeout', call_id: 'call_timeout', name: 'calculator', arguments: '{"value":4}', status: 'completed' };
+    emit({ type: 'response.created', response: { id: 'resp_tool_timeout', created_at: 1, model: req.body.model } });
+    emit({ type: 'response.output_item.added', output_index: 0, item: { ...item, arguments: '', status: 'in_progress' } });
+    emit({ type: 'response.function_call_arguments.delta', output_index: 0, item_id: 'fc_timeout', delta: '{"value":4}' });
+    emit({ type: 'response.output_item.done', output_index: 0, item });
+  }, testStreamPolicy);
+  const calls = (await run('tool-timeout-session', 'calculate', {
+    tools: [{ name: 'calculator', description: 'calculate', inputSchema: { type: 'object', properties: { value: { type: 'number' } } } }],
+    toolMode: vscode.LanguageModelChatToolMode.Required,
+  })).filter((part) => part instanceof vscode.LanguageModelToolCallPart);
+
+  assert.equal(requests.length, 1, 'a ready tool call must stop retry and continuation');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].callId, 'call_timeout');
+  const output = [];
+  await provider.provideLanguageModelChatResponse(model, [
+    ...messages('calculate'),
+    { role: 2, content: calls },
+    { role: 1, content: [new vscode.LanguageModelToolResultPart('call_timeout', [new vscode.LanguageModelTextPart('4')])] },
+  ], { modelOptions: { _conversationId: 'tool-timeout-session' }, toolMode: 1 }, { report: (part) => output.push(part) }, token());
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].headers['x-opencode-session'], 'tool-timeout-session');
+  assert.ok(requests[1].body.input.some((part) => part.type === 'function_call_output' && part.call_id === 'call_timeout' && part.output === '4'));
+});
+
+test('stream fetch timeout rejects when response headers never arrive', async (t) => {
+  const {
+    createStreamTimeoutFetch,
+    StreamTimeoutError,
+    OPEN_CODE_HEADER_TIMEOUT_MS,
+    OPEN_CODE_CHUNK_TIMEOUT_MS,
+  } = await import('../out/infrastructure/http/stream-timeout-fetch.js');
+  assert.equal(OPEN_CODE_HEADER_TIMEOUT_MS, 300_000);
+  assert.equal(OPEN_CODE_CHUNK_TIMEOUT_MS, 900_000);
+  let markClosed;
+  const requestClosed = new Promise((resolve) => { markClosed = resolve; });
+  const server = await createTimeoutServer(t, (_req, res) => res.on('close', markClosed));
+  const fetchWithTimeout = createStreamTimeoutFetch(fetch, { headerTimeoutMs: 40, chunkTimeoutMs: 100 });
+  const url = `http://127.0.0.1:${server.address().port}/headers`;
+
+  await assert.rejects(fetchWithTimeout(url), (error) => {
+    assert.ok(error instanceof StreamTimeoutError);
+    assert.match(error.message, /header/i);
+    return true;
+  });
+  await requestClosed;
+});
+
+test('stream fetch timeout rejects when response body becomes idle', async (t) => {
+  const { createStreamTimeoutFetch, StreamTimeoutError } = await import('../out/infrastructure/http/stream-timeout-fetch.js');
+  let markRequestAborted;
+  const requestAborted = new Promise((resolve) => { markRequestAborted = resolve; });
+  const server = await createTimeoutServer(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.write('first chunk');
+    res.on('close', markRequestAborted);
+  });
+  const fetchWithTimeout = createStreamTimeoutFetch(fetch, { headerTimeoutMs: 100, chunkTimeoutMs: 40 });
+  const response = await fetchWithTimeout(`http://127.0.0.1:${server.address().port}/body`);
+
+  await assert.rejects(response.text(), (error) => {
+    assert.ok(error instanceof StreamTimeoutError);
+    assert.match(error.message, /chunk|idle|body/i);
+    return true;
+  });
+  await requestAborted;
+});
+
+test('stream fetch timeout aborts an idle upstream while the consumer pauses after one chunk', async (t) => {
+  const { createStreamTimeoutFetch, StreamTimeoutError } = await import('../out/infrastructure/http/stream-timeout-fetch.js');
+  let markRequestAborted;
+  let markSecondChunkWritten;
+  const requestAborted = new Promise((resolve) => { markRequestAborted = resolve; });
+  const secondChunkWritten = new Promise((resolve) => { markSecondChunkWritten = resolve; });
+  const server = await createTimeoutServer(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.write('first chunk');
+    res.on('close', markRequestAborted);
+    setTimeout(() => {
+      res.write(' second chunk');
+      markSecondChunkWritten();
+    }, 30);
+  });
+  const fetchWithTimeout = createStreamTimeoutFetch(fetch, { headerTimeoutMs: 100, chunkTimeoutMs: 100 });
+  const response = await fetchWithTimeout(`http://127.0.0.1:${server.address().port}/paused-reader`);
+  const reader = response.body.getReader();
+  assert.equal(new TextDecoder().decode((await reader.read()).value), 'first chunk');
+  await secondChunkWritten;
+
+  let timeoutTimer;
+  await Promise.race([
+    requestAborted,
+    new Promise((_resolve, reject) => {
+      timeoutTimer = setTimeout(() => reject(new Error('upstream was not aborted while consumer was paused')), 150);
+    }),
+  ]).finally(() => clearTimeout(timeoutTimer));
+  await assert.rejects(reader.read(), (error) => {
+    assert.ok(error instanceof StreamTimeoutError);
+    return true;
+  });
+});
+
+test('stream fetch timeout resets the body idle deadline after each chunk', async (t) => {
+  const { createStreamTimeoutFetch } = await import('../out/infrastructure/http/stream-timeout-fetch.js');
+  const server = await createTimeoutServer(t, (_req, res) => {
+    res.writeHead(201, { 'content-type': 'text/plain', 'x-stream-test': 'preserved' });
+    res.write('first');
+    setTimeout(() => res.write(' second'), 25);
+    setTimeout(() => res.end(), 65);
+  });
+  const fetchWithTimeout = createStreamTimeoutFetch(fetch, { headerTimeoutMs: 100, chunkTimeoutMs: 45 });
+  const response = await fetchWithTimeout(`http://127.0.0.1:${server.address().port}/reset`);
+
+  assert.equal(response.status, 201);
+  assert.equal(response.headers.get('x-stream-test'), 'preserved');
+  assert.equal(await response.text(), 'first second');
+});
+
+test('stream fetch timeout preserves response metadata and completes on normal EOF', async (t) => {
+  const { createStreamTimeoutFetch } = await import('../out/infrastructure/http/stream-timeout-fetch.js');
+  const server = await createTimeoutServer(t, (_req, res) => {
+    res.writeHead(202, 'Accepted for test', { 'x-stream-test': 'eof' });
+    res.end('complete');
+  });
+  const fetchWithTimeout = createStreamTimeoutFetch(fetch, { headerTimeoutMs: 100, chunkTimeoutMs: 35 });
+  const response = await fetchWithTimeout(`http://127.0.0.1:${server.address().port}/eof`);
+
+  assert.equal(response.status, 202);
+  assert.equal(response.statusText, 'Accepted for test');
+  assert.equal(response.headers.get('x-stream-test'), 'eof');
+  assert.equal(await response.text(), 'complete');
+});
+
+test('stream fetch timeout preserves caller cancellation while waiting for headers', async (t) => {
+  const { createStreamTimeoutFetch, StreamTimeoutError } = await import('../out/infrastructure/http/stream-timeout-fetch.js');
+  let markRequestAborted;
+  let markRequestStarted;
+  const requestAborted = new Promise((resolve) => { markRequestAborted = resolve; });
+  const requestStarted = new Promise((resolve) => { markRequestStarted = resolve; });
+  const server = await createTimeoutServer(t, (_req, res) => {
+    markRequestStarted();
+    res.on('close', markRequestAborted);
+  });
+  const controller = new AbortController();
+  const fetchWithTimeout = createStreamTimeoutFetch(fetch, { headerTimeoutMs: 100, chunkTimeoutMs: 100 });
+  const pending = fetchWithTimeout(`http://127.0.0.1:${server.address().port}/cancel-headers`, { signal: controller.signal });
+  await requestStarted;
+  controller.abort();
+
+  await assert.rejects(pending, (error) => {
+    assert.ok(!(error instanceof StreamTimeoutError));
+    assert.equal(error.name, 'AbortError');
+    return true;
+  });
+  await requestAborted;
+});
+
+test('stream fetch timeout preserves caller cancellation while reading the body', async (t) => {
+  const { createStreamTimeoutFetch, StreamTimeoutError } = await import('../out/infrastructure/http/stream-timeout-fetch.js');
+  let markRequestAborted;
+  const requestAborted = new Promise((resolve) => { markRequestAborted = resolve; });
+  const server = await createTimeoutServer(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.write('first');
+    res.on('close', markRequestAborted);
+  });
+  const controller = new AbortController();
+  const fetchWithTimeout = createStreamTimeoutFetch(fetch, { headerTimeoutMs: 100, chunkTimeoutMs: 100 });
+  const response = await fetchWithTimeout(`http://127.0.0.1:${server.address().port}/cancel-body`, { signal: controller.signal });
+  const reader = response.body.getReader();
+  assert.equal(new TextDecoder().decode((await reader.read()).value), 'first');
+  const pendingRead = reader.read();
+  controller.abort();
+
+  await assert.rejects(pendingRead, (error) => {
+    assert.ok(!(error instanceof StreamTimeoutError));
+    assert.equal(error.name, 'AbortError');
+    return true;
+  });
+  await requestAborted;
+});
+
+test('stream fetch timeout body cancellation aborts the underlying request', async (t) => {
+  const { createStreamTimeoutFetch } = await import('../out/infrastructure/http/stream-timeout-fetch.js');
+  let markRequestAborted;
+  const requestAborted = new Promise((resolve) => { markRequestAborted = resolve; });
+  const server = await createTimeoutServer(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.write('first');
+    res.on('close', markRequestAborted);
+  });
+  const fetchWithTimeout = createStreamTimeoutFetch(fetch, { headerTimeoutMs: 100, chunkTimeoutMs: 100 });
+  const response = await fetchWithTimeout(`http://127.0.0.1:${server.address().port}/cancel-body-stream`);
+
+  await response.body.cancel();
+  await requestAborted;
+});
+
+test('stream diagnostics record request, parts and completion without changing output', async (t) => {
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  const { model, requests } = await setup(t, (req, res) => sendResponses(res, req.body.model));
+  const lines = [];
+  const logged = new OpenCodeChatAdapter(
+    { secrets: { get: async () => 'sk-local-test' } },
+    (message) => lines.push(message)
+  );
+  logged.updateModels([model]);
+  const parts = [];
+  await logged.provideLanguageModelChatResponse(model, [{ role: 1, content: [new vscode.LanguageModelTextPart('hello')] }], {
+    modelOptions: { _conversationId: 'diagnostics-session' }, toolMode: vscode.LanguageModelChatToolMode.Auto,
+  }, { report: (part) => parts.push(part) }, token());
+  assert.equal(requests.length, 1);
+  assert.equal(
+    parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''),
+    'Hello from upstream'
+  );
+  assert.ok(lines.some((line) => line.startsWith('[Stream] request model=') && line.includes('session=diagnostics-session')));
+  assert.ok(lines.some((line) => line.startsWith('[Stream] completed') && line.includes('text=1') && line.includes('finishSeen=true')));
+});
+
+test('stream diagnostics stay silent without a log sink', async (t) => {
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  const { model, requests } = await setup(t, (req, res) => sendResponses(res, req.body.model));
+  const silent = new OpenCodeChatAdapter({ secrets: { get: async () => 'sk-local-test' } });
+  silent.updateModels([model]);
+  const parts = [];
+  await silent.provideLanguageModelChatResponse(model, messages('hello'), {
+    modelOptions: { _conversationId: 'diagnostics-silent-session' }, toolMode: vscode.LanguageModelChatToolMode.Auto,
+  }, { report: (part) => parts.push(part) }, token());
+  assert.equal(requests.length, 1);
+  assert.equal(
+    parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''),
+    'Hello from upstream'
+  );
+});
+
+test('stream diagnostics record when a Responses stream ends without a finish', async (t) => {
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  const { model, requests } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const text = 'Partial answer without completion';
+    res.write(`data: ${JSON.stringify({ type: 'response.created', response: { id: 'resp_diag_cut', created_at: 1, model: req.body.model } })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'response.output_text.delta', item_id: 'msg_diag_cut', delta: text })}\n\n`);
+    res.end();
+  });
+  const lines = [];
+  const logged = new OpenCodeChatAdapter(
+    { secrets: { get: async () => 'sk-local-test' } },
+    (message) => lines.push(message)
+  );
+  logged.updateModels([model]);
+  const parts = [];
+  await logged.provideLanguageModelChatResponse(model, [{ role: 1, content: [new vscode.LanguageModelTextPart('hello')] }], {
+    modelOptions: { _conversationId: 'diagnostics-cut-session' }, toolMode: vscode.LanguageModelChatToolMode.Auto,
+  }, { report: (part) => parts.push(part) }, token());
+  if (!lines.some((line) => line.startsWith('[Stream] request'))) {
+    assert.equal(lines.length, 0, 'request line must always be logged while troubleshooting');
+  }
+  if (!lines.some((line) => line.startsWith('[Stream] completed'))) {
+    assert.equal(lines.length, 0, 'completion line must always be logged while troubleshooting');
+  }
+  assert.equal(requests.length, 1);
+  assert.equal(
+    parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''),
+    'Partial answer without completion\n\nOpenCode: Response may be incomplete because the stream ended without a completion event.'
+  );
+  assert.ok(lines.some((line) => line.startsWith('[Stream] request model=') && line.includes('session=diagnostics-cut-session')));
+  assert.ok(lines.some((line) => line.startsWith('[Stream] completed') && line.includes('finishSeen=true')));
+});
+
+test('stream diagnostics record an errored outcome when the stream errors before any part', async (t) => {
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  const { model } = await setup(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('data: this is not JSON\n\n');
+    res.end();
+  });
+  const lines = [];
+  const logged = new OpenCodeChatAdapter(
+    { secrets: { get: async () => 'sk-local-test' } },
+    (message) => lines.push(message)
+  );
+  logged.updateModels([model]);
+  const parts = [];
+  await assert.rejects(
+    logged.provideLanguageModelChatResponse(model, [{ role: 1, content: [new vscode.LanguageModelTextPart('hello')] }], {
+      modelOptions: { _conversationId: 'diagnostics-failed-session' }, toolMode: vscode.LanguageModelChatToolMode.Auto,
+    }, { report: (part) => parts.push(part) }, token())
+  );
+  assert.ok(lines.some((line) => line.startsWith('[Stream] request model=') && line.includes('session=diagnostics-failed-session')));
+  assert.ok(lines.some((line) => line.startsWith('[Stream] errored')));
+  assert.ok(lines.some((line) => line.startsWith('[Stream] request model=') && line.includes('session=diagnostics-failed-session')));
+  assert.ok(lines.some((line) => line.startsWith('[Stream] errored')));
+});
+
+test('host conversation ID reaches Go unchanged and is stable across turns, retries and adapter restarts', async (t) => {
+  const { run, requests, model } = await setup(t, (req, res) => sendResponses(res, req.body.model));
+  await run('conversation-a', 'first turn');
+  await run('conversation-a', 'follow-up turn');
+  await run('conversation-b', 'separate conversation');
+  await run('conversation-a', 'replayed request');
+  assert.deepEqual(requests.map((req) => req.headers['x-opencode-session']), ['conversation-a', 'conversation-a', 'conversation-b', 'conversation-a']);
+  assert.ok(requests.every((req) => req.path === '/v1/responses'));
+  assert.ok(requests.every((req) => req.headers['x-opencode-client'] === undefined));
+  assert.equal(requests[0].body.model, 'new-model-with-no-known-prefix');
+  assert.equal(requests[0].body.store, false);
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  const restored = new OpenCodeChatAdapter({ secrets: { get: async () => 'sk-local-test' } });
+  restored.updateModels([model]);
+  await restored.provideLanguageModelChatResponse(model, messages('after reload'), {
+    modelOptions: { _conversationId: 'conversation-a' }, toolMode: vscode.LanguageModelChatToolMode.Auto,
+  }, { report() {} }, token());
+  assert.equal(requests.at(-1).headers['x-opencode-session'], 'conversation-a');
+});
+
+test('stable VS Code reuses a history-based ID and separates divergent conversations', async (t) => {
+  const { provider, model, requests } = await setup(t, (req, res) => sendResponses(res, req.body.model));
+  const send = (history) => provider.provideLanguageModelChatResponse(model, history, {
+    toolMode: vscode.LanguageModelChatToolMode.Auto,
+  }, { report() {} }, token());
+  const opener = messages('shared opening');
+  await send(opener);
+  const branchA = [...opener, { role: 2, content: [new vscode.LanguageModelTextPart('answer A')] }, ...messages('follow-up A')];
+  await send(branchA);
+  await send(branchA);
+  const branchB = [...opener, { role: 2, content: [new vscode.LanguageModelTextPart('answer B')] }, ...messages('follow-up B')];
+  await send(branchB);
+  await send([...branchB, { role: 2, content: [new vscode.LanguageModelTextPart('answer B2')] }, ...messages('continue B')]);
+  await send(messages('unrelated opening'));
+  const ids = requests.map((req) => req.headers['x-opencode-session']);
+  ids.forEach((id) => assert.match(id, /^[0-9a-f-]{36}$/));
+  assert.equal(ids[0], ids[1]);
+  assert.equal(ids[1], ids[2]);
+  assert.notEqual(ids[2], ids[3]);
+  assert.equal(ids[3], ids[4]);
+  assert.notEqual(ids[4], ids[5]);
+});
+
+test('fallback ID survives adapter recreation without persisting message text', async (t) => {
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  const { model, requests } = await setup(t, (req, res) => sendResponses(res, req.body.model));
+  const values = new Map();
+  const context = {
+    secrets: { get: async () => 'sk-local-test' },
+    globalState: { get: (key, fallback) => values.get(key) ?? fallback, update: async (key, value) => { values.set(key, value); } },
+  };
+  for (let i = 0; i < 2; i++) {
+    const provider = new OpenCodeChatAdapter(context);
+    provider.updateModels([model]);
+    await provider.provideLanguageModelChatResponse(model, messages('private-message-that-must-not-be-stored'), {
+      toolMode: vscode.LanguageModelChatToolMode.Auto,
+    }, { report() {} }, token());
+  }
+  assert.equal(requests[0].headers['x-opencode-session'], requests[1].headers['x-opencode-session']);
+  assert.doesNotMatch(JSON.stringify([...values]), /private-message-that-must-not-be-stored/);
+});
+
+test('system instructions changing do not reset fallback conversation identity', async (t) => {
+  const { provider, model, requests } = await setup(t, (req, res) => sendResponses(res, req.body.model));
+  for (const text of ['system at time one', 'system at time two']) {
+    await provider.provideLanguageModelChatResponse(model, [{ role: 0, content: [new vscode.LanguageModelTextPart(text)] }, ...messages('same chat')], {
+      toolMode: vscode.LanguageModelChatToolMode.Auto,
+    }, { report() {} }, token());
+  }
+  assert.equal(requests[0].headers['x-opencode-session'], requests[1].headers['x-opencode-session']);
+});
+
+test('SDK streamed text is forwarded once without waiting for another request', async (t) => {
+  const { run, requests } = await setup(t, (req, res) => sendResponses(res, req.body.model));
+  const parts = await run('text-session');
+  assert.equal(parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''), 'Hello from upstream');
+  assert.equal(requests.length, 1);
+});
+
+test('reasoning metadata and selected effort reach upstream for arbitrary Responses model IDs', async (t) => {
+  const { provider, model, requests, run } = await setup(t, (req, res) => sendResponses(res, req.body.model));
+  provider.updateModels([{ ...model, thinking: true, supportsReasoningEffort: ['low', 'high'] }]);
+  await run('reasoning-session', 'think', { modelConfiguration: { reasoningEffort: 'high' } });
+  assert.deepEqual(requests[0].body.reasoning, { effort: 'high', summary: 'auto' });
+  const info = provider.provideLanguageModelChatInformation()[0];
+  assert.deepEqual(info.configurationSchema.properties.reasoningEffort.enum, ['low', 'high']);
+});
+
+test('reasoning summary deltas reach VS Code as thinking parts for thinking models', async (t) => {
+  const { provider, model, requests, run } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+    emit({ type: 'response.created', response: { id: 'resp_think', created_at: 1, model: req.body.model } });
+    emit({ type: 'response.output_item.added', output_index: 0, item: { type: 'reasoning', id: 'rs_think', summary: [] } });
+    emit({ type: 'response.reasoning_summary_part.added', item_id: 'rs_think', summary_index: 0 });
+    emit({ type: 'response.reasoning_summary_text.delta', item_id: 'rs_think', summary_index: 0, delta: 'considering options' });
+    emit({ type: 'response.reasoning_summary_part.done', item_id: 'rs_think', summary_index: 0 });
+    emit({ type: 'response.output_item.done', output_index: 0, item: { type: 'reasoning', id: 'rs_think', summary: [{ type: 'summary_text', text: 'considering options' }] } });
+    emit({ type: 'response.output_item.added', output_index: 1, item: { type: 'message', id: 'msg_think', role: 'assistant', content: [] } });
+    emit({ type: 'response.output_text.delta', item_id: 'msg_think', output_index: 1, content_index: 0, delta: 'done' });
+    emit({ type: 'response.output_item.done', output_index: 1, item: { type: 'message', id: 'msg_think', role: 'assistant', content: [{ type: 'output_text', text: 'done', annotations: [] }] } });
+    emit({ type: 'response.completed', response: { id: 'resp_think', status: 'completed', output: [{ id: 'msg_think', type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'done', annotations: [] }] }], usage: { input_tokens: 10, output_tokens: 5, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } } } });
+    res.end();
+  });
+  provider.updateModels([{ ...model, thinking: true, supportsReasoningEffort: ['low', 'high'] }]);
+  const parts = await run('thinking-session', 'think', { modelConfiguration: { reasoningEffort: 'high' } });
+  assert.deepEqual(requests[0].body.reasoning, { effort: 'high', summary: 'auto' });
+  const thinking = parts.filter((part) => part instanceof vscode.LanguageModelThinkingPart);
+  assert.equal(thinking.length, 1);
+  assert.equal(thinking[0].value, 'considering options');
+});
+
+test('legacy OpenCode reasoning deltas remain visible through the SDK adapter', async (t) => {
+  const { provider, model, run } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+    emit({ type: 'response.created', response: { id: 'resp_legacy_think', created_at: 1, model: req.body.model } });
+    emit({
+      type: 'response.reasoning_text.delta',
+      item_id: 'reasoning_legacy',
+      delta: 'legacy reasoning summary',
+    });
+    emit({
+      type: 'response.completed',
+      response: {
+        id: 'resp_legacy_think',
+        status: 'completed',
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    });
+    res.end();
+  });
+  provider.updateModels([{ ...model, thinking: true, supportsReasoningEffort: ['low', 'high'] }]);
+
+  const parts = await run('legacy-thinking-session');
+  const thinking = parts.filter((part) => part instanceof vscode.LanguageModelThinkingPart);
+  assert.equal(thinking.map((part) => part.value).join(''), 'legacy reasoning summary');
+});
+
+test('emits completed Responses text when the SDK stream has no text delta', async (t) => {
+  const answer = 'Text recovered from the completed response';
+  const { run } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+    emit({ type: 'response.created', response: { id: 'resp_fallback', created_at: 1, model: req.body.model } });
+    emit({
+      type: 'response.completed',
+      response: {
+        id: 'resp_fallback',
+        status: 'completed',
+        output: [{
+          id: 'msg_fallback',
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: answer, annotations: [] }],
+        }],
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    });
+    res.end();
+  });
+
+  const parts = await run('fallback-session');
+  assert.equal(
+    parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''),
+    answer
+  );
+});
+
+test('surfaces Responses output-limit truncation promptly when an incomplete response leaves the body open', async (t) => {
+  let markResponseSent;
+  const responseSent = new Promise((resolve) => { markResponseSent = resolve; });
+  let openResponse;
+  const terminalPolicy = { ...testStreamPolicy, chunkTimeoutMs: 900_000 };
+  const { run } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    openResponse = res;
+    const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+    emit({ type: 'response.created', response: { id: 'resp_incomplete', created_at: 1, model: req.body.model } });
+    emit({ type: 'response.output_text.delta', item_id: 'msg_incomplete', delta: 'Partial answer' });
+    emit({
+      type: 'response.incomplete',
+      response: {
+        id: 'resp_incomplete',
+        incomplete_details: { reason: 'max_output_tokens' },
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    });
+    markResponseSent();
+  }, terminalPolicy);
+
+  const parts = await Promise.race([
+    run('incomplete-session'),
+    responseSent.then(() => new Promise((_resolve, reject) => setTimeout(() => reject(new Error('provider waited for HTTP EOF after response.incomplete')), 100))),
+  ]);
+  const text = parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join('');
+  assert.match(text, /Partial answer/);
+  assert.match(text, /output token limit/i);
+  assert.match(text, /may be incomplete/i);
+  const usage = parts.find((part) => part instanceof vscode.LanguageModelDataPart && part.mimeType === 'usage');
+  assert.ok(usage, 'SDK finish must report usage for an incomplete response');
+  const usageValue = JSON.parse(new TextDecoder().decode(usage.data));
+  assert.equal(usageValue.prompt_tokens, 10);
+  assert.equal(usageValue.completion_tokens, 5);
+  openResponse.end();
+});
+
+test('surfaces when a Responses stream closes without a completion event', async (t) => {
+  const { run } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write(`data: ${JSON.stringify({ type: 'response.created', response: { id: 'resp_cut', created_at: 1, model: req.body.model } })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'response.output_text.delta', item_id: 'msg_cut', delta: 'Partial answer' })}\n\n`);
+    res.end();
+  });
+
+  const parts = await run('cut-session');
+  const text = parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join('');
+  assert.match(text, /Partial answer/);
+  assert.match(text, /without a completion event/i);
+  assert.match(text, /may be incomplete/i);
+});
+
+test('HTTP errors are surfaced without provider retries', async (t) => {
+  const { run, requests } = await setup(t, (_req, res) => {
+    res.writeHead(503, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'upstream temporarily overloaded' } }));
+  });
+  await assert.rejects(run('error-session'), /overloaded/);
+  assert.equal(requests.length, 1);
+});
+
+test('chat-completions reasoning deltas reach VS Code as thinking parts', async (t) => {
+  const { provider, model } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+    emit({ id: 'chatcmpl-think', object: 'chat.completion.chunk', created: 1, model: req.body.model, choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: 'weighing tradeoffs' }, finish_reason: null }] });
+    emit({ id: 'chatcmpl-think', object: 'chat.completion.chunk', created: 1, model: req.body.model, choices: [{ index: 0, delta: { content: 'final answer', reasoning_details: [{ text: ' and checking edge cases' }] }, finish_reason: null }] });
+    emit({ id: 'chatcmpl-think', object: 'chat.completion.chunk', created: 1, model: req.body.model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
+    res.write('data: [DONE]\n\n');
+    res.end();
+  });
+  const chatModel = { ...model, apiType: 'chat-completions' };
+  provider.updateModels([chatModel]);
+  const parts = [];
+  await provider.provideLanguageModelChatResponse(chatModel, messages('think it through'), {
+    modelOptions: {}, toolMode: vscode.LanguageModelChatToolMode.Auto,
+  }, { report: (part) => parts.push(part) }, token());
+  const thinking = parts.filter((part) => part instanceof vscode.LanguageModelThinkingPart);
+  assert.equal(thinking.map((part) => part.value).join(''), 'weighing tradeoffs and checking edge cases');
+  assert.ok(parts.some((part) => part instanceof vscode.LanguageModelTextPart && part.value === 'final answer'));
+});
+
+test('oversized enum values are removed from SDK tool schemas before sending', async (t) => {
+  const { run, requests } = await setup(t, (req, res) => sendResponses(res, req.body.model));
+  const oversized = Array.from({ length: 251 }, (_, index) => `model-${index}`);
+  const oversizedByLength = Array.from({ length: 100 }, () => 'x'.repeat(130));
+  const retained = ['small-a', 'small-b'];
+  await run('schema-session', 'choose a model', {
+    tools: [{
+      name: 'select_model',
+      description: 'Select a model',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          model: { type: 'string', enum: oversized },
+          options: {
+            type: 'object',
+            properties: { route: { enum: oversizedByLength } },
+          },
+          mode: { type: 'string', enum: retained },
+        },
+      },
+    }],
+  });
+
+  const schema = requests[0].body.tools[0].parameters;
+  assert.equal(schema.properties.model.enum, undefined);
+  assert.equal(schema.properties.model.type, 'string');
+  assert.equal(schema.properties.options.properties.route.enum, undefined);
+  assert.equal(schema.properties.options.properties.route.type, 'string');
+  assert.deepEqual(schema.properties.mode.enum, retained);
+});
+
+test('Responses tool calls are forwarded once and the next turn preserves their results', async (t) => {
+  const { run, requests, provider, model } = await setup(t, (req, res) => {
+    if (requests.length > 1) return sendResponses(res, req.body.model, 'The answer is 4');
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+    const item = { type: 'function_call', id: 'fc_test', call_id: 'call_test', name: 'calculator', arguments: '{"value":4}', status: 'completed' };
+    emit({ type: 'response.created', response: { id: 'resp_tool', created_at: 1, model: req.body.model } });
+    emit({ type: 'response.output_item.added', output_index: 0, item: { ...item, arguments: '', status: 'in_progress' } });
+    emit({ type: 'response.function_call_arguments.delta', output_index: 0, item_id: 'fc_test', delta: '{"value":4}' });
+    emit({ type: 'response.output_item.done', output_index: 0, item });
+    emit({ type: 'response.completed', response: { id: 'resp_tool', status: 'completed', usage: { input_tokens: 10, output_tokens: 5 } } });
+    res.end();
+  });
+  const parts = await run('tool-session', 'calculate', {
+    tools: [{ name: 'calculator', description: 'calculate', inputSchema: { type: 'object', properties: { value: { type: 'number' } } } }],
+    toolMode: vscode.LanguageModelChatToolMode.Required,
+  });
+  const calls = parts.filter((part) => part instanceof vscode.LanguageModelToolCallPart);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].callId, 'call_test');
+  assert.deepEqual(calls[0].input, { value: 4 });
+  assert.equal(requests[0].body.tool_choice, 'required');
+  const output = [];
+  await provider.provideLanguageModelChatResponse(model, [
+    { role: 0, content: [new vscode.LanguageModelTextPart('Keep the real system role')] },
+    ...messages('calculate'),
+    { role: 2, content: calls },
+    { role: 1, content: [new vscode.LanguageModelToolResultPart('call_test', [new vscode.LanguageModelTextPart('4')])] },
+  ], { modelOptions: { _conversationId: 'tool-session' }, toolMode: 1 }, { report: (part) => output.push(part) }, token());
+  assert.equal(requests[1].headers['x-opencode-session'], 'tool-session');
+  assert.ok(requests[1].body.input.some((part) => part.role === 'system'));
+  assert.ok(requests[1].body.input.some((part) => part.type === 'function_call_output' && part.call_id === 'call_test' && part.output === '4'));
+  assert.equal(output.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''), 'The answer is 4');
+});
+
+for (const apiType of ['chat-completions', 'messages']) {
+  test(`${apiType} metadata selects the SDK transport without model-name guesses`, async (t) => {
+    const { provider, model, requests } = await setup(t, (req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+      if (apiType === 'messages') {
+        emit({ type: 'message_start', message: { id: 'msg_1', type: 'message', role: 'assistant', model: req.body.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } });
+        emit({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+        emit({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'SDK mapped text' } });
+        emit({ type: 'content_block_stop', index: 0 });
+        emit({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 4 } });
+        emit({ type: 'message_stop' });
+      } else {
+        emit({ id: 'cmpl_1', object: 'chat.completion.chunk', created: 1, model: req.body.model, choices: [{ index: 0, delta: { role: 'assistant', content: 'SDK mapped text' }, finish_reason: null }] });
+        emit({ id: 'cmpl_1', object: 'chat.completion.chunk', created: 1, model: req.body.model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 } });
+        res.write('data: [DONE]\n\n');
+      }
+      res.end();
+    });
+    provider.updateModels([{ ...model, apiType }]);
+    const parts = [];
+    await provider.provideLanguageModelChatResponse(model, messages('hi'), { modelOptions: { _conversationId: 'protocol-session' }, toolMode: 1 }, { report: (part) => parts.push(part) }, token());
+    assert.equal(requests[0].path, apiType === 'messages' ? '/v1/messages' : '/v1/chat/completions');
+    assert.equal(requests[0].headers['x-opencode-session'], 'protocol-session');
+    assert.equal(parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''), 'SDK mapped text');
+  });
+}
+
+test('cancellation during credential lookup prevents an upstream request', async (t) => {
+  const { model, requests } = await setup(t, (req, res) => sendResponses(res, req.body.model));
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  let releaseKey;
+  let markLookupStarted;
+  const key = new Promise((resolve) => { releaseKey = resolve; });
+  const lookupStarted = new Promise((resolve) => { markLookupStarted = resolve; });
+  const provider = new OpenCodeChatAdapter({ secrets: { get: () => { markLookupStarted(); return key; } } });
+  provider.updateModels([model]);
+  const emitter = new vscode.EventEmitter();
+  const cancel = { isCancellationRequested: false, onCancellationRequested: emitter.event };
+  const parts = [];
+  t.after(() => { provider.dispose(); emitter.dispose(); });
+  const pending = provider.provideLanguageModelChatResponse(model, messages('cancel before sending'), {
+    modelOptions: { _conversationId: 'cancel-before-send' }, toolMode: 1,
+  }, { report: (part) => parts.push(part) }, cancel);
+  await lookupStarted;
+  cancel.isCancellationRequested = true;
+  emitter.fire();
+  releaseKey('sk-local-test');
+  await pending;
+  assert.equal(requests.length, 0, 'a canceled request must never reach upstream');
+  assert.deepEqual(parts, []);
+});
+
+test('host cancellation aborts the pending stream without replaying the request', async (t) => {
+  let started;
+  const requestStarted = new Promise((resolve) => { started = resolve; });
+  const { provider, model, requests } = await setup(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.flushHeaders();
+    started();
+  });
+  const emitter = new vscode.EventEmitter();
+  const cancel = { isCancellationRequested: false, onCancellationRequested: emitter.event };
+  const promise = provider.provideLanguageModelChatResponse(model, messages('hi'), {
+    modelOptions: { _conversationId: 'cancel-session' }, toolMode: 1,
+  }, { report() {} }, cancel);
+  const settled = promise.then(() => 'resolved', (error) => { assert.match(error.name, /Abort/); return 'aborted'; });
+  await requestStarted;
+  cancel.isCancellationRequested = true;
+  emitter.fire();
+  await settled;
+  assert.equal(requests.length, 1);
+});

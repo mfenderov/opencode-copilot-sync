@@ -15,6 +15,9 @@ export class EventEmitter {
       } catch {}
     }
   }
+  dispose() {
+    this.#listeners.clear();
+  }
 }
 export const LanguageModelChatMessageRole = { User: 1, Assistant: 2 };
 export class LanguageModelTextPart { constructor(value) { this.value = value; } }

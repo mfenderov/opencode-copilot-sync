@@ -4,6 +4,8 @@ out/**
 coverage/**
 node_modules/**
 scripts/**
+docs/superpowers/
+.superpowers/
 tsconfig.json
 .gitignore
 .c8rc.json

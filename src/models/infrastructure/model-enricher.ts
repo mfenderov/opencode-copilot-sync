@@ -202,6 +202,7 @@ export function enrichModel(modelId: string, options: EnrichOptions = {}): Custo
     family: modelId,
     url: modelUrl,
     apiType,
+    ...(apiType === 'responses' ? { statefulResponses: false } : {}),
     toolCalling: true,
     vision,
     contextWindow: tokenLimits.contextWindow,
