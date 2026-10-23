@@ -63,6 +63,50 @@ const testStreamPolicy = {
   retryDelayMs: () => 0,
 };
 
+test('chat adapter estimates string token counts by model family and fallback', async () => {
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  const provider = new OpenCodeChatAdapter({ secrets: { get: async () => 'sk-local-test' } });
+  const input = 'x'.repeat(360);
+  const estimates = [
+    ['gpt-5.5', 90],
+    ['muse-spark-1.3', 90],
+    ['gemini-2.5-pro', 90],
+    ['claude-3.7-sonnet', 98],
+    ['grok-4', 106],
+    ['deepseek-v4-pro', 106],
+    ['qwen3.7-max', 106],
+    ['llama-3.3', 106],
+    ['mimo-v2.5', 106],
+    ['mixtral-8x7b', 106],
+    ['kimi-k3', 106],
+    ['glm-5.3', 106],
+    ['something-new-99', 100],
+  ];
+
+  for (const [id, expected] of estimates) {
+    assert.equal(await provider.provideTokenCount({ id }, input, token()), expected, id);
+  }
+  provider.dispose();
+});
+
+test('chat adapter estimates message token counts from serialized content', async () => {
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  const provider = new OpenCodeChatAdapter({ secrets: { get: async () => 'sk-local-test' } });
+  const input = messages('x'.repeat(360))[0];
+
+  assert.equal(await provider.provideTokenCount({ id: 'gpt-5.5' }, input, token()), 99);
+  assert.equal(await provider.provideTokenCount({ id: 'deepseek-v4-pro' }, input, token()), 117);
+  provider.dispose();
+});
+
+test('chat adapter estimates at least one token for empty string input', async () => {
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  const provider = new OpenCodeChatAdapter({ secrets: { get: async () => 'sk-local-test' } });
+
+  assert.equal(await provider.provideTokenCount({ id: 'gpt-5.5' }, '', token()), 1);
+  provider.dispose();
+});
+
 test('chat adapter retries a header timeout with the original prompt and session', async (t) => {
   const { run, requests, model } = await setup(t, (req, res) => {
     if (requests.length === 1) return;

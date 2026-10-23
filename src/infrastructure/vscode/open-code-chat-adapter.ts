@@ -37,6 +37,16 @@ const defaultChatStreamPolicy: ChatStreamPolicy = {
 const thinkingPart = (vscode as typeof vscode & {
   LanguageModelThinkingPart?: new (value: string, id: string) => vscode.LanguageModelResponsePart;
 }).LanguageModelThinkingPart;
+const CHARS_PER_TOKEN_BY_FAMILY: readonly (readonly [RegExp, number])[] = [
+  [/^(gpt-|o1|o3|o4)/i, 4],
+  [/^claude/i, 3.7],
+  [/^(muse|gemini)/i, 4],
+  [/^(grok|deepseek|qwen|llama|mi(mo|x)|kimi|glm)/i, 3.4],
+];
+
+function charsPerToken(modelId: string): number {
+  return CHARS_PER_TOKEN_BY_FAMILY.find(([pattern]) => pattern.test(modelId))?.[1] ?? 3.6;
+}
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -639,12 +649,12 @@ export class OpenCodeChatAdapter implements vscode.LanguageModelChatProvider<Reg
   }
 
   provideTokenCount(
-    _model: RegisteredModel,
+    model: RegisteredModel,
     input: string | vscode.LanguageModelChatRequestMessage,
     _token: vscode.CancellationToken
   ): Promise<number> {
     const text = typeof input === 'string' ? input : JSON.stringify(input);
-    return Promise.resolve(Math.ceil(text.length / 4));
+    return Promise.resolve(Math.max(1, Math.ceil(text.length / charsPerToken(model.id))));
   }
 
   dispose(): void { this.changed.dispose(); }
