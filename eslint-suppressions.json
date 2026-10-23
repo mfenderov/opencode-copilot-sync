@@ -132,14 +132,6 @@
       "count": 1
     }
   },
-  "src/models/infrastructure/model-cache.ts": {
-    "@typescript-eslint/no-unsafe-assignment": {
-      "count": 1
-    },
-    "@typescript-eslint/no-unsafe-return": {
-      "count": 1
-    }
-  },
   "src/sync-files.ts": {
     "@typescript-eslint/no-explicit-any": {
       "count": 2

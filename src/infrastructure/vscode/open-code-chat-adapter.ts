@@ -86,75 +86,105 @@ function exceedsEnumLimits(values: readonly unknown[]): boolean {
   return false;
 }
 
+interface SchemaSanitizeState {
+  inProgress: Set<unknown>;
+  droppedEnums: { path: string; count: number }[];
+}
+
+function sanitizeSchemaArray(node: unknown[], path: string, state: SchemaSanitizeState): unknown[] {
+  if (state.inProgress.has(node)) return node;
+  state.inProgress.add(node);
+  try {
+    return node.map((item, index) => sanitizeSchemaNode(item, `${path}[${index}]`, state));
+  } finally {
+    state.inProgress.delete(node);
+  }
+}
+
+function sanitizeNamedSchemaMap(
+  value: Record<string, unknown>,
+  path: string,
+  state: SchemaSanitizeState
+): Record<string, unknown> {
+  if (state.inProgress.has(value)) return value;
+  state.inProgress.add(value);
+  try {
+    const sanitized: Record<string, unknown> = {};
+    for (const [name, child] of Object.entries(value)) {
+      sanitized[name] = sanitizeSchemaNode(child, `${path}.${name}`, state);
+    }
+    return sanitized;
+  } finally {
+    state.inProgress.delete(value);
+  }
+}
+
+function sanitizeSchemaEntry(
+  key: string,
+  value: unknown,
+  path: string,
+  state: SchemaSanitizeState
+): { value?: unknown; droppedValues?: readonly unknown[] } {
+  if (key === 'enum' && Array.isArray(value) && exceedsEnumLimits(value)) {
+    state.droppedEnums.push({ path, count: value.length });
+    return { droppedValues: value };
+  }
+  if (key === 'enum' || SCHEMA_DATA_KEYS.has(key)) return { value };
+
+  const childPath = `${path}.${key}`;
+  const sanitized = NAMED_SCHEMA_MAP_KEYS.has(key) && record(value)
+    ? sanitizeNamedSchemaMap(value, childPath, state)
+    : sanitizeSchemaNode(value, childPath, state);
+  return { value: sanitized };
+}
+
+function restoreStringEnumType(schema: Record<string, unknown>, values: readonly unknown[] | undefined): void {
+  if (
+    values &&
+    !('type' in schema) &&
+    !('$ref' in schema) &&
+    values.length > 0 &&
+    values.every((value) => typeof value === 'string')
+  ) {
+    schema.type = 'string';
+  }
+}
+
+function sanitizeSchemaObject(
+  node: Record<string, unknown>,
+  path: string,
+  state: SchemaSanitizeState
+): Record<string, unknown> {
+  if (state.inProgress.has(node)) return node;
+  state.inProgress.add(node);
+  try {
+    const sanitized: Record<string, unknown> = {};
+    let droppedValues: readonly unknown[] | undefined;
+    for (const [key, value] of Object.entries(node)) {
+      const entry = sanitizeSchemaEntry(key, value, path, state);
+      if (entry.droppedValues) droppedValues = entry.droppedValues;
+      else sanitized[key] = entry.value;
+    }
+    restoreStringEnumType(sanitized, droppedValues);
+    return sanitized;
+  } finally {
+    state.inProgress.delete(node);
+  }
+}
+
+function sanitizeSchemaNode(node: unknown, path: string, state: SchemaSanitizeState): unknown {
+  if (Array.isArray(node)) return sanitizeSchemaArray(node, path, state);
+  if (!record(node)) return node;
+  return sanitizeSchemaObject(node, path, state);
+}
+
 function sanitizeToolSchema(
   schema: unknown,
   toolName: string
 ): LanguageModelV3FunctionTool['inputSchema'] {
-  const droppedEnums: { path: string; count: number }[] = [];
-  const inProgress = new Set<unknown>();
-
-  function visit(node: unknown, path: string): unknown {
-    if (Array.isArray(node)) {
-      if (inProgress.has(node)) return node;
-      inProgress.add(node);
-      const sanitized = node.map((item, index) => visit(item, `${path}[${index}]`));
-      inProgress.delete(node);
-      return sanitized;
-    }
-    if (!record(node) || inProgress.has(node)) return node;
-    inProgress.add(node);
-
-    const sanitized: Record<string, unknown> = {};
-    let droppedValues: readonly unknown[] | undefined;
-    for (const [key, value] of Object.entries(node)) {
-      if (key === 'enum') {
-        if (Array.isArray(value) && exceedsEnumLimits(value)) {
-          droppedEnums.push({ path, count: value.length });
-          droppedValues = value;
-        } else {
-          sanitized[key] = value;
-        }
-        continue;
-      }
-      if (SCHEMA_DATA_KEYS.has(key)) {
-        sanitized[key] = value;
-        continue;
-      }
-
-      const childPath = `${path}.${key}`;
-      if (NAMED_SCHEMA_MAP_KEYS.has(key) && record(value)) {
-        if (inProgress.has(value)) {
-          sanitized[key] = value;
-          continue;
-        }
-        inProgress.add(value);
-        const schemaMap: Record<string, unknown> = {};
-        for (const [name, child] of Object.entries(value)) {
-          schemaMap[name] = visit(child, `${childPath}.${name}`);
-        }
-        inProgress.delete(value);
-        sanitized[key] = schemaMap;
-      } else {
-        sanitized[key] = visit(value, childPath);
-      }
-    }
-
-    if (
-      droppedValues &&
-      !('type' in sanitized) &&
-      !('$ref' in sanitized) &&
-      droppedValues.length > 0 &&
-      droppedValues.every((value) => typeof value === 'string')
-    ) {
-      sanitized.type = 'string';
-    }
-
-    inProgress.delete(node);
-    return sanitized;
-  }
-
-  const sanitized = visit(schema, 'root');
-  for (const dropped of droppedEnums) {
+  const state: SchemaSanitizeState = { droppedEnums: [], inProgress: new Set() };
+  const sanitized = sanitizeSchemaNode(schema, 'root', state);
+  for (const dropped of state.droppedEnums) {
     console.warn(
       `[OpenCode] schema relaxed: dropped oversized enum on ${toolName}.${dropped.path} (${dropped.count} values)`
     );
@@ -173,18 +203,32 @@ function toolResult(part: vscode.LanguageModelToolResultPart, names: Map<string,
   return { type: 'tool-result', toolCallId: part.callId, toolName, output: { type: 'text', value: text } };
 }
 
+function toolCallContentPart(
+  part: vscode.LanguageModelToolCallPart,
+  names: Map<string, string>
+): AssistantContent[number] {
+  names.set(part.callId, part.name);
+  return { type: 'tool-call', toolCallId: part.callId, toolName: part.name, input: part.input };
+}
+
+function dataContentPart(part: vscode.LanguageModelDataPart): AssistantContent[number] {
+  if (part.mimeType.startsWith('image/')) return { type: 'file', data: part.data, mediaType: part.mimeType };
+  throw new Error(`Unsupported message data: ${part.mimeType}`);
+}
+
 function contentPart(part: unknown, names: Map<string, string>): AssistantContent[number] | undefined {
   if (part instanceof vscode.LanguageModelTextPart) return { type: 'text', text: part.value };
-  if (part instanceof vscode.LanguageModelToolCallPart) {
-    names.set(part.callId, part.name);
-    return { type: 'tool-call', toolCallId: part.callId, toolName: part.name, input: part.input };
-  }
+  if (part instanceof vscode.LanguageModelToolCallPart) return toolCallContentPart(part, names);
   if (thinkingPart && part instanceof thinkingPart) return undefined;
-  if (part instanceof vscode.LanguageModelDataPart) {
-    if (part.mimeType.startsWith('image/')) return { type: 'file', data: part.data, mediaType: part.mimeType };
-    throw new Error(`Unsupported message data: ${part.mimeType}`);
-  }
+  if (part instanceof vscode.LanguageModelDataPart) return dataContentPart(part);
   throw new Error('Unsupported language model message part');
+}
+
+function responseOutputText(item: unknown): string[] {
+  if (!record(item) || item.type !== 'message' || !Array.isArray(item.content)) return [];
+  return item.content.flatMap((part) =>
+    record(part) && part.type === 'output_text' && typeof part.text === 'string' ? [part.text] : []
+  );
 }
 
 function completedResponseText(rawValue: unknown): string | undefined {
@@ -196,16 +240,7 @@ function completedResponseText(rawValue: unknown): string | undefined {
   ) {
     return undefined;
   }
-
-  const text: string[] = [];
-  for (const item of rawValue.response.output) {
-    if (!record(item) || item.type !== 'message' || !Array.isArray(item.content)) continue;
-    for (const part of item.content) {
-      if (record(part) && part.type === 'output_text' && typeof part.text === 'string') {
-        text.push(part.text);
-      }
-    }
-  }
+  const text = rawValue.response.output.flatMap(responseOutputText);
   return text.length > 0 ? text.join('') : undefined;
 }
 
@@ -222,29 +257,27 @@ function legacyReasoningDelta(rawValue: unknown): { id: string; delta: string } 
   return { id: rawValue.item_id, delta: rawValue.delta };
 }
 
-function chatReasoningDelta(rawValue: unknown): { id: string; delta: string } | undefined {
-  // OpenAI-compatible gateways (DeepSeek, Kimi, GLM, MiMo) stream reasoning
-  // inside Chat Completions deltas as reasoning_content / thought /
-  // reasoning / reasoning_details[].text. The AI SDK chat parser only
-  // forwards content/tool_calls/annotations, so these arrive solely via raw
-  // chunks and must be mapped here to keep thinking visible.
+const CHAT_REASONING_KEYS = ['reasoning_content', 'thought', 'reasoning'] as const;
+
+function reasoningText(delta: Record<string, unknown>): string[] {
+  const direct = CHAT_REASONING_KEYS.flatMap((key) => {
+    const value = delta[key];
+    return typeof value === 'string' && value.length > 0 ? [value] : [];
+  });
+  const details = Array.isArray(delta.reasoning_details) ? delta.reasoning_details.flatMap((detail) =>
+    record(detail) && typeof detail.text === 'string' && detail.text.length > 0 ? [detail.text] : []
+  ) : [];
+  return [...direct, ...details];
+}
+
+function chatReasoningDelta(
+  rawValue: unknown
+): { id: string; delta: string } | undefined {
+  // Chat-completions gateways expose reasoning only in raw chunks; the SDK parser drops these fields.
   if (!record(rawValue) || !Array.isArray(rawValue.choices)) return undefined;
-  const deltas: string[] = [];
-  for (const choice of rawValue.choices) {
-    if (!record(choice) || !record(choice.delta)) continue;
-    const delta: Record<string, unknown> = choice.delta;
-    for (const key of ['reasoning_content', 'thought', 'reasoning'] as const) {
-      const direct = delta[key];
-      if (typeof direct === 'string' && direct.length > 0) deltas.push(direct);
-    }
-    if (Array.isArray(delta.reasoning_details)) {
-      for (const detail of delta.reasoning_details) {
-        if (record(detail) && typeof detail.text === 'string' && detail.text.length > 0) {
-          deltas.push(detail.text);
-        }
-      }
-    }
-  }
+  const deltas = rawValue.choices.flatMap((choice) =>
+    record(choice) && record(choice.delta) ? reasoningText(choice.delta) : []
+  );
   if (deltas.length === 0) return undefined;
   const id = typeof rawValue.id === 'string' ? rawValue.id : 'chat-reasoning';
   return { id, delta: deltas.join('') };
@@ -277,7 +310,7 @@ interface StreamDiagnostics {
 interface StreamReportState {
   textEmitted: boolean;
   diagnostics?: StreamDiagnostics;
-  onToolCall?(part: Extract<LanguageModelV3StreamPart, { type: 'tool-call' }>): void;
+  onToolCall?(part: ToolCallStreamPart): void;
 }
 
 function createStreamDiagnostics(
@@ -309,32 +342,39 @@ function createStreamDiagnostics(
   };
 }
 
+type StreamPartKind = 'text' | 'reasoning' | 'tool-call' | 'finish' | 'raw';
+interface StreamDiagnosticPart {
+  finishReason?: { unified: string; raw?: unknown };
+  rawValue?: unknown;
+}
+
+function noteFinish(diagnostics: StreamDiagnostics, part?: StreamDiagnosticPart): void {
+  diagnostics.finishSeen = true;
+  diagnostics.finishUnified = part?.finishReason?.unified;
+  diagnostics.finishRaw = typeof part?.finishReason?.raw === 'string' ? part.finishReason.raw : undefined;
+}
+
+function noteRawChunk(diagnostics: StreamDiagnostics, part?: StreamDiagnosticPart): void {
+  diagnostics.rawChunks += 1;
+  const rawValue = part?.rawValue;
+  const rawType = record(rawValue) && typeof rawValue.type === 'string' ? rawValue.type : undefined;
+  if (rawType) diagnostics.lastRawType = rawType;
+}
+
 function noteStreamPart(
   diagnostics: StreamDiagnostics | undefined,
-  kind: 'text' | 'reasoning' | 'tool-call' | 'finish' | 'raw',
-  part?: { finishReason?: { unified: string; raw?: unknown }; rawValue?: unknown }
+  kind: StreamPartKind,
+  part?: StreamDiagnosticPart
 ): void {
   if (!diagnostics) return;
   const now = Date.now();
   diagnostics.firstPartAt ??= now;
   diagnostics.lastPartAt = now;
-  switch (kind) {
-    case 'text': diagnostics.textDeltas += 1; break;
-    case 'reasoning': diagnostics.reasoningDeltas += 1; break;
-    case 'tool-call': diagnostics.toolCalls += 1; break;
-    case 'finish':
-      diagnostics.finishSeen = true;
-      diagnostics.finishUnified = part?.finishReason?.unified;
-      diagnostics.finishRaw = typeof part?.finishReason?.raw === 'string' ? part.finishReason.raw : undefined;
-      break;
-    case 'raw': {
-      diagnostics.rawChunks += 1;
-      const rawValue = part?.rawValue;
-      const rawType = record(rawValue) && typeof rawValue.type === 'string' ? rawValue.type : undefined;
-      if (rawType) diagnostics.lastRawType = rawType;
-      break;
-    }
-  }
+  if (kind === 'text') diagnostics.textDeltas += 1;
+  else if (kind === 'reasoning') diagnostics.reasoningDeltas += 1;
+  else if (kind === 'tool-call') diagnostics.toolCalls += 1;
+  else if (kind === 'finish') noteFinish(diagnostics, part);
+  else noteRawChunk(diagnostics, part);
 }
 
 function summarizeStream(
@@ -402,13 +442,82 @@ function waitForRetry(delayMs: number, token: vscode.CancellationToken): Promise
 }
 
 function reportToolCalls(
-  parts: readonly Extract<LanguageModelV3StreamPart, { type: 'tool-call' }>[],
+  parts: readonly ToolCallStreamPart[],
   progress: vscode.Progress<vscode.LanguageModelResponsePart>
 ): void {
-  for (const part of parts) {
-    const input: unknown = JSON.parse(part.input);
-    if (!record(input)) throw new Error(`Invalid tool arguments for ${part.toolName}`);
-    progress.report(new vscode.LanguageModelToolCallPart(part.toolCallId, part.toolName, input));
+  for (const part of parts) reportToolCall(part, progress);
+}
+
+type ToolCallStreamPart = Extract<LanguageModelV3StreamPart, { type: 'tool-call' }>;
+type FinishStreamPart = Extract<LanguageModelV3StreamPart, { type: 'finish' }>;
+
+function reportToolCall(part: ToolCallStreamPart, progress: vscode.Progress<vscode.LanguageModelResponsePart>): void {
+  const input: unknown = JSON.parse(part.input);
+  if (!record(input)) throw new Error(`Invalid tool arguments for ${part.toolName}`);
+  progress.report(new vscode.LanguageModelToolCallPart(part.toolCallId, part.toolName, input));
+}
+
+function reportRawPart(
+  part: Extract<LanguageModelV3StreamPart, { type: 'raw' }>,
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+  state: StreamReportState
+): void {
+  noteStreamPart(state.diagnostics, 'raw', part);
+  const reasoning = legacyReasoningDelta(part.rawValue) ?? chatReasoningDelta(part.rawValue);
+  if (reasoning) reportThinkingDelta(reasoning.delta, reasoning.id, progress);
+  const fallback = completedResponseText(part.rawValue);
+  if (!state.textEmitted && fallback) {
+    state.textEmitted = true;
+    progress.report(new vscode.LanguageModelTextPart(fallback));
+  }
+}
+
+const FINISH_NOTICES: Record<string, string> = {
+  length: '\n\nOpenCode: Response may be incomplete because the model reached its output token limit.',
+  'content-filter': "\n\nOpenCode: The response was stopped by the model provider's content filter.",
+  error: '\n\nOpenCode: The model provider reported an error while finishing the response.',
+};
+
+function finishNotice(part: FinishStreamPart): string | undefined {
+  if (part.finishReason.unified === 'other') {
+    const detail = part.finishReason.raw === undefined
+      ? 'the stream ended without a completion event'
+      : 'the provider returned an unrecognized completion reason';
+    return `\n\nOpenCode: Response may be incomplete because ${detail}.`;
+  }
+  return FINISH_NOTICES[part.finishReason.unified];
+}
+
+function reportFinishPart(part: FinishStreamPart, progress: vscode.Progress<vscode.LanguageModelResponsePart>): void {
+  const notice = finishNotice(part);
+  if (notice) progress.report(new vscode.LanguageModelTextPart(notice));
+  progress.report(vscode.LanguageModelDataPart.json({
+    prompt_tokens: part.usage.inputTokens.total,
+    completion_tokens: part.usage.outputTokens.total,
+    completion_tokens_details: { reasoning_tokens: part.usage.outputTokens.reasoning },
+  }, 'usage'));
+}
+
+type ContentStreamPart = Exclude<LanguageModelV3StreamPart, { type: 'finish' | 'error' }>;
+
+function reportContentPart(
+  part: ContentStreamPart,
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+  state: StreamReportState
+): void {
+  if (part.type === 'text-delta') {
+    if (part.delta) state.textEmitted = true;
+    noteStreamPart(state.diagnostics, 'text');
+    progress.report(new vscode.LanguageModelTextPart(part.delta));
+  } else if (part.type === 'reasoning-delta') {
+    noteStreamPart(state.diagnostics, 'reasoning');
+    reportThinkingDelta(part.delta, part.id, progress);
+  } else if (part.type === 'tool-call') {
+    noteStreamPart(state.diagnostics, 'tool-call');
+    if (state.onToolCall) state.onToolCall(part);
+    else reportToolCall(part, progress);
+  } else if (part.type === 'raw') {
+    reportRawPart(part, progress, state);
   }
 }
 
@@ -417,69 +526,14 @@ function reportPart(
   progress: vscode.Progress<vscode.LanguageModelResponsePart>,
   state: StreamReportState
 ): void {
-  switch (part.type) {
-    case 'text-delta':
-      if (part.delta) state.textEmitted = true;
-      noteStreamPart(state.diagnostics, 'text');
-      progress.report(new vscode.LanguageModelTextPart(part.delta));
-      break;
-    case 'reasoning-delta':
-      noteStreamPart(state.diagnostics, 'reasoning');
-      reportThinkingDelta(part.delta, part.id, progress);
-      break;
-    case 'tool-call': {
-      noteStreamPart(state.diagnostics, 'tool-call');
-      if (state.onToolCall) {
-        state.onToolCall(part);
-        break;
-      }
-      const input: unknown = JSON.parse(part.input);
-      if (!record(input)) throw new Error(`Invalid tool arguments for ${part.toolName}`);
-      progress.report(new vscode.LanguageModelToolCallPart(part.toolCallId, part.toolName, input));
-      break;
-    }
-    case 'raw': {
-      noteStreamPart(state.diagnostics, 'raw', part);
-      const reasoning = legacyReasoningDelta(part.rawValue) ?? chatReasoningDelta(part.rawValue);
-      if (reasoning) reportThinkingDelta(reasoning.delta, reasoning.id, progress);
-      const fallback = completedResponseText(part.rawValue);
-      if (!state.textEmitted && fallback) {
-        state.textEmitted = true;
-        progress.report(new vscode.LanguageModelTextPart(fallback));
-      }
-      break;
-    }
-    case 'finish':
-      noteStreamPart(state.diagnostics, 'finish', part);
-      if (part.finishReason.unified === 'length') {
-        progress.report(new vscode.LanguageModelTextPart(
-          '\n\nOpenCode: Response may be incomplete because the model reached its output token limit.'
-        ));
-      } else if (part.finishReason.unified === 'content-filter') {
-        progress.report(new vscode.LanguageModelTextPart(
-          "\n\nOpenCode: The response was stopped by the model provider's content filter."
-        ));
-      } else if (part.finishReason.unified === 'other') {
-        const detail = part.finishReason.raw === undefined
-          ? 'the stream ended without a completion event'
-          : 'the provider returned an unrecognized completion reason';
-        progress.report(new vscode.LanguageModelTextPart(
-          `\n\nOpenCode: Response may be incomplete because ${detail}.`
-        ));
-      } else if (part.finishReason.unified === 'error') {
-        progress.report(new vscode.LanguageModelTextPart(
-          '\n\nOpenCode: The model provider reported an error while finishing the response.'
-        ));
-      }
-      progress.report(vscode.LanguageModelDataPart.json({
-        prompt_tokens: part.usage.inputTokens.total,
-        completion_tokens: part.usage.outputTokens.total,
-        completion_tokens_details: { reasoning_tokens: part.usage.outputTokens.reasoning },
-      }, 'usage'));
-      break;
-    case 'error':
-      if (state.diagnostics) summarizeStream(state.diagnostics, 'errored');
-      throw part.error instanceof Error ? part.error : new Error(String(part.error));
+  if (part.type === 'finish') {
+    noteStreamPart(state.diagnostics, 'finish', part);
+    reportFinishPart(part, progress);
+  } else if (part.type === 'error') {
+    if (state.diagnostics) summarizeStream(state.diagnostics, 'errored');
+    throw part.error instanceof Error ? part.error : new Error(String(part.error));
+  } else {
+    reportContentPart(part, progress, state);
   }
 }
 
@@ -493,6 +547,195 @@ function protocolModel(model: CustomEndpointModel, apiKey: string, streamPolicy:
   if (model.apiType === 'messages') return createAnthropic({ baseURL, authToken: apiKey, fetch: sdkFetch })(model.id);
   const openai = createOpenAI({ baseURL, apiKey, fetch: sdkFetch });
   return model.apiType === 'responses' ? openai.responses(model.id) : openai.chat(model.id);
+}
+
+interface PreparedChatRequest {
+  tools?: LanguageModelV3FunctionTool[];
+  effort: unknown;
+  prompt: LanguageModelV3Prompt;
+}
+
+function prepareChatRequest(
+  messages: readonly vscode.LanguageModelChatRequestMessage[],
+  options: vscode.ProvideLanguageModelChatResponseOptions
+): PreparedChatRequest {
+  const tools = options.tools?.map((tool) => ({
+    type: 'function' as const,
+    name: tool.name,
+    description: tool.description,
+    inputSchema: sanitizeToolSchema(tool.inputSchema ?? { type: 'object', properties: {} }, tool.name),
+  }));
+  const configuration = (options as { modelConfiguration?: Record<string, unknown> }).modelConfiguration;
+  const effort: unknown = configuration?.reasoningEffort ?? options.modelOptions?.reasoningEffort;
+  return { tools, effort, prompt: structuredClone(toSDKPrompt(messages)) };
+}
+
+interface StreamAttemptRequest {
+  model: CustomEndpointModel;
+  apiKey: string;
+  sessionId: string;
+  options: vscode.ProvideLanguageModelChatResponseOptions;
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>;
+  diagnosticsLog?: (message: string) => void;
+  streamPolicy: StreamTimeoutOptions;
+  prepared: PreparedChatRequest;
+  controller: AbortController;
+  lastAttempt: boolean;
+}
+
+interface StreamAttemptState {
+  attemptText: string;
+  finished: boolean;
+  report: StreamReportState;
+  toolCalls: ToolCallStreamPart[];
+}
+
+function createStreamAttemptState(request: StreamAttemptRequest): StreamAttemptState {
+  const { model, sessionId, diagnosticsLog, prepared } = request;
+  const toolCalls: ToolCallStreamPart[] = [];
+  return {
+    attemptText: '',
+    finished: false,
+    toolCalls,
+    report: {
+      textEmitted: false,
+      onToolCall: (part) => toolCalls.push(part),
+      diagnostics: createStreamDiagnostics(diagnosticsLog, {
+        modelId: model.id,
+        apiType: model.apiType,
+        sessionId,
+        maxOutputTokens: model.maxOutputTokens,
+        toolCount: prepared.tools?.length ?? 0,
+      }),
+    },
+  };
+}
+
+function isTerminalPart(part: LanguageModelV3StreamPart): boolean {
+  return part.type === 'finish' || (part.type === 'raw' && isRawCompletion(part.rawValue) &&
+    !(record(part.rawValue) && part.rawValue.type === 'response.incomplete'));
+}
+
+async function requestStream(request: StreamAttemptRequest): Promise<AsyncIterable<LanguageModelV3StreamPart>> {
+  const { model, apiKey, sessionId, options, streamPolicy, prepared, controller } = request;
+  const requestReasoning = typeof prepared.effort === 'string' ? { reasoningEffort: prepared.effort } : {};
+  const timedModel = protocolModel(model, apiKey, streamPolicy);
+  const { stream } = await timedModel.doStream({
+    prompt: prepared.prompt,
+    tools: prepared.tools,
+    toolChoice: { type: options.toolMode === vscode.LanguageModelChatToolMode.Required ? 'required' : 'auto' },
+    maxOutputTokens: model.maxOutputTokens,
+    headers: { 'x-opencode-session': sessionId, 'User-Agent': extensionUserAgent() },
+    abortSignal: controller.signal,
+    includeRawChunks: model.apiType !== 'messages',
+    providerOptions: {
+      openai: {
+        store: false,
+        strictJsonSchema: false,
+        forceReasoning: model.thinking,
+        systemMessageMode: 'system',
+        ...requestReasoning,
+        ...(model.apiType === 'responses' && model.thinking ? { reasoningSummary: 'auto' } : {}),
+      },
+      anthropic: typeof prepared.effort === 'string' ? { effort: prepared.effort } : {},
+    },
+  });
+  return stream;
+}
+
+function reportAttemptPart(
+  part: LanguageModelV3StreamPart,
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+  state: StreamAttemptState
+): boolean {
+  if (part.type === 'text-delta' && part.delta) state.attemptText += part.delta;
+  if (part.type === 'raw') reportPart(part, progress, state.report);
+  if (isTerminalPart(part)) {
+    state.finished = true;
+    if (part.type === 'finish') reportPart(part, progress, state.report);
+    else if (state.report.diagnostics) state.report.diagnostics.finishSeen = true;
+    return true;
+  }
+  if (part.type !== 'raw') reportPart(part, progress, state.report);
+  return false;
+}
+
+async function readStreamAttempt(
+  request: StreamAttemptRequest,
+  state: StreamAttemptState
+): Promise<void> {
+  const stream = await requestStream(request);
+  for await (const part of stream) {
+    if (reportAttemptPart(part, request.progress, state)) break;
+  }
+}
+
+function handleStreamTimeout(
+  request: StreamAttemptRequest,
+  state: StreamAttemptState
+): string | undefined {
+  if (state.report.diagnostics) {
+    summarizeStream(state.report.diagnostics, state.finished ? 'completed' : 'aborted');
+  }
+  if (state.toolCalls.length) {
+    reportToolCalls(state.toolCalls, request.progress);
+    return undefined;
+  }
+  if (state.finished) return undefined;
+  if (request.lastAttempt) {
+    request.progress.report(new vscode.LanguageModelTextPart(STREAM_INTERRUPTION_NOTICE));
+    return undefined;
+  }
+  return state.attemptText;
+}
+
+async function streamAttempt(request: StreamAttemptRequest): Promise<string | undefined> {
+  const state = createStreamAttemptState(request);
+  try {
+    await readStreamAttempt(request, state);
+    reportToolCalls(state.toolCalls, request.progress);
+    if (state.report.diagnostics) summarizeStream(state.report.diagnostics, 'completed');
+  } catch (error) {
+    if (!isStreamTimeout(error)) {
+      if (state.report.diagnostics) summarizeStream(state.report.diagnostics, state.finished ? 'completed' : 'errored');
+      throw error;
+    }
+    return handleStreamTimeout(request, state);
+  }
+  return undefined;
+}
+
+async function runChatStream(
+  model: CustomEndpointModel,
+  apiKey: string,
+  sessionId: string,
+  options: vscode.ProvideLanguageModelChatResponseOptions,
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+  token: vscode.CancellationToken,
+  streamPolicy: ChatStreamPolicy,
+  diagnosticsLog: ((message: string) => void) | undefined,
+  prepared: PreparedChatRequest,
+  setActiveController: (controller: AbortController | undefined) => void
+): Promise<void> {
+  for (let attempt = 0; attempt <= MAX_STREAM_RETRIES; attempt += 1) {
+    const controller = new AbortController();
+    setActiveController(controller);
+    let continuation: string | undefined;
+    try {
+      continuation = await streamAttempt({
+        model, apiKey, sessionId, options, progress, diagnosticsLog, streamPolicy, prepared, controller,
+        lastAttempt: attempt === MAX_STREAM_RETRIES,
+      });
+    } finally {
+      setActiveController(undefined);
+    }
+    if (continuation === undefined) return;
+    if (await waitForRetry(Math.max(0, streamPolicy.retryDelayMs(attempt + 1)), token)) return;
+    if (continuation) {
+      prepared.prompt.push({ role: 'assistant', content: [{ type: 'text', text: continuation }] });
+      prepared.prompt.push({ role: 'user', content: [{ type: 'text', text: CONTINUATION_INSTRUCTION }] });
+    }
+  }
 }
 
 export class OpenCodeChatAdapter implements vscode.LanguageModelChatProvider<RegisteredModel> {
@@ -544,105 +787,22 @@ export class OpenCodeChatAdapter implements vscode.LanguageModelChatProvider<Reg
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Cancellation can change during the awaits above.
     if (token.isCancellationRequested) return;
     if (!apiKey) throw new Error('Configure the OpenCode API key before sending a request.');
-    const subscription = token.onCancellationRequested(() => { activeController?.abort(); });
     let activeController: AbortController | undefined;
+    const subscription = token.onCancellationRequested(() => { activeController?.abort(); });
     try {
-      const tools: LanguageModelV3FunctionTool[] | undefined = options.tools?.map((tool) => ({
-        type: 'function', name: tool.name, description: tool.description,
-        inputSchema: sanitizeToolSchema(
-          tool.inputSchema ?? { type: 'object', properties: {} },
-          tool.name
-        ),
-      }));
-      const configuration = (options as { modelConfiguration?: Record<string, unknown> }).modelConfiguration;
-      const effort: unknown = configuration?.reasoningEffort ?? options.modelOptions?.reasoningEffort;
-      const requestReasoning = typeof effort === 'string' ? { reasoningEffort: effort } : {};
-      const initialPrompt = toSDKPrompt(messages);
-      const prompt = structuredClone(initialPrompt);
-
-      for (let attempt = 0; attempt <= MAX_STREAM_RETRIES; attempt += 1) {
-        const controller = new AbortController();
-        activeController = controller;
-        const timedModel = protocolModel(model, apiKey, this.streamPolicy);
-        let finished = false;
-        let attemptText = '';
-        const toolCalls: Extract<LanguageModelV3StreamPart, { type: 'tool-call' }>[] = [];
-        const reportState: StreamReportState = {
-          textEmitted: false,
-          onToolCall: (part) => toolCalls.push(part),
-          diagnostics: createStreamDiagnostics(this.log, {
-            modelId: model.id,
-            apiType: model.apiType,
-            sessionId,
-            maxOutputTokens: model.maxOutputTokens,
-            toolCount: tools?.length ?? 0,
-          }),
-        };
-        try {
-          const { stream } = await timedModel.doStream({
-            prompt, tools,
-            toolChoice: { type: options.toolMode === vscode.LanguageModelChatToolMode.Required ? 'required' : 'auto' },
-            maxOutputTokens: model.maxOutputTokens,
-            headers: { 'x-opencode-session': sessionId, 'User-Agent': extensionUserAgent() },
-            abortSignal: controller.signal,
-            includeRawChunks: model.apiType !== 'messages',
-            providerOptions: {
-              openai: {
-                store: false, strictJsonSchema: false, forceReasoning: model.thinking, systemMessageMode: 'system',
-                ...requestReasoning,
-                ...(model.apiType === 'responses' && model.thinking ? { reasoningSummary: 'auto' } : {}),
-              },
-              anthropic: typeof effort === 'string' ? { effort } : {},
-            },
-          });
-          for await (const part of stream) {
-            const terminal = part.type === 'finish' || (part.type === 'raw' && isRawCompletion(part.rawValue) &&
-              !(record(part.rawValue) && part.rawValue.type === 'response.incomplete'));
-            if (part.type === 'text-delta' && part.delta) {
-              attemptText += part.delta;
-            }
-            if (part.type === 'raw') reportPart(part, progress, reportState);
-            if (terminal) {
-              finished = true;
-              if (part.type === 'finish') reportPart(part, progress, reportState);
-              else if (reportState.diagnostics) reportState.diagnostics.finishSeen = true;
-              break;
-            }
-            if (part.type !== 'raw') reportPart(part, progress, reportState);
-          }
-          if (toolCalls.length) {
-            reportToolCalls(toolCalls, progress);
-            if (reportState.diagnostics) summarizeStream(reportState.diagnostics, 'completed');
-            return;
-          }
-          if (reportState.diagnostics) summarizeStream(reportState.diagnostics, 'completed');
-          return;
-        } catch (error) {
-          const timedOut = isStreamTimeout(error);
-          if (reportState.diagnostics) summarizeStream(reportState.diagnostics, finished ? 'completed' : timedOut ? 'aborted' : 'errored');
-          if (!timedOut) throw error;
-          if (finished) {
-            if (toolCalls.length) reportToolCalls(toolCalls, progress);
-            return;
-          }
-          if (toolCalls.length) {
-            reportToolCalls(toolCalls, progress);
-            return;
-          }
-          if (attempt === MAX_STREAM_RETRIES) {
-            progress.report(new vscode.LanguageModelTextPart(STREAM_INTERRUPTION_NOTICE));
-            return;
-          }
-          const delayMs = Math.max(0, this.streamPolicy.retryDelayMs(attempt + 1));
-          if (await waitForRetry(delayMs, token)) return;
-          if (attemptText) {
-            prompt.push({ role: 'assistant', content: [{ type: 'text', text: attemptText }] });
-            prompt.push({ role: 'user', content: [{ type: 'text', text: CONTINUATION_INSTRUCTION }] });
-          }
-        } finally {
-          if (activeController === controller) activeController = undefined;
-        }
-      }
+      const prepared = prepareChatRequest(messages, options);
+      await runChatStream(
+        model,
+        apiKey,
+        sessionId,
+        options,
+        progress,
+        token,
+        this.streamPolicy,
+        this.log,
+        prepared,
+        (controller) => { activeController = controller; }
+      );
     } finally {
       subscription.dispose();
     }
