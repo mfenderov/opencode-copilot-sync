@@ -24,7 +24,26 @@ export function createStreamTimeoutFetch(
     let headerTimer: ReturnType<typeof setTimeout> | undefined;
     let chunkTimer: ReturnType<typeof setTimeout> | undefined;
     let rejectAbort!: (reason: unknown) => void;
+    let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let bodyFinished = false;
     const abortPromise = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+    void abortPromise.catch(() => undefined);
+
+    const failBody = (error: unknown) => {
+      if (!bodyController || bodyFinished) return;
+      bodyFinished = true;
+      bodyController.error(error);
+    };
+    const resetChunkTimer = () => {
+      clearTimeout(chunkTimer);
+      chunkTimer = setTimeout(() => {
+        const error = new StreamTimeoutError(`Timed out waiting for a response body chunk after ${options.chunkTimeoutMs} ms`);
+        controller.abort(error);
+        failBody(error);
+        cleanup();
+        rejectAbort(error);
+      }, options.chunkTimeoutMs);
+    };
 
     const cleanup = () => {
       clearTimeout(headerTimer);
@@ -69,33 +88,32 @@ export function createStreamTimeoutFetch(
 
     const reader = (response.body as unknown as ReadableStream<Uint8Array>).getReader();
     const body = new ReadableStream<Uint8Array>({
-        async pull(streamController) {
-        const idleTimeout = new Promise<never>((_resolve, reject) => {
-          chunkTimer = setTimeout(() => {
-            const error = new StreamTimeoutError(`Timed out waiting for a response body chunk after ${options.chunkTimeoutMs} ms`);
-            controller.abort(error);
-            reject(error);
-          }, options.chunkTimeoutMs);
-        });
-
+      start(streamController) {
+        bodyController = streamController;
+        resetChunkTimer();
+      },
+      async pull(streamController) {
+        bodyController = streamController;
         try {
-          const result = await Promise.race([reader.read(), idleTimeout, abortPromise]);
-          clearTimeout(chunkTimer);
-          chunkTimer = undefined;
+          const result = await Promise.race([reader.read(), abortPromise]);
           if (result.done) {
+            bodyFinished = true;
             cleanup();
             reader.releaseLock();
             streamController.close();
           } else {
+            resetChunkTimer();
             streamController.enqueue(result.value);
           }
         } catch (error) {
+          bodyFinished = true;
           cleanup();
           void reader.cancel(error).catch(() => undefined);
           streamController.error(error);
         }
       },
       async cancel(reason) {
+        bodyFinished = true;
         cleanup();
         controller.abort(reason);
         await reader.cancel(reason).catch(() => undefined);

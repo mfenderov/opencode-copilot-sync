@@ -100,6 +100,40 @@ test('stream fetch timeout rejects when response body becomes idle', async (t) =
   await requestAborted;
 });
 
+test('stream fetch timeout aborts an idle upstream while the consumer pauses after one chunk', async (t) => {
+  const { createStreamTimeoutFetch, StreamTimeoutError } = await import('../out/infrastructure/http/stream-timeout-fetch.js');
+  let markRequestAborted;
+  let markSecondChunkWritten;
+  const requestAborted = new Promise((resolve) => { markRequestAborted = resolve; });
+  const secondChunkWritten = new Promise((resolve) => { markSecondChunkWritten = resolve; });
+  const server = await createTimeoutServer(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.write('first chunk');
+    res.on('close', markRequestAborted);
+    setTimeout(() => {
+      res.write(' second chunk');
+      markSecondChunkWritten();
+    }, 30);
+  });
+  const fetchWithTimeout = createStreamTimeoutFetch(fetch, { headerTimeoutMs: 100, chunkTimeoutMs: 100 });
+  const response = await fetchWithTimeout(`http://127.0.0.1:${server.address().port}/paused-reader`);
+  const reader = response.body.getReader();
+  assert.equal(new TextDecoder().decode((await reader.read()).value), 'first chunk');
+  await secondChunkWritten;
+
+  let timeoutTimer;
+  await Promise.race([
+    requestAborted,
+    new Promise((_resolve, reject) => {
+      timeoutTimer = setTimeout(() => reject(new Error('upstream was not aborted while consumer was paused')), 150);
+    }),
+  ]).finally(() => clearTimeout(timeoutTimer));
+  await assert.rejects(reader.read(), (error) => {
+    assert.ok(error instanceof StreamTimeoutError);
+    return true;
+  });
+});
+
 test('stream fetch timeout resets the body idle deadline after each chunk', async (t) => {
   const { createStreamTimeoutFetch } = await import('../out/infrastructure/http/stream-timeout-fetch.js');
   const server = await createTimeoutServer(t, (_req, res) => {
