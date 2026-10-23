@@ -529,28 +529,106 @@ function reportPart(
   }
 }
 
-function isTerminalOpenAIEvent(frame: string, apiType: CustomEndpointModel['apiType']): boolean {
-  const data = frame.split(/\r\n|\r|\n/)
+interface OpenAIEvent {
+  finish: boolean;
+  done: boolean;
+  usageOnly: boolean;
+  usagePresent: boolean;
+}
+
+const EMPTY_OPENAI_EVENT: OpenAIEvent = { finish: false, done: false, usageOnly: false, usagePresent: false };
+
+function eventData(frame: string): string {
+  return frame.split(/\r\n|\r|\n/)
     .filter((line) => line.startsWith('data:'))
     .map((line) => line.slice(5).replace(/^ /, ''))
     .join('\n');
-  if (apiType === 'chat-completions' && data === '[DONE]') return true;
-  if (!data) return false;
-  let rawValue: unknown;
+}
+
+function eventObject(data: string): Record<string, unknown> | undefined {
   try {
-    rawValue = JSON.parse(data);
+    const value: unknown = JSON.parse(data);
+    return record(value) ? value : undefined;
   } catch {
-    return false;
+    return undefined;
   }
-  if (!record(rawValue)) return false;
-  if (apiType === 'responses') return rawValue.type === 'response.completed' || rawValue.type === 'response.incomplete';
-  return Array.isArray(rawValue.choices) && rawValue.choices.some((choice) =>
-    record(choice) && choice.finish_reason !== null && choice.finish_reason !== undefined
-  );
+}
+
+function chatCompletionEvent(value: Record<string, unknown>): OpenAIEvent {
+  const choices = Array.isArray(value.choices) ? value.choices : [];
+  return {
+    finish: choices.some((choice) =>
+      record(choice) && choice.finish_reason !== null && choice.finish_reason !== undefined
+    ),
+    done: false,
+    usageOnly: choices.length === 0 && record(value.usage),
+    usagePresent: record(value.usage),
+  };
+}
+
+function openAIEvent(frame: string, apiType: CustomEndpointModel['apiType']): OpenAIEvent {
+  const data = eventData(frame);
+  if (apiType === 'chat-completions' && data === '[DONE]') return { ...EMPTY_OPENAI_EVENT, done: true };
+  const value = eventObject(data);
+  if (!value) return EMPTY_OPENAI_EVENT;
+  if (apiType !== 'responses') return chatCompletionEvent(value);
+  const finish = value.type === 'response.completed' || value.type === 'response.incomplete';
+  return { ...EMPTY_OPENAI_EVENT, finish };
+}
+
+interface CompletionState {
+  terminalSeen: boolean;
+  terminalTimer?: ReturnType<typeof setTimeout>;
+  terminated: boolean;
+  controller?: TransformStreamDefaultController<Uint8Array>;
+}
+
+function stopOnProtocolTerminal(controller: TransformStreamDefaultController<Uint8Array>, state: CompletionState): void {
+  state.terminated = true;
+  clearTimeout(state.terminalTimer);
+  controller.terminate();
+}
+
+function flushEventBytes(text: string, currentTextEnd: number, controller: TransformStreamDefaultController<Uint8Array>): void {
+  if (currentTextEnd > 0) controller.enqueue(new TextEncoder().encode(text.slice(0, currentTextEnd)));
+}
+
+function completesOnEvent(event: OpenAIEvent, apiType: CustomEndpointModel['apiType'], terminalSeen: boolean): boolean {
+  return (terminalSeen && (event.usageOnly || event.done)) || event.done ||
+    (event.finish && (apiType !== 'chat-completions' || event.usagePresent));
+}
+
+function handleCompletionEvent(
+  event: OpenAIEvent,
+  apiType: CustomEndpointModel['apiType'],
+  text: string,
+  currentTextEnd: number,
+  controller: TransformStreamDefaultController<Uint8Array>,
+  state: CompletionState,
+  terminalGraceMs: number
+): boolean {
+  if (completesOnEvent(event, apiType, state.terminalSeen)) {
+    flushEventBytes(text, currentTextEnd, controller);
+    stopOnProtocolTerminal(controller, state);
+    return true;
+  }
+  if (event.finish && !state.terminalSeen) {
+    state.terminalSeen = true;
+    state.terminalTimer = setTimeout(() => {
+      if (state.terminated) return;
+      state.terminated = true;
+      state.controller?.terminate();
+    }, Math.max(0, terminalGraceMs));
+  }
+  return false;
 }
 
 // Close OpenAI SSE input at protocol completion so SDK transforms flush without waiting for HTTP EOF.
-function createProtocolCompletionFetch(baseFetch: typeof fetch, apiType: CustomEndpointModel['apiType']): typeof fetch {
+function createProtocolCompletionFetch(
+  baseFetch: typeof fetch,
+  apiType: CustomEndpointModel['apiType'],
+  terminalGraceMs: number
+): typeof fetch {
   if (apiType === 'messages') return baseFetch;
   return async (input, init) => {
     const response = await baseFetch(input, init);
@@ -558,9 +636,13 @@ function createProtocolCompletionFetch(baseFetch: typeof fetch, apiType: CustomE
 
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
+    const state: CompletionState = { terminalSeen: false, terminated: false };
     let incompleteFrame = '';
     const body = (response.body as ReadableStream<Uint8Array>).pipeThrough(
       new TransformStream<Uint8Array, Uint8Array>({
+        start(controller) {
+          state.controller = controller;
+        },
         transform(chunk, controller) {
           const text = decoder.decode(chunk, { stream: true });
           const previousIncompleteLength = incompleteFrame.length;
@@ -570,12 +652,9 @@ function createProtocolCompletionFetch(baseFetch: typeof fetch, apiType: CustomE
           for (const separator of bufferedText.matchAll(separatorPattern)) {
             const frameEnd = separator.index;
             const nextFrameStart = frameEnd + separator[0].length;
-            if (isTerminalOpenAIEvent(bufferedText.slice(frameStart, frameEnd), apiType)) {
-              const currentTextEnd = Math.max(0, nextFrameStart - previousIncompleteLength);
-              if (currentTextEnd > 0) controller.enqueue(encoder.encode(text.slice(0, currentTextEnd)));
-              controller.terminate();
-              return;
-            }
+            const event = openAIEvent(bufferedText.slice(frameStart, frameEnd), apiType);
+            const currentTextEnd = Math.max(0, nextFrameStart - previousIncompleteLength);
+            if (handleCompletionEvent(event, apiType, text, currentTextEnd, controller, state, terminalGraceMs)) return;
             frameStart = nextFrameStart;
           }
 
@@ -583,6 +662,7 @@ function createProtocolCompletionFetch(baseFetch: typeof fetch, apiType: CustomE
           if (text) controller.enqueue(encoder.encode(text));
         },
         flush(controller) {
+          clearTimeout(state.terminalTimer);
           const remainder = decoder.decode();
           if (remainder) controller.enqueue(encoder.encode(remainder));
         },
@@ -599,7 +679,7 @@ function protocolModel(model: CustomEndpointModel, apiKey: string, streamPolicy:
     return fetch(input, await withProxy(url, { ...init }));
   };
   const timeoutFetch = createStreamTimeoutFetch(proxyFetch, streamPolicy);
-  const sdkFetch = createProtocolCompletionFetch(timeoutFetch, model.apiType);
+  const sdkFetch = createProtocolCompletionFetch(timeoutFetch, model.apiType, 100);
   if (model.apiType === 'messages') return createAnthropic({ baseURL, authToken: apiKey, fetch: sdkFetch })(model.id);
   const openai = createOpenAI({ baseURL, apiKey, fetch: sdkFetch });
   return model.apiType === 'responses' ? openai.responses(model.id) : openai.chat(model.id);

@@ -246,6 +246,74 @@ test('chat adapter resolves on terminal protocol completion while the HTTP body 
   openResponse.end();
 });
 
+test('chat-completions finish_reason preserves a following usage-only chunk on an open body', async (t) => {
+  let markResponseSent;
+  const responseSent = new Promise((resolve) => { markResponseSent = resolve; });
+  let openResponse;
+  const terminalPolicy = { ...testStreamPolicy, chunkTimeoutMs: 900_000 };
+  const { provider, model, requests } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    openResponse = res;
+    const emit = (chunk) => res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    emit({
+      id: 'chatcmpl-separate-usage', object: 'chat.completion.chunk', created: 1, model: req.body.model,
+      choices: [{ index: 0, delta: { content: 'Answer' }, finish_reason: 'stop' }],
+    });
+    emit({
+      id: 'chatcmpl-separate-usage', object: 'chat.completion.chunk', created: 1, model: req.body.model,
+      choices: [], usage: { prompt_tokens: 12, completion_tokens: 6, total_tokens: 18 },
+    });
+    markResponseSent();
+  }, terminalPolicy);
+  const chatModel = { ...model, apiType: 'chat-completions' };
+  provider.updateModels([chatModel]);
+  const parts = [];
+  const partsPromise = provider.provideLanguageModelChatResponse(chatModel, messages('answer'), {
+    modelOptions: { _conversationId: 'chat-separate-usage' }, toolMode: 1,
+  }, { report: (part) => parts.push(part) }, token());
+  await Promise.race([
+    partsPromise,
+    responseSent.then(() => new Promise((_resolve, reject) => setTimeout(() => reject(new Error('provider waited for HTTP EOF after the usage trailer')), 300))),
+  ]);
+
+  assert.equal(requests.length, 1);
+  assert.equal(parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''), 'Answer');
+  const usage = parts.find((part) => part instanceof vscode.LanguageModelDataPart && part.mimeType === 'usage');
+  assert.ok(usage, 'SDK finish must report usage from the trailing chunk');
+  const usageValue = JSON.parse(new TextDecoder().decode(usage.data));
+  assert.equal(usageValue.prompt_tokens, 12);
+  assert.equal(usageValue.completion_tokens, 6);
+  openResponse.end();
+});
+
+test('chat-completions finish_reason without a trailer completes promptly on an open body', async (t) => {
+  let openResponse;
+  const terminalPolicy = { ...testStreamPolicy, chunkTimeoutMs: 900_000 };
+  const { provider, model, requests } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    openResponse = res;
+    res.write(`data: ${JSON.stringify({
+      id: 'chatcmpl-no-trailer', object: 'chat.completion.chunk', created: 1, model: req.body.model,
+      choices: [{ index: 0, delta: { content: 'Answer' }, finish_reason: 'stop' }],
+    })}\n\n`);
+  }, terminalPolicy);
+  const chatModel = { ...model, apiType: 'chat-completions' };
+  provider.updateModels([chatModel]);
+  const parts = [];
+  await Promise.race([
+    provider.provideLanguageModelChatResponse(chatModel, messages('answer'), {
+      modelOptions: { _conversationId: 'chat-no-trailer' }, toolMode: 1,
+    }, { report: (part) => parts.push(part) }, token()),
+    new Promise((_resolve, reject) => setTimeout(() => reject(new Error('provider waited for the long chunk timeout after finish_reason')), 300)),
+  ]);
+
+  assert.equal(requests.length, 1, 'a protocol finish must not be retried');
+  assert.equal(parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''), 'Answer');
+  const usage = parts.find((part) => part instanceof vscode.LanguageModelDataPart && part.mimeType === 'usage');
+  assert.ok(usage, 'SDK finish must flush after the trailer grace period');
+  openResponse.end();
+});
+
 test('chat-completions terminal chunk flushes buffered tool calls and usage on an open body', async (t) => {
   let markResponseSent;
   const responseSent = new Promise((resolve) => { markResponseSent = resolve; });
