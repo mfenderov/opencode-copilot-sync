@@ -7,3 +7,4 @@ out/
 .test-user-data/
 .test-extensions/
 coverage/
+dist
