@@ -63,6 +63,7 @@ Customize behavior via VS Code Settings (`Cmd+,` / `Ctrl+,` search for `opencode
 | `opencode.includeGoModels` | `true` | Include models from the OpenCode Go subscription catalog. |
 | `opencode.includeZenModels` | `true` | Include OpenCode Zen catalog models as announced upstream. |
 | `opencode.additionalSyncTargets` | `[]` | Additional absolute `chatLanguageModels.json` paths to mirror to. Use this to opt in to another user profile or a sibling WSL distro. |
+| `opencode.streamDiagnostics` | `false` | Log per-request stream summaries (`[Stream]` lines with part counts, timing, and finish reason) to the output channel. Never includes prompt text, reasoning content, tool arguments, or credentials. |
 
 ---
 
@@ -85,7 +86,9 @@ Customize behavior via VS Code Settings (`Cmd+,` / `Ctrl+,` search for `opencode
 
 The extension fetches the Go and Zen catalogs, enriches models with metadata, and registers them under the native **OpenCode** provider. The last synced catalog is cached for reloads. The primary profile's old OpenCode Custom Endpoint entry is removed to avoid offering a duplicate path that cannot supply conversation headers; unrelated providers and optional profile mirrors are preserved.
 
-A small adapter adds `x-opencode-session`, translates VS Code message parts to SDK messages, and forwards SDK response parts. It does not compact or truncate history, set idle timers, replay failed requests, or implement automatic retries. Cancellation comes from VS Code. The official OpenAI and Anthropic provider SDKs handle wire formats and stream parsing.
+A small adapter adds `x-opencode-session`, translates VS Code message parts to SDK messages, and forwards SDK response parts. For Responses models that support thinking, it requests reasoning summaries and forwards both SDK summary deltas and OpenCode's legacy reasoning deltas as VS Code thinking parts. Chat Completions reasoning fields (`reasoning_content`, `thought`, `reasoning`, `reasoning_details[]`) are mapped the same way, since the SDK chat parser otherwise drops them. If no text delta arrives, it recovers text from the terminal response; output-limit truncation and streams that close without a completion event are surfaced in chat instead of appearing to finish normally. When `opencode.streamDiagnostics` is enabled, every request logs stream summaries (`[Stream] request ...` and `[Stream] completed ...`) recording part counts, the last raw event type, timing, and the terminal finish reason; message text, reasoning content, tool arguments, and credentials are never logged. The adapter does not compact or truncate history, set idle timers, replay failed requests, or implement automatic retries. Cancellation comes from VS Code. The official OpenAI and Anthropic provider SDKs handle wire formats and stream parsing.
+
+To capture evidence for a stop, enable `opencode.streamDiagnostics` in Settings, reproduce the stop, then copy the `[Stream] request ...` and `[Stream] completed ...` lines from **View → Output → OpenCode Copilot Sync** (never send your prompt text or API key).
 
 Where VS Code supplies `modelOptions._conversationId`, that ID is used unchanged. Current stable Agents sessions require the approved history-based fallback: bounded message-hash chains and UUIDs are persisted, without message text. Identical histories cannot be distinguished until they diverge; truncated or rewritten history can also lose continuity. This is an approximation, not an exact host session identity. It is not a profile-wide shared UUID. Responses requests send full history with `store: false` and no `previous_response_id`.
 
@@ -119,7 +122,9 @@ The extension registers the native **OpenCode** provider through a thin SDK adap
 
 Check **View → Output → OpenCode Copilot Sync** for catalog-fetch and registration errors, and VS Code's Copilot logs for request failures. If models are missing, run **OpenCode: Sync Models to Copilot** and select a model under the native OpenCode provider, not the headerless Custom Endpoint experiment.
 
-The original premature-stop cause remains unconfirmed. This local spike removes the old custom stream/recovery implementation so its behavior can be compared with SDK-managed streaming; successful registration and mock requests do not prove live-stream reliability.
+The original premature-stop cause remains unconfirmed. Responses turns now show a visible notice when the model reaches its output limit or the stream closes without a completion event, but the adapter does not automatically retry or resume a response after output begins. Successful registration and mock requests do not prove live-stream reliability.
+
+To capture evidence for a stop, enable `opencode.streamDiagnostics` in Settings, reproduce the stop, then copy the `[Stream] request ...` and `[Stream] completed ...` lines from **View → Output → OpenCode Copilot Sync** (never send your prompt text or API key).
 
 ---
 

@@ -130,6 +130,11 @@
           },
           "default": [],
           "description": "Additional absolute chatLanguageModels.json paths to mirror to. Other users and sibling WSL distributions are not discovered by default."
+        },
+        "opencode.streamDiagnostics": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log per-request stream summaries ([Stream] request/completed lines with part counts, timing, and finish reason) to the OpenCode Copilot Sync output channel. Never includes prompt text, reasoning content, tool arguments, or credentials."
         }
       }
     }

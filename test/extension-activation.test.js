@@ -74,3 +74,41 @@ test('activation announces provider models before any network call', async () =>
   for (const disposable of context.subscriptions) disposable.dispose?.();
   fs.rmSync(context.globalStorageUri.fsPath, { recursive: true, force: true });
 });
+
+test('activation wires stream diagnostics logging when the setting is enabled', async () => {
+  const context = createMockContext();
+  const configValues = new Map([['opencode.streamDiagnostics', true]]);
+  const originalGetConfiguration = vscode.workspace.getConfiguration;
+  vscode.workspace.getConfiguration = (section) => ({
+    get: (key, defaultValue) => {
+      const fullKey = section ? `${section}.${key}` : key;
+      return configValues.has(fullKey) ? configValues.get(fullKey) : defaultValue;
+    },
+    update: async () => {},
+  });
+  try {
+    const logged = [];
+    const originalCreateChannel = vscode.window.createOutputChannel;
+    vscode.window.createOutputChannel = () => {
+      const channel = originalCreateChannel();
+      const originalInfo = channel.info.bind(channel);
+      channel.info = (message) => {
+        logged.push(String(message));
+        return originalInfo(message);
+      };
+      return channel;
+    };
+    try {
+      const { chatProvider } = await activate(context);
+      const seen = logged.some((line) => line.includes('[Stream]'));
+      assert.equal(seen, false, 'activation itself must not emit stream lines');
+      assert.ok(chatProvider, 'provider must be constructed with diagnostics wiring');
+    } finally {
+      vscode.window.createOutputChannel = originalCreateChannel;
+    }
+  } finally {
+    vscode.workspace.getConfiguration = originalGetConfiguration;
+  }
+  for (const disposable of context.subscriptions) disposable.dispose?.();
+  fs.rmSync(context.globalStorageUri.fsPath, { recursive: true, force: true });
+});

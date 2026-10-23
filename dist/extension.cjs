@@ -70661,6 +70661,110 @@ function contentPart(part, names) {
   }
   throw new Error("Unsupported language model message part");
 }
+function completedResponseText(rawValue) {
+  if (!record2(rawValue) || rawValue.type !== "response.completed" && rawValue.type !== "response.incomplete" || !record2(rawValue.response) || !Array.isArray(rawValue.response.output)) {
+    return void 0;
+  }
+  const text = [];
+  for (const item of rawValue.response.output) {
+    if (!record2(item) || item.type !== "message" || !Array.isArray(item.content)) continue;
+    for (const part of item.content) {
+      if (record2(part) && part.type === "output_text" && typeof part.text === "string") {
+        text.push(part.text);
+      }
+    }
+  }
+  return text.length > 0 ? text.join("") : void 0;
+}
+function legacyReasoningDelta(rawValue) {
+  if (!record2(rawValue) || rawValue.type !== "response.reasoning_text.delta" || typeof rawValue.item_id !== "string" || typeof rawValue.delta !== "string" || rawValue.delta.length === 0) {
+    return void 0;
+  }
+  return { id: rawValue.item_id, delta: rawValue.delta };
+}
+function chatReasoningDelta(rawValue) {
+  if (!record2(rawValue) || !Array.isArray(rawValue.choices)) return void 0;
+  const deltas = [];
+  for (const choice of rawValue.choices) {
+    if (!record2(choice) || !record2(choice.delta)) continue;
+    const delta = choice.delta;
+    for (const key of ["reasoning_content", "thought", "reasoning"]) {
+      const direct = delta[key];
+      if (typeof direct === "string" && direct.length > 0) deltas.push(direct);
+    }
+    if (Array.isArray(delta.reasoning_details)) {
+      for (const detail of delta.reasoning_details) {
+        if (record2(detail) && typeof detail.text === "string" && detail.text.length > 0) {
+          deltas.push(detail.text);
+        }
+      }
+    }
+  }
+  if (deltas.length === 0) return void 0;
+  const id = typeof rawValue.id === "string" ? rawValue.id : "chat-reasoning";
+  return { id, delta: deltas.join("") };
+}
+function reportThinkingDelta(delta, id, progress) {
+  if (thinkingPart) progress.report(new thinkingPart(delta, id));
+  else if (delta) progress.report(new vscode2.LanguageModelTextPart(delta));
+}
+function createStreamDiagnostics(log, request) {
+  if (!log) return void 0;
+  log(
+    `[Stream] request model=${request.modelId} protocol=${request.apiType} session=${request.sessionId} maxOutputTokens=${request.maxOutputTokens ?? "unknown"} tools=${request.toolCount}`
+  );
+  return {
+    log,
+    startAt: Date.now(),
+    firstPartAt: void 0,
+    lastPartAt: void 0,
+    textDeltas: 0,
+    reasoningDeltas: 0,
+    toolCalls: 0,
+    finishSeen: false,
+    finishUnified: void 0,
+    finishRaw: void 0,
+    lastRawType: void 0,
+    rawChunks: 0
+  };
+}
+function noteStreamPart(diagnostics, kind, part) {
+  if (!diagnostics) return;
+  const now = Date.now();
+  diagnostics.firstPartAt ??= now;
+  diagnostics.lastPartAt = now;
+  switch (kind) {
+    case "text":
+      diagnostics.textDeltas += 1;
+      break;
+    case "reasoning":
+      diagnostics.reasoningDeltas += 1;
+      break;
+    case "tool-call":
+      diagnostics.toolCalls += 1;
+      break;
+    case "finish":
+      diagnostics.finishSeen = true;
+      diagnostics.finishUnified = part?.finishReason?.unified;
+      diagnostics.finishRaw = typeof part?.finishReason?.raw === "string" ? part.finishReason.raw : void 0;
+      break;
+    case "raw": {
+      diagnostics.rawChunks += 1;
+      const rawValue = part?.rawValue;
+      const rawType = record2(rawValue) && typeof rawValue.type === "string" ? rawValue.type : void 0;
+      if (rawType) diagnostics.lastRawType = rawType;
+      break;
+    }
+  }
+}
+function summarizeStream(diagnostics, outcome) {
+  const elapsedMs = Date.now() - diagnostics.startAt;
+  const firstPartMs = diagnostics.firstPartAt === void 0 ? "none" : `${diagnostics.firstPartAt - diagnostics.startAt}ms`;
+  const lastGapMs = diagnostics.lastPartAt === void 0 ? "none" : `${Date.now() - diagnostics.lastPartAt}ms`;
+  diagnostics.log(
+    `[Stream] ${outcome} elapsedMs=${elapsedMs} firstPart=${firstPartMs} lastPartGap=${lastGapMs} text=${diagnostics.textDeltas} reasoning=${diagnostics.reasoningDeltas} toolCalls=${diagnostics.toolCalls} rawChunks=${diagnostics.rawChunks} lastRawType=${diagnostics.lastRawType ?? "none"} finishSeen=${diagnostics.finishSeen} finish=${diagnostics.finishUnified ?? "none"}` + (diagnostics.finishRaw ? ` rawFinish=${diagnostics.finishRaw}` : "")
+  );
+}
 function toSDKPrompt(messages) {
   const prompt = [];
   const names = /* @__PURE__ */ new Map();
@@ -70693,21 +70797,57 @@ function toSDKPrompt(messages) {
   }
   return prompt;
 }
-function reportPart(part, progress) {
+function reportPart(part, progress, state) {
   switch (part.type) {
     case "text-delta":
+      if (part.delta) state.textEmitted = true;
+      noteStreamPart(state.diagnostics, "text");
       progress.report(new vscode2.LanguageModelTextPart(part.delta));
       break;
     case "reasoning-delta":
-      if (thinkingPart) progress.report(new thinkingPart(part.delta, part.id));
+      noteStreamPart(state.diagnostics, "reasoning");
+      reportThinkingDelta(part.delta, part.id, progress);
       break;
     case "tool-call": {
+      noteStreamPart(state.diagnostics, "tool-call");
       const input2 = JSON.parse(part.input);
       if (!record2(input2)) throw new Error(`Invalid tool arguments for ${part.toolName}`);
       progress.report(new vscode2.LanguageModelToolCallPart(part.toolCallId, part.toolName, input2));
       break;
     }
+    case "raw": {
+      noteStreamPart(state.diagnostics, "raw", part);
+      const reasoning = legacyReasoningDelta(part.rawValue) ?? chatReasoningDelta(part.rawValue);
+      if (reasoning) reportThinkingDelta(reasoning.delta, reasoning.id, progress);
+      const fallback = completedResponseText(part.rawValue);
+      if (!state.textEmitted && fallback) {
+        state.textEmitted = true;
+        progress.report(new vscode2.LanguageModelTextPart(fallback));
+      }
+      break;
+    }
     case "finish":
+      noteStreamPart(state.diagnostics, "finish", part);
+      if (part.finishReason.unified === "length") {
+        progress.report(new vscode2.LanguageModelTextPart(
+          "\n\nOpenCode: Response may be incomplete because the model reached its output token limit."
+        ));
+      } else if (part.finishReason.unified === "content-filter") {
+        progress.report(new vscode2.LanguageModelTextPart(
+          "\n\nOpenCode: The response was stopped by the model provider's content filter."
+        ));
+      } else if (part.finishReason.unified === "other") {
+        const detail = part.finishReason.raw === void 0 ? "the stream ended without a completion event" : "the provider returned an unrecognized completion reason";
+        progress.report(new vscode2.LanguageModelTextPart(
+          `
+
+OpenCode: Response may be incomplete because ${detail}.`
+        ));
+      } else if (part.finishReason.unified === "error") {
+        progress.report(new vscode2.LanguageModelTextPart(
+          "\n\nOpenCode: The model provider reported an error while finishing the response."
+        ));
+      }
       progress.report(vscode2.LanguageModelDataPart.json({
         prompt_tokens: part.usage.inputTokens.total,
         completion_tokens: part.usage.outputTokens.total,
@@ -70715,6 +70855,7 @@ function reportPart(part, progress) {
       }, "usage"));
       break;
     case "error":
+      if (state.diagnostics) summarizeStream(state.diagnostics, "errored");
       throw part.error instanceof Error ? part.error : new Error(String(part.error));
   }
 }
@@ -70729,8 +70870,9 @@ function protocolModel(model, apiKey) {
   return model.apiType === "responses" ? openai2.responses(model.id) : openai2.chat(model.id);
 }
 var OpenCodeChatAdapter = class {
-  constructor(context) {
+  constructor(context, log) {
     this.context = context;
+    this.log = log;
     this.identities = new ConversationIdentity(context.globalState);
   }
   models = [];
@@ -70779,6 +70921,7 @@ var OpenCodeChatAdapter = class {
       }));
       const configuration = options.modelConfiguration;
       const effort = configuration?.reasoningEffort ?? options.modelOptions?.reasoningEffort;
+      const requestReasoning = typeof effort === "string" ? { reasoningEffort: effort } : {};
       const { stream } = await protocolModel(model, apiKey).doStream({
         prompt: toSDKPrompt(messages),
         tools,
@@ -70786,20 +70929,44 @@ var OpenCodeChatAdapter = class {
         maxOutputTokens: model.maxOutputTokens,
         headers: { "x-opencode-session": sessionId, "User-Agent": extensionUserAgent() },
         abortSignal: controller.signal,
+        includeRawChunks: model.apiType !== "messages",
         providerOptions: {
           openai: {
             store: false,
             strictJsonSchema: false,
             forceReasoning: model.thinking,
             systemMessageMode: "system",
-            ...typeof effort === "string" ? { reasoningEffort: effort } : {}
+            ...requestReasoning,
+            // Summaries are the only reasoning output the Responses stream
+            // parser surfaces as deltas; without this the model reasons
+            // silently and no thinking parts ever reach VS Code.
+            ...model.apiType === "responses" && model.thinking ? { reasoningSummary: "auto" } : {}
           },
           anthropic: typeof effort === "string" ? { effort } : {}
         }
       });
-      for await (const part of stream) {
-        if (controller.signal.aborted) return;
-        reportPart(part, progress);
+      const reportState = {
+        textEmitted: false,
+        diagnostics: createStreamDiagnostics(this.log, {
+          modelId: model.id,
+          apiType: model.apiType,
+          sessionId,
+          maxOutputTokens: model.maxOutputTokens,
+          toolCount: tools?.length ?? 0
+        })
+      };
+      try {
+        for await (const part of stream) {
+          if (controller.signal.aborted) {
+            if (reportState.diagnostics) summarizeStream(reportState.diagnostics, "aborted");
+            return;
+          }
+          reportPart(part, progress, reportState);
+        }
+        if (reportState.diagnostics) summarizeStream(reportState.diagnostics, "completed");
+      } catch (error62) {
+        if (reportState.diagnostics) summarizeStream(reportState.diagnostics, "errored");
+        throw error62;
       }
     } finally {
       subscription.dispose();
@@ -71135,7 +71302,11 @@ async function activate(context) {
       }
     })
   );
-  const chatProvider = new OpenCodeChatAdapter(context);
+  const chatProvider = new OpenCodeChatAdapter(context, (message) => {
+    if (vscode5.workspace.getConfiguration("opencode").get("streamDiagnostics", false)) {
+      outputChannel.info(message);
+    }
+  });
   chatProvider.updateModels(context.globalState.get("opencode.models", []));
   context.subscriptions.push(chatProvider, vscode5.lm.registerLanguageModelChatProvider("opencode", chatProvider));
   outputChannel.info("OpenCode model sync active: SDK adapter supplies conversation headers and forwards responses.");

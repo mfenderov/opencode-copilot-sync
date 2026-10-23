@@ -40,7 +40,11 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  const chatProvider = new OpenCodeChatAdapter(context);
+  const chatProvider = new OpenCodeChatAdapter(context, (message) => {
+    if (vscode.workspace.getConfiguration('opencode').get<boolean>('streamDiagnostics', false)) {
+      outputChannel.info(message);
+    }
+  });
   chatProvider.updateModels(context.globalState.get<CustomEndpointModel[]>('opencode.models', []));
   context.subscriptions.push(chatProvider, vscode.lm.registerLanguageModelChatProvider('opencode', chatProvider));
   outputChannel.info('OpenCode model sync active: SDK adapter supplies conversation headers and forwards responses.');

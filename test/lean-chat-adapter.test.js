@@ -47,6 +47,103 @@ async function setup(t, handler) {
   return { provider, model, requests, run, sendResponses };
 }
 
+test('stream diagnostics record request, parts and completion without changing output', async (t) => {
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  const { model, requests } = await setup(t, (req, res) => sendResponses(res, req.body.model));
+  const lines = [];
+  const logged = new OpenCodeChatAdapter(
+    { secrets: { get: async () => 'sk-local-test' } },
+    (message) => lines.push(message)
+  );
+  logged.updateModels([model]);
+  const parts = [];
+  await logged.provideLanguageModelChatResponse(model, [{ role: 1, content: [new vscode.LanguageModelTextPart('hello')] }], {
+    modelOptions: { _conversationId: 'diagnostics-session' }, toolMode: vscode.LanguageModelChatToolMode.Auto,
+  }, { report: (part) => parts.push(part) }, token());
+  assert.equal(requests.length, 1);
+  assert.equal(
+    parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''),
+    'Hello from upstream'
+  );
+  assert.ok(lines.some((line) => line.startsWith('[Stream] request model=') && line.includes('session=diagnostics-session')));
+  assert.ok(lines.some((line) => line.startsWith('[Stream] completed') && line.includes('text=1') && line.includes('finishSeen=true')));
+});
+
+test('stream diagnostics stay silent without a log sink', async (t) => {
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  const { model, requests } = await setup(t, (req, res) => sendResponses(res, req.body.model));
+  const silent = new OpenCodeChatAdapter({ secrets: { get: async () => 'sk-local-test' } });
+  silent.updateModels([model]);
+  const parts = [];
+  await silent.provideLanguageModelChatResponse(model, messages('hello'), {
+    modelOptions: { _conversationId: 'diagnostics-silent-session' }, toolMode: vscode.LanguageModelChatToolMode.Auto,
+  }, { report: (part) => parts.push(part) }, token());
+  assert.equal(requests.length, 1);
+  assert.equal(
+    parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''),
+    'Hello from upstream'
+  );
+});
+
+test('stream diagnostics record when a Responses stream ends without a finish', async (t) => {
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  const { model, requests } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const text = 'Partial answer without completion';
+    res.write(`data: ${JSON.stringify({ type: 'response.created', response: { id: 'resp_diag_cut', created_at: 1, model: req.body.model } })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'response.output_text.delta', item_id: 'msg_diag_cut', delta: text })}\n\n`);
+    res.end();
+  });
+  const lines = [];
+  const logged = new OpenCodeChatAdapter(
+    { secrets: { get: async () => 'sk-local-test' } },
+    (message) => lines.push(message)
+  );
+  logged.updateModels([model]);
+  const parts = [];
+  await logged.provideLanguageModelChatResponse(model, [{ role: 1, content: [new vscode.LanguageModelTextPart('hello')] }], {
+    modelOptions: { _conversationId: 'diagnostics-cut-session' }, toolMode: vscode.LanguageModelChatToolMode.Auto,
+  }, { report: (part) => parts.push(part) }, token());
+  if (!lines.some((line) => line.startsWith('[Stream] request'))) {
+    assert.equal(lines.length, 0, 'request line must always be logged while troubleshooting');
+  }
+  if (!lines.some((line) => line.startsWith('[Stream] completed'))) {
+    assert.equal(lines.length, 0, 'completion line must always be logged while troubleshooting');
+  }
+  assert.equal(requests.length, 1);
+  assert.equal(
+    parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''),
+    'Partial answer without completion\n\nOpenCode: Response may be incomplete because the stream ended without a completion event.'
+  );
+  assert.ok(lines.some((line) => line.startsWith('[Stream] request model=') && line.includes('session=diagnostics-cut-session')));
+  assert.ok(lines.some((line) => line.startsWith('[Stream] completed') && line.includes('finishSeen=true')));
+});
+
+test('stream diagnostics record an errored outcome when the stream errors before any part', async (t) => {
+  const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
+  const { model } = await setup(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('data: this is not JSON\n\n');
+    res.end();
+  });
+  const lines = [];
+  const logged = new OpenCodeChatAdapter(
+    { secrets: { get: async () => 'sk-local-test' } },
+    (message) => lines.push(message)
+  );
+  logged.updateModels([model]);
+  const parts = [];
+  await assert.rejects(
+    logged.provideLanguageModelChatResponse(model, [{ role: 1, content: [new vscode.LanguageModelTextPart('hello')] }], {
+      modelOptions: { _conversationId: 'diagnostics-failed-session' }, toolMode: vscode.LanguageModelChatToolMode.Auto,
+    }, { report: (part) => parts.push(part) }, token())
+  );
+  assert.ok(lines.some((line) => line.startsWith('[Stream] request model=') && line.includes('session=diagnostics-failed-session')));
+  assert.ok(lines.some((line) => line.startsWith('[Stream] errored')));
+  assert.ok(lines.some((line) => line.startsWith('[Stream] request model=') && line.includes('session=diagnostics-failed-session')));
+  assert.ok(lines.some((line) => line.startsWith('[Stream] errored')));
+});
+
 test('host conversation ID reaches Go unchanged and is stable across turns, retries and adapter restarts', async (t) => {
   const { run, requests, model } = await setup(t, (req, res) => sendResponses(res, req.body.model));
   await run('conversation-a', 'first turn');
@@ -130,9 +227,129 @@ test('reasoning metadata and selected effort reach upstream for arbitrary Respon
   const { provider, model, requests, run } = await setup(t, (req, res) => sendResponses(res, req.body.model));
   provider.updateModels([{ ...model, thinking: true, supportsReasoningEffort: ['low', 'high'] }]);
   await run('reasoning-session', 'think', { modelConfiguration: { reasoningEffort: 'high' } });
-  assert.deepEqual(requests[0].body.reasoning, { effort: 'high' });
+  assert.deepEqual(requests[0].body.reasoning, { effort: 'high', summary: 'auto' });
   const info = provider.provideLanguageModelChatInformation()[0];
   assert.deepEqual(info.configurationSchema.properties.reasoningEffort.enum, ['low', 'high']);
+});
+
+test('reasoning summary deltas reach VS Code as thinking parts for thinking models', async (t) => {
+  const { provider, model, requests, run } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+    emit({ type: 'response.created', response: { id: 'resp_think', created_at: 1, model: req.body.model } });
+    emit({ type: 'response.output_item.added', output_index: 0, item: { type: 'reasoning', id: 'rs_think', summary: [] } });
+    emit({ type: 'response.reasoning_summary_part.added', item_id: 'rs_think', summary_index: 0 });
+    emit({ type: 'response.reasoning_summary_text.delta', item_id: 'rs_think', summary_index: 0, delta: 'considering options' });
+    emit({ type: 'response.reasoning_summary_part.done', item_id: 'rs_think', summary_index: 0 });
+    emit({ type: 'response.output_item.done', output_index: 0, item: { type: 'reasoning', id: 'rs_think', summary: [{ type: 'summary_text', text: 'considering options' }] } });
+    emit({ type: 'response.output_item.added', output_index: 1, item: { type: 'message', id: 'msg_think', role: 'assistant', content: [] } });
+    emit({ type: 'response.output_text.delta', item_id: 'msg_think', output_index: 1, content_index: 0, delta: 'done' });
+    emit({ type: 'response.output_item.done', output_index: 1, item: { type: 'message', id: 'msg_think', role: 'assistant', content: [{ type: 'output_text', text: 'done', annotations: [] }] } });
+    emit({ type: 'response.completed', response: { id: 'resp_think', status: 'completed', output: [{ id: 'msg_think', type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'done', annotations: [] }] }], usage: { input_tokens: 10, output_tokens: 5, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } } } });
+    res.end();
+  });
+  provider.updateModels([{ ...model, thinking: true, supportsReasoningEffort: ['low', 'high'] }]);
+  const parts = await run('thinking-session', 'think', { modelConfiguration: { reasoningEffort: 'high' } });
+  assert.deepEqual(requests[0].body.reasoning, { effort: 'high', summary: 'auto' });
+  const thinking = parts.filter((part) => part instanceof vscode.LanguageModelThinkingPart);
+  assert.equal(thinking.length, 1);
+  assert.equal(thinking[0].value, 'considering options');
+});
+
+test('legacy OpenCode reasoning deltas remain visible through the SDK adapter', async (t) => {
+  const { provider, model, run } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+    emit({ type: 'response.created', response: { id: 'resp_legacy_think', created_at: 1, model: req.body.model } });
+    emit({
+      type: 'response.reasoning_text.delta',
+      item_id: 'reasoning_legacy',
+      delta: 'legacy reasoning summary',
+    });
+    emit({
+      type: 'response.completed',
+      response: {
+        id: 'resp_legacy_think',
+        status: 'completed',
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    });
+    res.end();
+  });
+  provider.updateModels([{ ...model, thinking: true, supportsReasoningEffort: ['low', 'high'] }]);
+
+  const parts = await run('legacy-thinking-session');
+  const thinking = parts.filter((part) => part instanceof vscode.LanguageModelThinkingPart);
+  assert.equal(thinking.map((part) => part.value).join(''), 'legacy reasoning summary');
+});
+
+test('emits completed Responses text when the SDK stream has no text delta', async (t) => {
+  const answer = 'Text recovered from the completed response';
+  const { run } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+    emit({ type: 'response.created', response: { id: 'resp_fallback', created_at: 1, model: req.body.model } });
+    emit({
+      type: 'response.completed',
+      response: {
+        id: 'resp_fallback',
+        status: 'completed',
+        output: [{
+          id: 'msg_fallback',
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: answer, annotations: [] }],
+        }],
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    });
+    res.end();
+  });
+
+  const parts = await run('fallback-session');
+  assert.equal(
+    parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''),
+    answer
+  );
+});
+
+test('surfaces Responses output-limit truncation after partial text', async (t) => {
+  const { run } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+    emit({ type: 'response.created', response: { id: 'resp_incomplete', created_at: 1, model: req.body.model } });
+    emit({ type: 'response.output_text.delta', item_id: 'msg_incomplete', delta: 'Partial answer' });
+    emit({
+      type: 'response.incomplete',
+      response: {
+        id: 'resp_incomplete',
+        incomplete_details: { reason: 'max_output_tokens' },
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    });
+    res.end();
+  });
+
+  const parts = await run('incomplete-session');
+  const text = parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join('');
+  assert.match(text, /Partial answer/);
+  assert.match(text, /output token limit/i);
+  assert.match(text, /may be incomplete/i);
+});
+
+test('surfaces when a Responses stream closes without a completion event', async (t) => {
+  const { run } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write(`data: ${JSON.stringify({ type: 'response.created', response: { id: 'resp_cut', created_at: 1, model: req.body.model } })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'response.output_text.delta', item_id: 'msg_cut', delta: 'Partial answer' })}\n\n`);
+    res.end();
+  });
+
+  const parts = await run('cut-session');
+  const text = parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join('');
+  assert.match(text, /Partial answer/);
+  assert.match(text, /without a completion event/i);
+  assert.match(text, /may be incomplete/i);
 });
 
 test('HTTP errors are surfaced without provider retries', async (t) => {
@@ -142,6 +359,27 @@ test('HTTP errors are surfaced without provider retries', async (t) => {
   });
   await assert.rejects(run('error-session'), /overloaded/);
   assert.equal(requests.length, 1);
+});
+
+test('chat-completions reasoning deltas reach VS Code as thinking parts', async (t) => {
+  const { provider, model } = await setup(t, (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+    emit({ id: 'chatcmpl-think', object: 'chat.completion.chunk', created: 1, model: req.body.model, choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: 'weighing tradeoffs' }, finish_reason: null }] });
+    emit({ id: 'chatcmpl-think', object: 'chat.completion.chunk', created: 1, model: req.body.model, choices: [{ index: 0, delta: { content: 'final answer', reasoning_details: [{ text: ' and checking edge cases' }] }, finish_reason: null }] });
+    emit({ id: 'chatcmpl-think', object: 'chat.completion.chunk', created: 1, model: req.body.model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
+    res.write('data: [DONE]\n\n');
+    res.end();
+  });
+  const chatModel = { ...model, apiType: 'chat-completions' };
+  provider.updateModels([chatModel]);
+  const parts = [];
+  await provider.provideLanguageModelChatResponse(chatModel, messages('think it through'), {
+    modelOptions: {}, toolMode: vscode.LanguageModelChatToolMode.Auto,
+  }, { report: (part) => parts.push(part) }, token());
+  const thinking = parts.filter((part) => part instanceof vscode.LanguageModelThinkingPart);
+  assert.equal(thinking.map((part) => part.value).join(''), 'weighing tradeoffs and checking edge cases');
+  assert.ok(parts.some((part) => part instanceof vscode.LanguageModelTextPart && part.value === 'final answer'));
 });
 
 test('oversized enum values are removed from SDK tool schemas before sending', async (t) => {
