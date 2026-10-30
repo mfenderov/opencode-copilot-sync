@@ -1,5 +1,5 @@
 // Models domain: catalog identity types.
-import type { CustomEndpointModel } from './model.js';
+import type { OpenCodeModel } from './model.js';
 
 export interface OpenCodeCatalogIds {
   goModelIds: string[];
@@ -7,6 +7,7 @@ export interface OpenCodeCatalogIds {
 }
 
 export interface UnifiedOpenCodeModels {
-  models: CustomEndpointModel[];
+  models: OpenCodeModel[];
   zenCount: number;
+  warnings: string[];
 }

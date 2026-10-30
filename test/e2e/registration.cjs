@@ -16,11 +16,18 @@ exports.run = async function () {
     }
     if (url.hostname === 'models.opencode.ai' || url.hostname === 'models.dev') {
       return new Response(JSON.stringify({
-        'opencode-go': { models: { 'registration-test-model': {
-          provider: { npm: '@ai-sdk/openai' },
-          limit: { context: 128000, output: 16000 },
-          modalities: { input: ['text'], output: ['text'] }, reasoning: false,
-        } } },
+        opencode: { npm: '@ai-sdk/openai-compatible', api: 'https://opencode.ai/inference/openai/v1', models: {} },
+        'opencode-go': {
+          npm: '@ai-sdk/openai-compatible',
+          api: 'https://opencode.ai/inference/go/openai/v1',
+          models: { 'registration-test-model': {
+            id: 'registration-test-model',
+            name: 'Registration test model',
+            provider: { npm: '@ai-sdk/openai', api: 'https://opencode.ai/inference/go/openai/v1' },
+            limit: { context: 128000, input: 112000, output: 16000 },
+            modalities: { input: ['text'], output: ['text'] }, reasoning: false, tool_call: true,
+          } },
+        },
       }));
     }
     if (url.pathname.endsWith('/usage')) return new Response('{}', { status: 403 });
@@ -72,6 +79,7 @@ exports.run = async function () {
     assert.equal(requests[0].session, requests[1].session);
     assert.notEqual(requests[1].session, requests[2].session);
     console.log('[Registration E2E] PASS: model discovered, SDK text forwarded, conversation header stable across turns and different across chats.');
+    await require('./native-protocol.cjs')(api.chatProvider);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalKey === undefined) delete process.env.OPENCODE_API_KEY;

@@ -2,31 +2,20 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveModelTokenLimits } from '../out/models/domain/token-budget.js';
 
-test('resolveModelTokenLimits rejects metadata that cannot preserve a positive input budget', () => {
-  const cases = [
-    {
-      input: [0.5, 0.5],
-      expected: { contextWindow: 1048576, maxInputTokens: 983040, maxOutputTokens: 65536 },
-    },
-    {
-      input: [1, 1],
-      expected: { contextWindow: 1048576, maxInputTokens: 1048575, maxOutputTokens: 1 },
-    },
-    {
-      input: [2, 2],
-      expected: { contextWindow: 1048576, maxInputTokens: 1048574, maxOutputTokens: 2 },
-    },
-    {
-      input: [3, 3],
-      expected: { contextWindow: 1048576, maxInputTokens: 1048573, maxOutputTokens: 3 },
-    },
-    {
-      input: [1048576, 0.5],
-      expected: { contextWindow: 1048576, maxInputTokens: 983040, maxOutputTokens: 65536 },
-    },
-  ];
+test('token limits use upstream input and output maxima without family-based guesses', () => {
+  assert.deepEqual(resolveModelTokenLimits(1000, 800, 700), {
+    contextWindow: 1000, maxInputTokens: 700, maxOutputTokens: 800,
+  });
+  assert.deepEqual(resolveModelTokenLimits(1000, 1000), {
+    contextWindow: 1000, maxInputTokens: 1000, maxOutputTokens: 1000,
+  });
+  assert.deepEqual(resolveModelTokenLimits(1000, 2000, 1500), {
+    contextWindow: 1000, maxInputTokens: 1000, maxOutputTokens: 1000,
+  });
+});
 
-  for (const { input, expected } of cases) {
-    assert.deepEqual(resolveModelTokenLimits(...input), expected);
+test('invalid token limits are rejected rather than replaced with hardcoded defaults', () => {
+  for (const input of [[0, 10], [0.5, 1], [1000, 0], [1000, 1.5], [1000, 10, 0]]) {
+    assert.throws(() => resolveModelTokenLimits(...input), /Invalid model/);
   }
 });

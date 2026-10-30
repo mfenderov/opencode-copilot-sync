@@ -1,11 +1,12 @@
 // Models application: catalog sync orchestration.
 import { type ProviderEntry } from '../../config.js';
-import { enrichModel } from '../infrastructure/model-enricher.js';
-import type { CustomEndpointModel } from '../domain/model.js';
+import { enrichModel, ModelMetadataError } from '../infrastructure/model-enricher.js';
+import { toCustomEndpointModel, type OpenCodeModel } from '../domain/model.js';
 import {
   fetchModelsDevMetadata,
   fetchOpenCodeModels,
-  type ModelDevMetadata,
+  type CatalogModelMetadata,
+  type ModelProviderMetadata,
 } from '../infrastructure/models-dev-client.js';
 import type { OpenCodeCatalogIds, UnifiedOpenCodeModels } from '../domain/model-catalog.js';
 import { writeProvidersToConfig } from '../../sync-writer.js';
@@ -39,75 +40,44 @@ export async function fetchOpenCodeCatalogIds(
   return { goModelIds, zenModelIds };
 }
 
-export async function fetchOpenCodeModelMetadata(): Promise<Record<string, ModelDevMetadata>> {
-  try {
-    return await fetchModelsDevMetadata();
-  } catch {
-    return {};
-  }
+export async function fetchOpenCodeModelMetadata(): Promise<CatalogModelMetadata> {
+  return fetchModelsDevMetadata();
 }
 
-function firstModelMetadata(
-  metadata: Partial<Record<string, ModelDevMetadata>>,
-  candidates: string[]
-): ModelDevMetadata | undefined {
-  return candidates.map((id) => metadata[id]).find((item) => item !== undefined);
-}
-
-function getGoModelMetadata(modelId: string, metadata: Record<string, ModelDevMetadata>): ModelDevMetadata | undefined {
-  return firstModelMetadata(metadata, [
-    modelId,
-    modelId.replace(/-contributor$/, ''),
-    modelId.replace(/-free$/, ''),
-  ]);
-}
-
-function getZenModelMetadata(modelId: string, metadata: Record<string, ModelDevMetadata>): ModelDevMetadata | undefined {
-  return firstModelMetadata(metadata, [
-    modelId,
-    modelId.replace(/-contributor-free$/, ''),
-    modelId.replace(/-free$/, ''),
-  ]);
-}
-
-function buildGoModels(
+function buildCatalogModels(
   modelIds: string[],
-  metadata: Record<string, ModelDevMetadata>
-): CustomEndpointModel[] {
-  return modelIds.map((id) =>
-    enrichModel(id, {
-      isGo: true,
-      suffix: '(OpenCode Go)',
-      modelsDevData: getGoModelMetadata(id, metadata),
-    })
-  );
-}
-
-function buildZenModels(
-  modelIds: string[],
-  goModelIds: string[],
-  metadata: Record<string, ModelDevMetadata>
-): CustomEndpointModel[] {
-  const goModelIdSet = new Set(goModelIds);
-  const models: CustomEndpointModel[] = [];
-
+  provider: ModelProviderMetadata | undefined,
+  isGo: boolean,
+  warnings: string[]
+): OpenCodeModel[] {
+  const models: OpenCodeModel[] = [];
+  const label = isGo ? 'Go' : 'Zen';
   for (const id of modelIds) {
-    if (goModelIdSet.has(id)) continue;
-
-    models.push(enrichModel(id, { isGo: false, suffix: '(OpenCode Zen)', modelsDevData: getZenModelMetadata(id, metadata) }));
+    const modelsDevData = provider?.models[id];
+    if (!provider || !modelsDevData) {
+      warnings.push(`Skipped ${label} model ${id}: OpenCode metadata is missing.`);
+      continue;
+    }
+    try {
+      models.push(enrichModel(id, { isGo, provider, modelsDevData }));
+    } catch (error) {
+      if (!(error instanceof ModelMetadataError)) throw error;
+      warnings.push(`Skipped ${label} model ${id}: ${error.message}`);
+    }
   }
-
   return models;
 }
 
 export function buildUnifiedModels(
   goModelIds: string[],
   zenModelIds: string[],
-  metadata: Record<string, ModelDevMetadata>
+  metadata: CatalogModelMetadata
 ): UnifiedOpenCodeModels {
-  const goModels = buildGoModels(goModelIds, metadata);
-  const zenModels = buildZenModels(zenModelIds, goModelIds, metadata);
-  return { models: [...goModels, ...zenModels], zenCount: zenModels.length };
+  const warnings: string[] = [];
+  const goModels = buildCatalogModels(goModelIds, metadata.go, true, warnings);
+  const goModelIdSet = new Set(goModelIds);
+  const zenModels = buildCatalogModels(zenModelIds.filter((id) => !goModelIdSet.has(id)), metadata.zen, false, warnings);
+  return { models: [...goModels, ...zenModels], zenCount: zenModels.length, warnings };
 }
 
 export function getModelFamily(model: SyncOpenCodeResult['models'][number]): string {
@@ -115,7 +85,7 @@ export function getModelFamily(model: SyncOpenCodeResult['models'][number]): str
 }
 
 export function getModelCatalog(model: SyncOpenCodeResult['models'][number]): 'go' | 'zen' {
-  return model.url.includes('/go/') ? 'go' : 'zen';
+  return model.catalog;
 }
 
 export interface SyncOpenCodeOptions {
@@ -132,10 +102,11 @@ export interface SyncOpenCodeResult {
   goCount: number;
   zenCount: number;
   totalCount: number;
-  models: CustomEndpointModel[];
+  models: OpenCodeModel[];
   targetPath: string;
   backupPath: string | null;
   warnings: string[];
+  cacheSource: { ids: OpenCodeCatalogIds; metadata: CatalogModelMetadata };
 }
 
 export async function syncOpenCodeModels(
@@ -150,7 +121,7 @@ export async function syncOpenCodeModels(
     fetchOpenCodeCatalogIds(apiKey, includeGo, includeZen),
     fetchOpenCodeModelMetadata(),
   ]);
-  const { models, zenCount } = buildUnifiedModels(
+  const { models, zenCount, warnings } = buildUnifiedModels(
     catalogIds.goModelIds,
     catalogIds.zenModelIds,
     metadata
@@ -165,7 +136,10 @@ export async function syncOpenCodeModels(
     vendor: 'customendpoint',
     apiKey,
     apiType: 'chat-completions',
-    models,
+    models: models.flatMap((model) => {
+      const compatible = toCustomEndpointModel(model);
+      return compatible ? [compatible] : [];
+    }),
   };
   const writeResult = writeProvidersToConfig([unifiedProvider], options.targetPath, options.storagePath, {
     remoteName: options.remoteName,
@@ -173,12 +147,13 @@ export async function syncOpenCodeModels(
   });
 
   return {
-    goCount: catalogIds.goModelIds.length,
+    goCount: models.filter((model) => model.catalog === 'go').length,
     zenCount,
     totalCount: models.length,
     models,
     targetPath: writeResult.targetPath,
     backupPath: writeResult.backupPath,
-    warnings: writeResult.warnings,
+    warnings: [...warnings, ...writeResult.warnings],
+    cacheSource: { ids: catalogIds, metadata },
   };
 }

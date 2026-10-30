@@ -1,5 +1,5 @@
 export const OPEN_CODE_HEADER_TIMEOUT_MS = 300_000;
-export const OPEN_CODE_CHUNK_TIMEOUT_MS = 900_000;
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 90_000;
 
 export interface StreamTimeoutOptions {
   headerTimeoutMs: number;

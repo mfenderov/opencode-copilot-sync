@@ -13,6 +13,14 @@ export interface OpenCodeModelMeta {
   apiType?: 'chat-completions' | 'messages' | 'responses';
 }
 
+export type OpenCodeApiType = 'chat-completions' | 'messages' | 'responses' | 'google';
+export type OpenCodeProviderPackage =
+  | '@ai-sdk/openai-compatible'
+  | '@ai-sdk/openai'
+  | '@ai-sdk/anthropic'
+  | '@ai-sdk/google'
+  | '@ai-sdk/mistral';
+
 export interface CustomEndpointModel {
   id: string;
   name: string;
@@ -31,5 +39,21 @@ export interface CustomEndpointModel {
   modelOptions?: {
     temperature: number | null;
     top_p: number | null;
+  };
+}
+
+export interface OpenCodeModel extends Omit<CustomEndpointModel, 'apiType'> {
+  apiType: OpenCodeApiType;
+  providerPackage: OpenCodeProviderPackage;
+  catalog: 'go' | 'zen';
+}
+
+export function toCustomEndpointModel(model: OpenCodeModel): CustomEndpointModel | undefined {
+  if (model.apiType === 'google') return undefined;
+  const { providerPackage: _providerPackage, catalog: _catalog, ...compatible } = model;
+  return {
+    ...compatible,
+    apiType: model.apiType,
+    url: model.apiType === 'chat-completions' ? `${model.url.replace(/\/$/, '')}/chat/completions` : model.url,
   };
 }

@@ -42,6 +42,7 @@ async function setup(t, handler, streamPolicy = {}) {
   const provider = new OpenCodeChatAdapter({ secrets: { get: async () => 'sk-local-test' } }, undefined, streamPolicy);
   const model = {
     id: 'new-model-with-no-known-prefix', name: 'New model', family: 'new-model-with-no-known-prefix',
+    providerPackage: '@ai-sdk/openai', catalog: 'go',
     apiType: 'responses', url: `http://127.0.0.1:${server.address().port}/v1`,
     maxInputTokens: 112000, maxOutputTokens: 16000, contextWindow: 128000,
     vision: false, thinking: false, toolCalling: true,
@@ -63,29 +64,87 @@ const testStreamPolicy = {
   retryDelayMs: () => 0,
 };
 
-test('chat adapter estimates string token counts by model family and fallback', async () => {
+test('upstream 401 errors preserve the VS Code authentication signal', async (t) => {
+  const { run } = await setup(t, (_req, res) => {
+    res.writeHead(401, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'Invalid API key' } }));
+  });
+  await assert.rejects(run('auth-error'), (error) => error?.code === 'NoPermissions');
+});
+
+test('upstream free-tier policy errors produce one quoted alert without retrying', async (t) => {
+  const { run, requests } = await setup(t, (_req, res) => {
+    res.writeHead(403, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { type: 'FreeTierError', message: 'Only available in OpenCode\nTry another model' } }));
+  });
+  let parts;
+  await assert.doesNotReject(async () => { parts = await run('free-tier'); });
+  assert.equal(requests.length, 1);
+  const text = parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join('');
+  assert.match(text, /^> ⚠️ `new-model-with-no-known-prefix` \(403\): Only available in OpenCode\n> Try another model$/);
+});
+
+test('transient rate limits retry before returning a successful response', async (t) => {
+  let attempts = 0;
+  const { run, requests } = await setup(t, (req, res) => {
+    attempts++;
+    if (attempts < 3) {
+      res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '0' });
+      res.end(JSON.stringify({ error: { message: 'Rate limited' } }));
+      return;
+    }
+    sendResponses(res, req.body.model, 'Recovered');
+  });
+  const parts = await run('rate-limit-retry');
+  assert.equal(requests.length, 3);
+  assert.equal(parts.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''), 'Recovered');
+});
+
+test('configured stream inactivity timeout is used without reloading the extension', async (t) => {
+  const previous = vscode.workspace.getConfiguration;
+  t.after(() => { vscode.workspace.getConfiguration = previous; });
+  let seconds = 0.025;
+  const observed = [];
+  vscode.workspace.getConfiguration = () => ({
+    get: (name, fallback) => {
+      if (name !== 'streamIdleTimeoutSeconds') return fallback;
+      observed.push(seconds);
+      return seconds;
+    },
+    update: async () => {},
+  });
+  const { run, requests } = await setup(t, (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.flushHeaders();
+  }, { retryDelayMs: () => 0 });
+  const runQuickly = async (session) => {
+    let timer;
+    try {
+      return await Promise.race([
+        run(session),
+        new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new Error('configured timeout was ignored')), 800); }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const first = await runQuickly('configured-timeout');
+  seconds = 0.01;
+  const second = await runQuickly('updated-timeout');
+  assert.equal(requests.length, 8);
+  assert.deepEqual(observed, [0.025, 0.01]);
+  assert.match(first.map((part) => part.value ?? '').join(''), /interrupted/i);
+  assert.match(second.map((part) => part.value ?? '').join(''), /interrupted/i);
+});
+
+test('chat adapter estimates tokens from measured UTF-8 bytes, identically for every model', async () => {
   const { OpenCodeChatAdapter } = await import('../out/infrastructure/vscode/open-code-chat-adapter.js');
   const provider = new OpenCodeChatAdapter({ secrets: { get: async () => 'sk-local-test' } });
   const input = 'x'.repeat(360);
-  const estimates = [
-    ['gpt-5.5', 90],
-    ['muse-spark-1.3', 90],
-    ['gemini-2.5-pro', 90],
-    ['claude-3.7-sonnet', 98],
-    ['grok-4', 106],
-    ['deepseek-v4-pro', 106],
-    ['qwen3.7-max', 106],
-    ['llama-3.3', 106],
-    ['mimo-v2.5', 106],
-    ['mixtral-8x7b', 106],
-    ['kimi-k3', 106],
-    ['glm-5.3', 106],
-    ['something-new-99', 100],
-  ];
-
-  for (const [id, expected] of estimates) {
-    assert.equal(await provider.provideTokenCount({ id }, input, token()), expected, id);
+  for (const id of ['gpt-5.5', 'claude-3.7-sonnet', 'something-new-99']) {
+    assert.equal(await provider.provideTokenCount({ id }, input, token()), 90, id);
   }
+  assert.equal(await provider.provideTokenCount({ id: 'any' }, 'héllo', token()), 2);
   provider.dispose();
 });
 
@@ -95,7 +154,7 @@ test('chat adapter estimates message token counts from serialized content', asyn
   const input = messages('x'.repeat(360))[0];
 
   assert.equal(await provider.provideTokenCount({ id: 'gpt-5.5' }, input, token()), 99);
-  assert.equal(await provider.provideTokenCount({ id: 'deepseek-v4-pro' }, input, token()), 117);
+  assert.equal(await provider.provideTokenCount({ id: 'deepseek-v4-pro' }, input, token()), 99);
   provider.dispose();
 });
 
@@ -168,7 +227,7 @@ test('chat adapter defaults to OpenCode capped exponential retry delays with bou
   const policy = provider['streamPolicy'];
 
   assert.equal(policy.headerTimeoutMs, 1);
-  assert.equal(policy.chunkTimeoutMs, 900_000);
+  assert.equal(policy.chunkTimeoutMs, 90_000);
   assert.deepEqual([policy.retryDelayMs(1), policy.retryDelayMs(2), policy.retryDelayMs(3), policy.retryDelayMs(4)], [2000, 4100, 8100, 10000]);
 });
 
@@ -396,10 +455,10 @@ test('stream fetch timeout rejects when response headers never arrive', async (t
     createStreamTimeoutFetch,
     StreamTimeoutError,
     OPEN_CODE_HEADER_TIMEOUT_MS,
-    OPEN_CODE_CHUNK_TIMEOUT_MS,
+    DEFAULT_STREAM_IDLE_TIMEOUT_MS,
   } = await import('../out/infrastructure/http/stream-timeout-fetch.js');
   assert.equal(OPEN_CODE_HEADER_TIMEOUT_MS, 300_000);
-  assert.equal(OPEN_CODE_CHUNK_TIMEOUT_MS, 900_000);
+  assert.equal(DEFAULT_STREAM_IDLE_TIMEOUT_MS, 90_000);
   let markClosed;
   const requestClosed = new Promise((resolve) => { markClosed = resolve; });
   const server = await createTimeoutServer(t, (_req, res) => res.on('close', markClosed));
@@ -883,13 +942,14 @@ test('surfaces when a Responses stream closes without a completion event', async
   assert.match(text, /may be incomplete/i);
 });
 
-test('HTTP errors are surfaced without provider retries', async (t) => {
+test('persistent HTTP server errors are surfaced after one retry', async (t) => {
   const { run, requests } = await setup(t, (_req, res) => {
     res.writeHead(503, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: { message: 'upstream temporarily overloaded' } }));
   });
-  await assert.rejects(run('error-session'), /overloaded/);
-  assert.equal(requests.length, 1);
+  const parts = await run('error-session');
+  assert.equal(requests.length, 2);
+  assert.match(parts.map((part) => part.value ?? '').join(''), /overloaded/);
 });
 
 test('chat-completions reasoning deltas reach VS Code as thinking parts', async (t) => {
@@ -968,13 +1028,12 @@ test('Responses tool calls are forwarded once and the next turn preserves their 
   assert.equal(requests[0].body.tool_choice, 'required');
   const output = [];
   await provider.provideLanguageModelChatResponse(model, [
-    { role: 0, content: [new vscode.LanguageModelTextPart('Keep the real system role')] },
+    { role: vscode.LanguageModelChatMessageRole.User, content: [new vscode.LanguageModelTextPart('Keep the real system role')] },
     ...messages('calculate'),
     { role: 2, content: calls },
     { role: 1, content: [new vscode.LanguageModelToolResultPart('call_test', [new vscode.LanguageModelTextPart('4')])] },
   ], { modelOptions: { _conversationId: 'tool-session' }, toolMode: 1 }, { report: (part) => output.push(part) }, token());
   assert.equal(requests[1].headers['x-opencode-session'], 'tool-session');
-  assert.ok(requests[1].body.input.some((part) => part.role === 'system'));
   assert.ok(requests[1].body.input.some((part) => part.type === 'function_call_output' && part.call_id === 'call_test' && part.output === '4'));
   assert.equal(output.filter((part) => part instanceof vscode.LanguageModelTextPart).map((part) => part.value).join(''), 'The answer is 4');
 });
@@ -998,7 +1057,10 @@ for (const apiType of ['chat-completions', 'messages']) {
       }
       res.end();
     });
-    provider.updateModels([{ ...model, apiType }]);
+    provider.updateModels([{
+      ...model, apiType,
+      providerPackage: apiType === 'messages' ? '@ai-sdk/anthropic' : '@ai-sdk/openai-compatible',
+    }]);
     const parts = [];
     await provider.provideLanguageModelChatResponse(model, messages('hi'), { modelOptions: { _conversationId: 'protocol-session' }, toolMode: 1 }, { report: (part) => parts.push(part) }, token());
     assert.equal(requests[0].path, apiType === 'messages' ? '/v1/messages' : '/v1/chat/completions');

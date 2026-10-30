@@ -1,21 +1,31 @@
 import * as vscode from 'vscode';
+import { Buffer } from 'node:buffer';
+import { randomUUID } from 'node:crypto';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
-import type { LanguageModelV3, LanguageModelV3Prompt, LanguageModelV3StreamPart, LanguageModelV3FunctionTool, LanguageModelV3ToolResultPart } from '@ai-sdk/provider';
-import type { CustomEndpointModel } from '../../models/domain/model.js';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { createMistral } from '@ai-sdk/mistral';
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import type { LanguageModelV3, LanguageModelV3Prompt, LanguageModelV3StreamPart, LanguageModelV3FunctionTool, LanguageModelV3ToolResultPart, SharedV3ProviderOptions } from '@ai-sdk/provider';
+import type { OpenCodeApiType, OpenCodeModel, OpenCodeProviderPackage } from '../../models/domain/model.js';
 import { extensionUserAgent } from '../../extension-version.js';
 import { resolveApiKey } from './secret-store.js';
+import { fetchWithRetry } from '../http/fetch-policy.js';
 import { withProxy } from '../http/proxy-routing.js';
 import {
   createStreamTimeoutFetch,
-  OPEN_CODE_CHUNK_TIMEOUT_MS,
+  DEFAULT_STREAM_IDLE_TIMEOUT_MS,
   OPEN_CODE_HEADER_TIMEOUT_MS,
   StreamTimeoutError,
   type StreamTimeoutOptions,
 } from '../http/stream-timeout-fetch.js';
 import { ConversationIdentity } from './conversation-identity.js';
+import { hostDataBytes, hostDataPart, textDataMime, toolResultOutput, type HostDataPart } from './sdk-content.js';
+import { reportSDKError } from './sdk-errors.js';
+import { sdkProviderOptions } from './sdk-reasoning.js';
+import { nativeReplay, restoreNativeReplay, SDKReplayCollector, sdkToolInput } from './sdk-replay.js';
 
-export type RegisteredModel = CustomEndpointModel & vscode.LanguageModelChatInformation;
+export type RegisteredModel = OpenCodeModel & vscode.LanguageModelChatInformation;
 type AssistantContent = Extract<LanguageModelV3Prompt[number], { role: 'assistant' }>['content'];
 
 export interface ChatStreamPolicy extends StreamTimeoutOptions {
@@ -28,28 +38,32 @@ const STREAM_INTERRUPTION_NOTICE = '\n\nOpenCode: The response was interrupted a
 
 const defaultChatStreamPolicy: ChatStreamPolicy = {
   headerTimeoutMs: OPEN_CODE_HEADER_TIMEOUT_MS,
-  chunkTimeoutMs: OPEN_CODE_CHUNK_TIMEOUT_MS,
+  chunkTimeoutMs: DEFAULT_STREAM_IDLE_TIMEOUT_MS,
   retryDelayMs(retryNumber) {
     const backoff = Math.min(2_000 * 2 ** (retryNumber - 1), 10_000);
     return backoff + Math.random() * Math.min(100, 10_000 - backoff);
   },
 };
 const thinkingPart = (vscode as typeof vscode & {
-  LanguageModelThinkingPart?: new (value: string, id: string) => vscode.LanguageModelResponsePart;
+  LanguageModelThinkingPart?: new (value: string, id: string, metadata?: Record<string, unknown>) => vscode.LanguageModelResponsePart;
 }).LanguageModelThinkingPart;
-const CHARS_PER_TOKEN_BY_FAMILY: readonly (readonly [RegExp, number])[] = [
-  [/^(gpt-|o1|o3|o4)/i, 4],
-  [/^claude/i, 3.7],
-  [/^(muse|gemini)/i, 4],
-  [/^(grok|deepseek|qwen|llama|mi(mo|x)|kimi|glm)/i, 3.4],
-];
-
-function charsPerToken(modelId: string): number {
-  return CHARS_PER_TOKEN_BY_FAMILY.find(([pattern]) => pattern.test(modelId))?.[1] ?? 3.6;
-}
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function configuredStreamIdleTimeoutMs(): number {
+  const override = process.env.OPENCODE_STREAM_IDLE_TIMEOUT_MS;
+  const seconds: unknown = override
+    ? Number(override) / 1000
+    : vscode.workspace.getConfiguration('opencode').get<unknown>(
+      'streamIdleTimeoutSeconds',
+      DEFAULT_STREAM_IDLE_TIMEOUT_MS / 1000
+    );
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+    throw new Error('OpenCode stream inactivity timeout must be a positive number.');
+  }
+  return seconds * 1000;
 }
 
 function isStreamTimeout(error: unknown): boolean {
@@ -187,12 +201,7 @@ function sanitizeToolSchema(
 function toolResult(part: vscode.LanguageModelToolResultPart, names: Map<string, string>): LanguageModelV3ToolResultPart {
   const toolName = names.get(part.callId);
   if (!toolName) throw new Error(`No tool call found for result ${part.callId}`);
-  const text = part.content.map((content: unknown) => {
-    if (content instanceof vscode.LanguageModelTextPart) return content.value;
-    if (content instanceof vscode.LanguageModelDataPart) return new TextDecoder().decode(content.data);
-    throw new Error('Unsupported tool result content');
-  }).join('\n');
-  return { type: 'tool-result', toolCallId: part.callId, toolName, output: { type: 'text', value: text } };
+  return { type: 'tool-result', toolCallId: part.callId, toolName, output: toolResultOutput(part.content) };
 }
 
 function toolCallContentPart(
@@ -203,16 +212,21 @@ function toolCallContentPart(
   return { type: 'tool-call', toolCallId: part.callId, toolName: part.name, input: part.input };
 }
 
-function dataContentPart(part: vscode.LanguageModelDataPart): AssistantContent[number] {
-  if (part.mimeType.startsWith('image/')) return { type: 'file', data: part.data, mediaType: part.mimeType };
-  throw new Error(`Unsupported message data: ${part.mimeType}`);
+function dataContentPart(part: HostDataPart): AssistantContent[number] | undefined {
+  const mimeType = part.mimeType.split(';', 1)[0].trim().toLowerCase();
+  if (mimeType === 'usage' || mimeType === 'cache_control') return undefined;
+  const data = hostDataBytes(part.data);
+  return textDataMime(mimeType)
+    ? { type: 'text', text: new TextDecoder('utf-8', { fatal: true }).decode(data) }
+    : { type: 'file', data, mediaType: mimeType };
 }
 
 function contentPart(part: unknown, names: Map<string, string>): AssistantContent[number] | undefined {
   if (part instanceof vscode.LanguageModelTextPart) return { type: 'text', text: part.value };
   if (part instanceof vscode.LanguageModelToolCallPart) return toolCallContentPart(part, names);
   if (thinkingPart && part instanceof thinkingPart) return undefined;
-  if (part instanceof vscode.LanguageModelDataPart) return dataContentPart(part);
+  const data = hostDataPart(part);
+  if (data) return dataContentPart(data);
   throw new Error('Unsupported language model message part');
 }
 
@@ -385,35 +399,94 @@ function summarizeStream(
   );
 }
 
-export function toSDKPrompt(messages: readonly vscode.LanguageModelChatRequestMessage[]): LanguageModelV3Prompt {
+interface PromptMessageState {
+  role: number;
+  content: AssistantContent;
+  savedReplay: AssistantContent | undefined;
+}
+
+const userRole: number = vscode.LanguageModelChatMessageRole.User;
+const assistantRole: number = vscode.LanguageModelChatMessageRole.Assistant;
+
+function pushAssistant(prompt: LanguageModelV3Prompt, state: PromptMessageState): AssistantContent {
+  const replay = state.savedReplay && state.content.some((part) => part.type === 'tool-call')
+    ? restoreNativeReplay(state.content, state.savedReplay)
+    : state.content;
+  prompt.push({ role: 'assistant', content: replay });
+  return [];
+}
+
+function pushUser(prompt: LanguageModelV3Prompt, content: AssistantContent): AssistantContent {
+  if (!content.length) return content;
+  const userContent = content.filter((part) => part.type === 'text' || part.type === 'file');
+  if (userContent.length !== content.length) throw new Error('Tool calls must be in assistant messages');
+  prompt.push({ role: 'user', content: userContent });
+  return [];
+}
+
+function pushSystem(prompt: LanguageModelV3Prompt, content: AssistantContent): AssistantContent {
+  if (!content.length) return content;
+  prompt.push({ role: 'system', content: content.map((part) => part.type === 'text' ? part.text : '').join('') });
+  return [];
+}
+
+type ToolMessageContent = Extract<LanguageModelV3Prompt[number], { role: 'tool' }>['content'];
+
+function pushToolResults(prompt: LanguageModelV3Prompt, content: AssistantContent): AssistantContent {
+  const toolOnly = content.every((part) => part.type === 'tool-result');
+  if (!toolOnly || !content.length) return content;
+  const results = [...content] as ToolMessageContent;
+  const target = prompt.length > 0 ? prompt[prompt.length - 1] : undefined;
+  if (target?.role === 'tool') target.content.push(...results);
+  else prompt.push({ role: 'tool', content: results });
+  return [];
+}
+
+function flushMessage(prompt: LanguageModelV3Prompt, state: PromptMessageState): AssistantContent {
+  if (!state.content.length) return state.content;
+  if (state.role === assistantRole) return pushAssistant(prompt, state);
+  if (state.role === userRole) return pushUser(prompt, state.content);
+  return pushSystem(prompt, state.content);
+}
+
+function appendToolResult(
+  prompt: LanguageModelV3Prompt,
+  names: Map<string, string>,
+  part: vscode.LanguageModelToolResultPart,
+  state: PromptMessageState
+): AssistantContent {
+  const result = toolResult(part, names);
+  const previous = prompt.length > 0 ? prompt[prompt.length - 1] : undefined;
+  if (state.role === userRole && state.content.length === 0 && previous?.role === 'tool') {
+    previous.content.push(result);
+    return state.content;
+  }
+  return pushToolResults(prompt, [...state.content, result]);
+}
+
+export function toSDKPrompt(
+  messages: readonly vscode.LanguageModelChatRequestMessage[],
+  model?: Pick<OpenCodeModel, 'id' | 'providerPackage'>
+): LanguageModelV3Prompt {
   const prompt: LanguageModelV3Prompt = [];
   const names = new Map<string, string>();
   for (const message of messages) {
-    const role: number = message.role;
-    let content: AssistantContent = [];
-    const flush = () => {
-      if (!content.length) return;
-      if (role === 2) {
-        prompt.push({ role: 'assistant', content });
-      } else if (role === 1) {
-        const userContent = content.filter((part) => part.type === 'text' || part.type === 'file');
-        if (userContent.length !== content.length) throw new Error('Tool calls must be in assistant messages');
-        prompt.push({ role: 'user', content: userContent });
-      } else {
-        prompt.push({ role: 'system', content: content.map((part) => part.type === 'text' ? part.text : '').join('') });
-      }
-      content = [];
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-conversion -- VS Code roles arrive as enum members; normalize for prompt assembly.
+    const role = Number(message.role);
+    const state: PromptMessageState = {
+      role,
+      content: [],
+      savedReplay: role === assistantRole ? nativeReplay(message.content, model) : undefined,
     };
     for (const part of message.content) {
       if (part instanceof vscode.LanguageModelToolResultPart) {
-        flush();
-        prompt.push({ role: 'tool', content: [toolResult(part, names)] });
+        state.content = appendToolResult(prompt, names, part, state);
       } else {
         const mapped = contentPart(part, names);
-        if (mapped) content.push(mapped);
+        if (mapped) state.content.push(mapped);
       }
     }
-    flush();
+    state.content = flushMessage(prompt, state);
   }
   return prompt;
 }
@@ -444,9 +517,7 @@ type ToolCallStreamPart = Extract<LanguageModelV3StreamPart, { type: 'tool-call'
 type FinishStreamPart = Extract<LanguageModelV3StreamPart, { type: 'finish' }>;
 
 function reportToolCall(part: ToolCallStreamPart, progress: vscode.Progress<vscode.LanguageModelResponsePart>): void {
-  const input: unknown = JSON.parse(part.input);
-  if (!record(input)) throw new Error(`Invalid tool arguments for ${part.toolName}`);
-  progress.report(new vscode.LanguageModelToolCallPart(part.toolCallId, part.toolName, input));
+  progress.report(new vscode.LanguageModelToolCallPart(part.toolCallId, part.toolName, sdkToolInput(part)));
 }
 
 function reportRawPart(
@@ -508,6 +579,8 @@ function reportContentPart(
     noteStreamPart(state.diagnostics, 'tool-call');
     if (state.onToolCall) state.onToolCall(part);
     else reportToolCall(part, progress);
+  } else if (part.type === 'file') {
+    progress.report(new vscode.LanguageModelDataPart(hostDataBytes(part.data), part.mediaType));
   } else if (part.type === 'raw') {
     reportRawPart(part, progress, state);
   }
@@ -566,7 +639,7 @@ function chatCompletionEvent(value: Record<string, unknown>): OpenAIEvent {
   };
 }
 
-function openAIEvent(frame: string, apiType: CustomEndpointModel['apiType']): OpenAIEvent {
+function openAIEvent(frame: string, apiType: OpenCodeModel['apiType']): OpenAIEvent {
   const data = eventData(frame);
   if (apiType === 'chat-completions' && data === '[DONE]') return { ...EMPTY_OPENAI_EVENT, done: true };
   const value = eventObject(data);
@@ -593,14 +666,14 @@ function flushEventBytes(text: string, currentTextEnd: number, controller: Trans
   if (currentTextEnd > 0) controller.enqueue(new TextEncoder().encode(text.slice(0, currentTextEnd)));
 }
 
-function completesOnEvent(event: OpenAIEvent, apiType: CustomEndpointModel['apiType'], terminalSeen: boolean): boolean {
+function completesOnEvent(event: OpenAIEvent, apiType: OpenCodeModel['apiType'], terminalSeen: boolean): boolean {
   return (terminalSeen && (event.usageOnly || event.done)) || event.done ||
     (event.finish && (apiType !== 'chat-completions' || event.usagePresent));
 }
 
 function handleCompletionEvent(
   event: OpenAIEvent,
-  apiType: CustomEndpointModel['apiType'],
+  apiType: OpenCodeModel['apiType'],
   text: string,
   currentTextEnd: number,
   controller: TransformStreamDefaultController<Uint8Array>,
@@ -626,7 +699,7 @@ function handleCompletionEvent(
 // Close OpenAI SSE input at protocol completion so SDK transforms flush without waiting for HTTP EOF.
 function createProtocolCompletionFetch(
   baseFetch: typeof fetch,
-  apiType: CustomEndpointModel['apiType'],
+  apiType: OpenCodeModel['apiType'],
   terminalGraceMs: number
 ): typeof fetch {
   if (apiType === 'messages') return baseFetch;
@@ -672,42 +745,217 @@ function createProtocolCompletionFetch(
   };
 }
 
-function protocolModel(model: CustomEndpointModel, apiKey: string, streamPolicy: StreamTimeoutOptions): LanguageModelV3 {
-  const baseURL = model.url.replace(/\/(chat\/completions|responses|messages)\/?$/, '');
+interface ProviderFetch { proxyFetch: typeof fetch; sdkFetch: typeof fetch }
+
+interface ProviderRequest {
+  baseURL: string;
+  modelId: string;
+  sdkFetch: typeof fetch;
+  apiKey: string;
+}
+
+function providerFetches(
+  model: OpenCodeModel,
+  streamPolicy: StreamTimeoutOptions
+): ProviderFetch {
   const proxyFetch: typeof fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    return fetch(input, await withProxy(url, { ...init }));
+    if (input instanceof Request) return fetch(input, await withProxy(url, { ...init }));
+    return fetchWithRetry(url, { ...init }, {
+      retries: 1,
+      baseDelayMs: 300,
+      maxDelayMs: 1000,
+      rateLimitRetries: 10,
+      rateLimitImmediateAttempts: 3,
+      rateLimitDelayMs: 1000,
+      rateLimitMaxWaitMs: 3000,
+    });
   };
   const timeoutFetch = createStreamTimeoutFetch(proxyFetch, streamPolicy);
-  const sdkFetch = createProtocolCompletionFetch(timeoutFetch, model.apiType, 100);
-  if (model.apiType === 'messages') return createAnthropic({ baseURL, authToken: apiKey, fetch: sdkFetch })(model.id);
-  const openai = createOpenAI({ baseURL, apiKey, fetch: sdkFetch });
-  return model.apiType === 'responses' ? openai.responses(model.id) : openai.chat(model.id);
+  return { proxyFetch, sdkFetch: createProtocolCompletionFetch(timeoutFetch, model.apiType, 100) };
 }
 
-interface PreparedChatRequest {
-  tools?: LanguageModelV3FunctionTool[];
-  effort: unknown;
-  prompt: LanguageModelV3Prompt;
+export const PROVIDER_PROTOCOLS: Record<OpenCodeProviderPackage, OpenCodeApiType> = {
+  '@ai-sdk/openai-compatible': 'chat-completions',
+  '@ai-sdk/openai': 'responses',
+  '@ai-sdk/anthropic': 'messages',
+  '@ai-sdk/google': 'google',
+  '@ai-sdk/mistral': 'chat-completions',
+};
+
+interface ProviderSpec {
+  protocols: Partial<Record<OpenCodeApiType, 'chat' | 'responses' | 'messages' | 'native'>>;
+  reasoning: (effort: string | undefined, model: OpenCodeModel) => SharedV3ProviderOptions;
+  create: (request: ProviderRequest, apiType: OpenCodeApiType) => LanguageModelV3;
 }
 
-function prepareChatRequest(
-  messages: readonly vscode.LanguageModelChatRequestMessage[],
-  options: vscode.ProvideLanguageModelChatResponseOptions
-): PreparedChatRequest {
+const PROVIDER_SPECS: Record<OpenCodeProviderPackage, ProviderSpec> = {
+  '@ai-sdk/openai-compatible': {
+    protocols: { 'chat-completions': 'chat' },
+    reasoning: (effort) => ({ opencode: { strictJsonSchema: false, ...(effort ? { reasoningEffort: effort } : {}) } }),
+    create: ({ baseURL, modelId, sdkFetch, apiKey }) =>
+      createOpenAICompatible({ name: 'opencode', baseURL, apiKey, fetch: sdkFetch, includeUsage: true })(modelId),
+  },
+  '@ai-sdk/openai': {
+    protocols: { 'responses': 'responses', 'chat-completions': 'chat' },
+    reasoning: (effort, model) => ({ openai: {
+      store: false,
+      strictJsonSchema: false,
+      forceReasoning: model.thinking,
+      systemMessageMode: 'system',
+      ...(effort ? { reasoningEffort: effort } : {}),
+      ...(model.apiType === 'responses' && model.thinking ? { reasoningSummary: 'auto' } : {}),
+    } }),
+    create: ({ baseURL, modelId, sdkFetch, apiKey }, apiType) => {
+      const openai = createOpenAI({ baseURL, apiKey, fetch: sdkFetch });
+      return apiType === 'chat-completions' ? openai.chat(modelId) : openai.responses(modelId);
+    },
+  },
+  '@ai-sdk/anthropic': {
+    protocols: { 'messages': 'messages' },
+    reasoning: (effort) => ({ anthropic: effort ? { effort } : {} }),
+    create: ({ baseURL, modelId, sdkFetch, apiKey }) =>
+      createAnthropic({ baseURL, authToken: apiKey, fetch: sdkFetch })(modelId),
+  },
+  '@ai-sdk/google': {
+    protocols: { 'google': 'native' },
+    reasoning: (effort) => ({ google: effort ? { thinkingConfig: { thinkingLevel: effort, includeThoughts: true } } : {} }),
+    create: ({ baseURL, modelId, sdkFetch, apiKey }) =>
+      createGoogleGenerativeAI({
+        baseURL, apiKey, fetch: sdkFetch,
+        headers: { Authorization: `Bearer ${apiKey}`, 'x-goog-api-key': undefined },
+      })(modelId),
+  },
+  '@ai-sdk/mistral': {
+    protocols: { 'chat-completions': 'chat' },
+    reasoning: (effort) => ({ mistral: effort ? { reasoningEffort: effort } : {} }),
+    create: ({ baseURL, modelId, sdkFetch, apiKey }) =>
+      createMistral({ baseURL, apiKey, fetch: sdkFetch })(modelId),
+  },
+};
+
+export function providerSpec(packageName: string): ProviderSpec {
+  if (!Object.hasOwn(PROVIDER_SPECS, packageName)) throw new Error(`Unsupported provider ${packageName}.`);
+  return PROVIDER_SPECS[packageName as OpenCodeProviderPackage];
+}
+
+function providerModel(model: OpenCodeModel, request: ProviderRequest): LanguageModelV3 | undefined {
+  const spec = providerSpec(model.providerPackage);
+  if (spec.protocols[model.apiType] === undefined) return undefined;
+  return spec.create(request, model.apiType);
+}
+
+function protocolModel(model: OpenCodeModel, apiKey: string, streamPolicy: StreamTimeoutOptions): LanguageModelV3 {
+  const { sdkFetch } = providerFetches(model, streamPolicy);
+  const languageModel = providerModel(model, { baseURL: model.url, modelId: model.id, sdkFetch, apiKey });
+  if (!languageModel) {
+    throw new Error(`Unsupported provider ${model.providerPackage} for protocol ${model.apiType}.`);
+  }
+  return languageModel;
+}
+
+interface PreparedTools { tools?: LanguageModelV3FunctionTool[] }
+
+interface PreparedEffort { effort: unknown }
+
+interface PreparedPrompt { prompt: LanguageModelV3Prompt }
+
+interface PreparedChatRequest extends PreparedTools, PreparedEffort, PreparedPrompt {}
+
+function preparedTools(options: vscode.ProvideLanguageModelChatResponseOptions): PreparedTools {
   const tools = options.tools?.map((tool) => ({
     type: 'function' as const,
     name: tool.name,
     description: tool.description,
     inputSchema: sanitizeToolSchema(tool.inputSchema ?? { type: 'object', properties: {} }, tool.name),
   }));
-  const configuration = (options as { modelConfiguration?: Record<string, unknown> }).modelConfiguration;
-  const effort: unknown = configuration?.reasoningEffort ?? options.modelOptions?.reasoningEffort;
-  return { tools, effort, prompt: structuredClone(toSDKPrompt(messages)) };
+  return { tools };
+}
+
+interface EffortSource { value?: unknown }
+
+function documentedEffort(options: vscode.ProvideLanguageModelChatResponseOptions): EffortSource {
+  return { value: options.modelOptions?.reasoningEffort ?? options.modelOptions?.thinkingLevel };
+}
+
+function configuredEffort(
+  legacy: { modelConfiguration?: Record<string, unknown>; configuration?: Record<string, unknown> }
+): EffortSource {
+  return { value: legacy.modelConfiguration?.reasoningEffort ?? legacy.modelConfiguration?.thinkingLevel ??
+    legacy.configuration?.reasoningEffort ?? legacy.configuration?.thinkingLevel };
+}
+
+function rootEffort(legacy: { reasoningEffort?: unknown; thinkingLevel?: unknown }): EffortSource {
+  return { value: legacy.reasoningEffort ?? legacy.thinkingLevel };
+}
+
+function firstEffort(...sources: EffortSource[]): unknown {
+  for (const source of sources) {
+    if (source.value !== undefined) return source.value;
+  }
+  return undefined;
+}
+
+interface EffortSources {
+  documented?: unknown;
+  modelConfig?: unknown;
+  configuration?: unknown;
+  root?: unknown;
+}
+
+function legacyEffort(options: vscode.ProvideLanguageModelChatResponseOptions): EffortSources {
+  const legacy = options as {
+    modelConfiguration?: Record<string, unknown>;
+    configuration?: Record<string, unknown>;
+    reasoningEffort?: unknown;
+    thinkingLevel?: unknown;
+  };
+  return {
+    documented: documentedEffort(options).value,
+    modelConfig: undefined,
+    configuration: configuredEffort(legacy).value ?? rootEffort(legacy).value,
+    root: undefined,
+  };
+}
+
+function preparedEffort(options: vscode.ProvideLanguageModelChatResponseOptions): PreparedEffort {
+  const sources = legacyEffort(options);
+  const effort = firstEffort(
+    { value: sources.documented },
+    { value: sources.configuration },
+    { value: sources.root }
+  );
+  return { effort };
+}
+
+function preparedPrompt(
+  messages: readonly vscode.LanguageModelChatRequestMessage[],
+  model: OpenCodeModel
+): PreparedPrompt {
+  return { prompt: structuredClone(toSDKPrompt(messages, model)) };
+}
+
+interface PreparedModel { readonly model: OpenCodeModel }
+
+function preparedModel(model: OpenCodeModel): PreparedModel {
+  return { model };
+}
+
+function prepareChatRequest(
+  messages: readonly vscode.LanguageModelChatRequestMessage[],
+  options: vscode.ProvideLanguageModelChatResponseOptions,
+  model: OpenCodeModel
+): PreparedChatRequest {
+  return {
+    ...preparedTools(options),
+    ...preparedEffort(options),
+    ...preparedPrompt(messages, model),
+    ...preparedModel(model),
+  };
 }
 
 interface StreamAttemptRequest {
-  model: CustomEndpointModel;
+  model: OpenCodeModel;
   apiKey: string;
   sessionId: string;
   options: vscode.ProvideLanguageModelChatResponseOptions;
@@ -722,6 +970,8 @@ interface StreamAttemptRequest {
 interface StreamAttemptState {
   attemptText: string;
   finished: boolean;
+  safeToolFinish: boolean;
+  replay?: SDKReplayCollector;
   report: StreamReportState;
   toolCalls: ToolCallStreamPart[];
 }
@@ -732,6 +982,8 @@ function createStreamAttemptState(request: StreamAttemptRequest): StreamAttemptS
   return {
     attemptText: '',
     finished: false,
+    safeToolFinish: false,
+    replay: model.apiType === 'google' || model.apiType === 'messages' ? new SDKReplayCollector() : undefined,
     toolCalls,
     report: {
       textEmitted: false,
@@ -753,7 +1005,6 @@ function isTerminalPart(part: LanguageModelV3StreamPart): boolean {
 
 async function requestStream(request: StreamAttemptRequest): Promise<AsyncIterable<LanguageModelV3StreamPart>> {
   const { model, apiKey, sessionId, options, streamPolicy, prepared, controller } = request;
-  const requestReasoning = typeof prepared.effort === 'string' ? { reasoningEffort: prepared.effort } : {};
   const timedModel = protocolModel(model, apiKey, streamPolicy);
   const { stream } = await timedModel.doStream({
     prompt: prepared.prompt,
@@ -762,20 +1013,19 @@ async function requestStream(request: StreamAttemptRequest): Promise<AsyncIterab
     maxOutputTokens: model.maxOutputTokens,
     headers: { 'x-opencode-session': sessionId, 'User-Agent': extensionUserAgent() },
     abortSignal: controller.signal,
-    includeRawChunks: model.apiType !== 'messages',
-    providerOptions: {
-      openai: {
-        store: false,
-        strictJsonSchema: false,
-        forceReasoning: model.thinking,
-        systemMessageMode: 'system',
-        ...requestReasoning,
-        ...(model.apiType === 'responses' && model.thinking ? { reasoningSummary: 'auto' } : {}),
-      },
-      anthropic: typeof prepared.effort === 'string' ? { effort: prepared.effort } : {},
-    },
+    includeRawChunks: model.apiType !== 'messages' && model.apiType !== 'google',
+    providerOptions: sdkProviderOptions(model, prepared.effort),
   });
   return stream;
+}
+
+function finishTerminal(
+  part: Extract<LanguageModelV3StreamPart, { type: 'finish' }>,
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+  state: StreamAttemptState
+): void {
+  state.safeToolFinish = part.finishReason.unified === 'stop' || part.finishReason.unified === 'tool-calls';
+  reportPart(part, progress, state.report);
 }
 
 function reportAttemptPart(
@@ -783,11 +1033,12 @@ function reportAttemptPart(
   progress: vscode.Progress<vscode.LanguageModelResponsePart>,
   state: StreamAttemptState
 ): boolean {
+  state.replay?.observe(part);
   if (part.type === 'text-delta' && part.delta) state.attemptText += part.delta;
   if (part.type === 'raw') reportPart(part, progress, state.report);
   if (isTerminalPart(part)) {
     state.finished = true;
-    if (part.type === 'finish') reportPart(part, progress, state.report);
+    if (part.type === 'finish') finishTerminal(part, progress, state);
     else if (state.report.diagnostics) state.report.diagnostics.finishSeen = true;
     return true;
   }
@@ -805,6 +1056,30 @@ async function readStreamAttempt(
   }
 }
 
+function completedNativeTools(request: StreamAttemptRequest, state: StreamAttemptState): void {
+  if (!state.toolCalls.length) return;
+  const native = request.model.apiType === 'google' || request.model.apiType === 'messages';
+  if (native && !state.safeToolFinish) {
+    request.progress.report(new vscode.LanguageModelTextPart(
+      '\n\nOpenCode: The response was incomplete; tool calls were not executed.'
+    ));
+    return;
+  }
+  if (native) {
+    if (!thinkingPart || !state.replay) {
+      throw new Error('This VS Code host cannot preserve native tool replay metadata.');
+    }
+    request.progress.report(new thinkingPart('', `opencode-native-replay-${randomUUID()}`, {
+      opencodeNativeReplay: {
+        modelId: request.model.id,
+        providerPackage: request.model.providerPackage,
+        content: state.replay.snapshot(),
+      },
+    }));
+  }
+  reportToolCalls(state.toolCalls, request.progress);
+}
+
 function handleStreamTimeout(
   request: StreamAttemptRequest,
   state: StreamAttemptState
@@ -813,7 +1088,7 @@ function handleStreamTimeout(
     summarizeStream(state.report.diagnostics, state.finished ? 'completed' : 'aborted');
   }
   if (state.toolCalls.length) {
-    reportToolCalls(state.toolCalls, request.progress);
+    completedNativeTools(request, state);
     return undefined;
   }
   if (state.finished) return undefined;
@@ -828,7 +1103,7 @@ async function streamAttempt(request: StreamAttemptRequest): Promise<string | un
   const state = createStreamAttemptState(request);
   try {
     await readStreamAttempt(request, state);
-    reportToolCalls(state.toolCalls, request.progress);
+    completedNativeTools(request, state);
     if (state.report.diagnostics) summarizeStream(state.report.diagnostics, 'completed');
   } catch (error) {
     if (!isStreamTimeout(error)) {
@@ -841,7 +1116,7 @@ async function streamAttempt(request: StreamAttemptRequest): Promise<string | un
 }
 
 async function runChatStream(
-  model: CustomEndpointModel,
+  model: OpenCodeModel,
   apiKey: string,
   sessionId: string,
   options: vscode.ProvideLanguageModelChatResponseOptions,
@@ -880,6 +1155,7 @@ export class OpenCodeChatAdapter implements vscode.LanguageModelChatProvider<Reg
 
   private readonly identities: ConversationIdentity;
   private readonly streamPolicy: ChatStreamPolicy;
+  private readonly useConfiguredTimeout: boolean;
 
   constructor(
     private readonly context: Pick<vscode.ExtensionContext, 'secrets'> & Partial<Pick<vscode.ExtensionContext, 'globalState'>>,
@@ -888,9 +1164,10 @@ export class OpenCodeChatAdapter implements vscode.LanguageModelChatProvider<Reg
   ) {
     this.identities = new ConversationIdentity(context.globalState);
     this.streamPolicy = { ...defaultChatStreamPolicy, ...streamPolicy };
+    this.useConfiguredTimeout = streamPolicy.chunkTimeoutMs === undefined;
   }
 
-  updateModels(models: CustomEndpointModel[]): void {
+  updateModels(models: OpenCodeModel[]): void {
     this.models = models.map((model) => ({
       ...model, family: model.family ?? model.id, version: '1.0',
       capabilities: { toolCalling: model.toolCalling, imageInput: model.vision, thinking: model.thinking },
@@ -925,7 +1202,10 @@ export class OpenCodeChatAdapter implements vscode.LanguageModelChatProvider<Reg
     let activeController: AbortController | undefined;
     const subscription = token.onCancellationRequested(() => { activeController?.abort(); });
     try {
-      const prepared = prepareChatRequest(messages, options);
+      const prepared = prepareChatRequest(messages, options, model);
+      const streamPolicy = this.useConfiguredTimeout
+        ? { ...this.streamPolicy, chunkTimeoutMs: configuredStreamIdleTimeoutMs() }
+        : this.streamPolicy;
       await runChatStream(
         model,
         apiKey,
@@ -933,23 +1213,25 @@ export class OpenCodeChatAdapter implements vscode.LanguageModelChatProvider<Reg
         options,
         progress,
         token,
-        this.streamPolicy,
+        streamPolicy,
         this.log,
         prepared,
         (controller) => { activeController = controller; }
       );
+    } catch (error) {
+      if (!reportSDKError(error, model.id, progress)) throw error;
     } finally {
       subscription.dispose();
     }
   }
 
   provideTokenCount(
-    model: RegisteredModel,
+    _model: RegisteredModel,
     input: string | vscode.LanguageModelChatRequestMessage,
     _token: vscode.CancellationToken
   ): Promise<number> {
     const text = typeof input === 'string' ? input : JSON.stringify(input);
-    return Promise.resolve(Math.max(1, Math.ceil(text.length / charsPerToken(model.id))));
+    return Promise.resolve(Math.max(1, Math.ceil(Buffer.byteLength(text, 'utf8') / 4)));
   }
 
   dispose(): void { this.changed.dispose(); }

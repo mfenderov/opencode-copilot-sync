@@ -32,6 +32,7 @@ async function main() {
         '--disable-workspace-trust',
         '--disable-telemetry',
         `--user-data-dir=${testUserData.root}`,
+        `--extensions-dir=${testUserData.root}/extensions`,
       ],
     });
 

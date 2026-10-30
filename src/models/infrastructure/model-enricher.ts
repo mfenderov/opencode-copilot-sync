@@ -1,221 +1,126 @@
-// Models infrastructure: model metadata enrichment.
-import type { ModelDevMetadata } from './models-dev-client.js';
 import { resolveModelTokenLimits } from '../domain/token-budget.js';
-import type { CustomEndpointModel } from '../domain/model.js';
+import type { OpenCodeApiType, OpenCodeModel, OpenCodeProviderPackage } from '../domain/model.js';
+import type { ModelDevMetadata, ModelProviderMetadata } from './models-dev-client.js';
+
+import { PROVIDER_PROTOCOLS } from '../../infrastructure/vscode/open-code-chat-adapter.js';
+
+export class ModelMetadataError extends Error {}
 
 export interface EnrichOptions {
-  isGo?: boolean;
-  suffix?: string;
-  modelsDevData?: ModelDevMetadata;
+  isGo: boolean;
+  provider: ModelProviderMetadata;
+  modelsDevData: unknown;
 }
 
-interface ModelCapabilities {
-  contextWindow: number;
-  maxOutputTokens: number;
-  vision: boolean | ((id: string) => boolean);
-  thinking: boolean | ((id: string) => boolean);
+function providerProtocol(value: string): { providerPackage: OpenCodeProviderPackage; apiType: OpenCodeApiType } {
+  if (!Object.hasOwn(PROVIDER_PROTOCOLS, value)) throw new ModelMetadataError(`Unsupported provider SDK: ${value}.`);
+  const providerPackage = value as OpenCodeProviderPackage;
+  return { providerPackage, apiType: PROVIDER_PROTOCOLS[providerPackage] };
 }
 
-// Fallback capabilities used only when models.dev metadata is unavailable.
-// Each family declares its known limits; vision/thinking may be a predicate
-// over the model id for sub-variants (e.g. kimi omni, gemini thinking).
-const FAMILY_CAPABILITIES: (readonly [RegExp, ModelCapabilities])[] = [
-  [/deepseek/i, { contextWindow: 1048576, maxOutputTokens: 131072, vision: (id) => id.toLowerCase().includes('vision'), thinking: true }],
-  [/glm/i, { contextWindow: 1048576, maxOutputTokens: 131072, vision: true, thinking: true }],
-  [/kimi/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: true, thinking: true }],
-  [/qwen/i, { contextWindow: 1000000, maxOutputTokens: 131072, vision: true, thinking: false }],
-  [/minimax/i, { contextWindow: 1048576, maxOutputTokens: 131072, vision: false, thinking: false }],
-  [/claude/i, { contextWindow: 1000000, maxOutputTokens: 128000, vision: true, thinking: (id) => !id.toLowerCase().includes('haiku') }],
-  [/gpt/i, { contextWindow: 1000000, maxOutputTokens: 128000, vision: true, thinking: true }],
-  [/gemini/i, { contextWindow: 1000000, maxOutputTokens: 65536, vision: true, thinking: (id) => id.toLowerCase().includes('thinking') }],
-  [/grok/i, { contextWindow: 1000000, maxOutputTokens: 65536, vision: true, thinking: true }],
-  [/mimo/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: (id) => id.toLowerCase().includes('omni'), thinking: true }],
-  [/nemotron/i, { contextWindow: 1000000, maxOutputTokens: 128000, vision: false, thinking: true }],
-  [/muse/i, { contextWindow: 1000000, maxOutputTokens: 65536, vision: false, thinking: true }],
-  [/longcat/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: false }],
-  [/(omen|hy4)/i, { contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true }],
-];
-
-const SMALL_GPT_CONTEXT = 128000;
-const SMALL_GPT_OUTPUT = 16384;
-
-function resolveCapability<T>(value: T | ((id: string) => T), modelId: string): T {
-  return typeof value === 'function' ? (value as (id: string) => T)(modelId) : value;
+function trustedEndpoint(value: string): string {
+  let endpoint: URL;
+  try {
+    endpoint = new URL(value);
+  } catch {
+    throw new ModelMetadataError('Invalid OpenCode provider endpoint.');
+  }
+  if (endpoint.protocol !== 'https:' || endpoint.hostname !== 'opencode.ai' ||
+    endpoint.port || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+    throw new ModelMetadataError(`Untrusted OpenCode provider endpoint: ${endpoint.origin}.`);
+  }
+  return endpoint.toString().replace(/\/$/, '');
 }
 
-function fallbackCapabilities(modelId: string): { contextWindow: number; maxOutputTokens: number; vision: boolean; thinking: boolean } {
-  const lower = modelId.toLowerCase();
-  // Small GPT variants (mini/nano) carry a fraction of the full context.
-  if (/gpt/i.test(modelId) && (lower.includes('mini') || lower.includes('nano'))) {
-    return { contextWindow: SMALL_GPT_CONTEXT, maxOutputTokens: SMALL_GPT_OUTPUT, vision: true, thinking: true };
-  }
-  // Small Claude Haiku trades context for speed.
-  if (/claude/i.test(modelId) && lower.includes('haiku')) {
-    return { contextWindow: 200000, maxOutputTokens: 64000, vision: true, thinking: false };
-  }
-  for (const [pattern, caps] of FAMILY_CAPABILITIES) {
-    if (pattern.test(modelId)) {
-      return {
-        contextWindow: caps.contextWindow,
-        maxOutputTokens: caps.maxOutputTokens,
-        vision: resolveCapability(caps.vision, modelId),
-        thinking: resolveCapability(caps.thinking, modelId),
-      };
-    }
-  }
-  return { contextWindow: 1048576, maxOutputTokens: 65536, vision: false, thinking: true };
+interface ValidatedCapabilities {
+  toolCall: boolean;
+  reasoning: boolean;
+  input: string[];
+  name: string | undefined;
 }
 
-function resolveTransport(modelId: string, devMeta: ModelDevMetadata | undefined, isGo: boolean): { apiType: 'chat-completions' | 'messages' | 'responses'; modelUrl: string } {
-  const lower = modelId.toLowerCase();
-  const goBase = 'https://opencode.ai/zen/go/v1';
-  const zenBase = 'https://opencode.ai/zen/v1';
-  const isResponses =
-    devMeta?.provider?.npm === '@ai-sdk/openai' ||
-    lower.includes('muse') ||
-    lower.includes('gpt-') ||
-    lower.includes('grok-');
-  const isMessages =
-    devMeta?.provider?.npm === '@ai-sdk/anthropic' ||
-    lower.includes('claude');
-  if (isMessages) {
-    return { apiType: 'messages', modelUrl: isGo ? goBase : zenBase };
-  }
-  if (isResponses) {
-    return { apiType: 'responses', modelUrl: isGo ? goBase : zenBase };
+function checkedCapabilities(metadata: ModelDevMetadata, modelId: string): ValidatedCapabilities {
+  if (typeof metadata.tool_call !== 'boolean' || typeof metadata.reasoning !== 'boolean' ||
+    !Array.isArray(metadata.modalities?.input)) {
+    throw new ModelMetadataError(`Missing capabilities for model ${modelId}.`);
   }
   return {
-    apiType: 'chat-completions',
-    modelUrl: isGo ? `${goBase}/chat/completions` : `${zenBase}/chat/completions`,
+    toolCall: metadata.tool_call,
+    reasoning: metadata.reasoning,
+    input: metadata.modalities.input,
+    name: metadata.name,
   };
 }
 
-function resolveReasoningEfforts(
-  thinking: boolean,
-  devMeta: ModelDevMetadata | undefined,
-  isResponses: boolean,
-  modelId: string
-): string[] | undefined {
-  if (!thinking) return undefined;
-  const devEffortOpt = devMeta?.reasoning_options?.find((o) => o.type === 'effort');
-  if (devEffortOpt && Array.isArray(devEffortOpt.values)) {
-    const filtered = devEffortOpt.values.filter((v: string) => v !== 'none');
-    if (filtered.length > 0) {
-      return filtered;
-    }
-    return undefined;
+function checkedId(metadata: ModelDevMetadata, modelId: string): void {
+  if (metadata.id !== undefined && metadata.id !== modelId) {
+    throw new ModelMetadataError(`Metadata ID does not match model ${modelId}.`);
   }
-  // Fallback heuristics only when models.dev metadata is unavailable
-  if (devMeta) return undefined;
-  const lower = modelId.toLowerCase();
-  if (isResponses) {
-    return ['minimal', 'low', 'medium', 'high', 'xhigh'];
+}
+
+function validEffortValues(values: unknown): values is string[] {
+  return Array.isArray(values) && values.every((value) => typeof value === 'string');
+}
+
+function withoutNone(values: string[]): string[] | undefined {
+  const kept = values.filter((value) => value !== 'none');
+  return kept.length ? kept : undefined;
+}
+
+function reasoningEfforts(metadata: ModelDevMetadata): string[] | undefined {
+  if (!metadata.reasoning) return undefined;
+  const effort = metadata.reasoning_options?.find((option) => option.type === 'effort');
+  if (!effort?.values) return undefined;
+  if (!validEffortValues(effort.values)) {
+    throw new ModelMetadataError('Invalid reasoning effort metadata.');
   }
-  if (lower.includes('deepseek') || lower.includes('kimi-k3') || lower.includes('glm')) {
-    return ['low', 'medium', 'high', 'max'];
+  return withoutNone(effort.values);
+}
+
+function asMetadata(raw: unknown, modelId: string): ModelDevMetadata {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ModelMetadataError(`Missing metadata for model ${modelId}.`);
   }
-  return undefined;
+  return raw as ModelDevMetadata;
 }
 
-const TITLE_CASE_EXCEPTIONS: Record<string, string> = {
-  glm: 'GLM',
-  gpt: 'GPT',
-  mimo: 'MiMo',
-  qwen: 'Qwen',
-  kimi: 'Kimi',
-  minimax: 'MiniMax',
-  deepseek: 'DeepSeek',
-  gemini: 'Gemini',
-  claude: 'Claude',
-  grok: 'Grok',
-  nemotron: 'Nemotron',
-  muse: 'Muse',
-  spark: 'Spark',
-  contributor: 'Contributor',
-  free: 'Free',
-};
-
-function titleCasePart(part: string): string {
-  const known = TITLE_CASE_EXCEPTIONS[part.toLowerCase()];
-  if (known) return known;
-  if (/^v\d+/i.test(part)) return part.toUpperCase();
-  return part.charAt(0).toUpperCase() + part.slice(1);
+function modelEndpoints(
+  metadata: ModelDevMetadata,
+  provider: ModelProviderMetadata
+): { providerPackage: OpenCodeProviderPackage; apiType: OpenCodeApiType; url: string } {
+  const { providerPackage, apiType } = providerProtocol(metadata.provider?.npm ?? provider.npm);
+  return { providerPackage, apiType, url: trustedEndpoint(metadata.provider?.api ?? provider.api) };
 }
 
-export function formatModelName(id: string, suffix = '(OpenCode)'): string {
-  // Normalize version patterns like "-4-6", "-1-3", "-2-7" to "-4.6"
-  const normalized = id.replace(/-(\d+)-(\d+)(?=-|$)/g, '-$1.$2');
-  const title = normalized.split(/[-_]/).map(titleCasePart).join(' ');
-  return `${title} ${suffix}`;
+function modelTokenLimits(metadata: ModelDevMetadata, modelId: string): ReturnType<typeof resolveModelTokenLimits> {
+  try {
+    return resolveModelTokenLimits(metadata.limit?.context, metadata.limit?.output, metadata.limit?.input);
+  } catch (error) {
+    if (error instanceof RangeError) throw new ModelMetadataError(`${modelId}: ${error.message}`);
+    throw error;
+  }
 }
 
-interface ResolvedCapabilities {
-  contextWindow: number;
-  maxOutputTokens: number;
-  vision: boolean;
-  thinking: boolean;
-}
+export function enrichModel(modelId: string, options: EnrichOptions): OpenCodeModel {
+  const metadata = asMetadata(options.modelsDevData, modelId);
+  checkedId(metadata, modelId);
+  const capabilities = checkedCapabilities(metadata, modelId);
+  const endpoints = modelEndpoints(metadata, options.provider);
+  const isGo = options.isGo;
 
-function devCapability<T>(devValue: T | undefined, fallbackValue: T | undefined, defaultValue: T): T {
-  return devValue ?? fallbackValue ?? defaultValue;
-}
-
-function resolveCapabilities(
-  devMeta: ModelDevMetadata | undefined,
-  modelId: string
-): ResolvedCapabilities {
-  const fallback = !devMeta ? fallbackCapabilities(modelId) : undefined;
   return {
-    contextWindow: devCapability(devMeta?.limit?.context, fallback?.contextWindow, 1048576),
-    maxOutputTokens: devCapability(devMeta?.limit?.output, fallback?.maxOutputTokens, 65536),
-    vision: devCapability(devMeta?.modalities?.input?.includes('image'), fallback?.vision, false),
-    thinking: devCapability(devMeta?.reasoning, fallback?.thinking, true),
-  };
-}
-
-export function enrichModel(modelId: string, options: EnrichOptions = {}): CustomEndpointModel {
-  const isGo = options.isGo ?? true;
-  const devMeta = options.modelsDevData;
-
-  const { apiType, modelUrl } = resolveTransport(modelId, devMeta, isGo);
-
-  const defaultSuffix = isGo ? '(OpenCode Go)' : '(OpenCode Zen)';
-  const suffix = options.suffix ?? defaultSuffix;
-  const name = formatModelName(modelId, suffix);
-
-  // Derive limits and capabilities dynamically from models.dev if available,
-  // else from the per-family fallback table.
-  const { contextWindow, maxOutputTokens, vision, thinking } = resolveCapabilities(devMeta, modelId);
-
-  const tokenLimits = resolveModelTokenLimits(contextWindow, maxOutputTokens);
-  const supportsReasoningEffort = resolveReasoningEfforts(
-    thinking,
-    devMeta,
-    apiType === 'responses',
-    modelId
-  );
-
-  const model: CustomEndpointModel = {
     id: modelId,
-    name,
-    // Stable per-model family matching the VERIFIED_OPENCODE_MODELS convention (family = id).
+    name: `${capabilities.name ?? modelId} (OpenCode ${isGo ? 'Go' : 'Zen'})`,
     family: modelId,
-    url: modelUrl,
-    apiType,
-    ...(apiType === 'responses' ? { statefulResponses: false } : {}),
-    toolCalling: true,
-    vision,
-    contextWindow: tokenLimits.contextWindow,
-    maxInputTokens: tokenLimits.maxInputTokens,
-    maxOutputTokens: tokenLimits.maxOutputTokens,
-    thinking,
-    supportsReasoningEffort,
-    reasoningEffortFormat: apiType,
-    modelOptions: {
-      temperature: null,
-      top_p: null,
-    },
+    catalog: isGo ? 'go' : 'zen',
+    ...endpoints,
+    ...(endpoints.apiType === 'responses' ? { statefulResponses: false } : {}),
+    toolCalling: capabilities.toolCall,
+    vision: capabilities.input.includes('image'),
+    thinking: capabilities.reasoning,
+    ...modelTokenLimits(metadata, modelId),
+    supportsReasoningEffort: reasoningEfforts(metadata),
+    reasoningEffortFormat: endpoints.apiType,
+    modelOptions: { temperature: null, top_p: null },
   };
-
-  return model;
 }

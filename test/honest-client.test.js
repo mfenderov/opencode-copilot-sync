@@ -1,9 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { catalogMetadata } from './helpers/catalog-fixture.js';
 
 test('honest client: buildUnifiedModels announces Zen IDs as-is with Zen suffix', async () => {
   const { buildUnifiedModels } = await import('../out/models/application/synchronize-models.js');
-  const { models } = buildUnifiedModels(['kimi-k3'], ['ling-3.1-flash-free', 'claude-sonnet-4-6'], {});
+  const { models } = buildUnifiedModels(
+    ['kimi-k3'],
+    ['ling-3.1-flash-free', 'claude-sonnet-4-6'],
+    catalogMetadata(['kimi-k3'], ['ling-3.1-flash-free', 'claude-sonnet-4-6']),
+  );
   const ling = models.find((m) => m.id === 'ling-3.1-flash-free');
   assert.ok(ling, 'Zen catalog IDs must be announced as-is, including -free IDs');
   assert.ok(ling.name.includes('(OpenCode Zen)'), `No (OpenCode Free) suffix may remain, got: ${ling.name}`);
@@ -12,7 +17,10 @@ test('honest client: buildUnifiedModels announces Zen IDs as-is with Zen suffix'
 
 test('honest client: enrichModel has no isFree concept and no Free suffix', async () => {
   const { enrichModel } = await import('../out/models/infrastructure/model-enricher.js');
-  const model = enrichModel('ling-3.1-flash-free', { isGo: false });
+  const provider = catalogMetadata([], ['ling-3.1-flash-free']).zen;
+  const model = enrichModel('ling-3.1-flash-free', {
+    isGo: false, provider, modelsDevData: provider.models['ling-3.1-flash-free'],
+  });
   assert.equal(model.isFree, undefined, 'isFree field must be gone');
   assert.ok(!model.name.includes('(OpenCode Free)'), `name must not carry the Free-tier suffix, got: ${model.name}`);
   assert.ok(model.name.includes('(OpenCode Zen)'), `Zen IDs keep the Zen suffix, got: ${model.name}`);
