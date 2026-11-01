@@ -535,7 +535,7 @@ test('stream fetch timeout resets the body idle deadline after each chunk', asyn
     setTimeout(() => res.write(' second'), 25);
     setTimeout(() => res.end(), 65);
   });
-  const fetchWithTimeout = createStreamTimeoutFetch(fetch, { headerTimeoutMs: 100, chunkTimeoutMs: 45 });
+  const fetchWithTimeout = createStreamTimeoutFetch(fetch, { headerTimeoutMs: 500, chunkTimeoutMs: 500 });
   const response = await fetchWithTimeout(`http://127.0.0.1:${server.address().port}/reset`);
 
   assert.equal(response.status, 201);

@@ -127,7 +127,29 @@ async function runRemoteAssertions({ forceOffline: offlineRequested = false } = 
   const {
     writeProvidersToConfig,
   } = await import("../out/sync-writer.js");
-  const { buildProviderEntry } = await import("../out/config.js");
+  const { mirrorProvider } = await import("../test/helpers/catalog-fixture.js");
+  const { enrichModel } = await import("../out/models/infrastructure/model-enricher.js");
+  const { toCustomEndpointModel } = await import("../out/models/domain/model.js");
+
+  function metadataProviderEntry(name, apiKey, ids, metadataById) {
+    return {
+      name,
+      vendor: 'customendpoint',
+      apiKey,
+      apiType: 'chat-completions',
+      models: ids.flatMap((id) => {
+        const entry = metadataById[id];
+        if (!entry) return [];
+        const enriched = enrichModel(id, {
+          isGo: true,
+          provider: entry.provider,
+          modelsDevData: entry.metadata,
+        });
+        const compatible = toCustomEndpointModel(enriched);
+        return compatible ? [compatible] : [];
+      }),
+    };
+  }
   const sandbox = createRemoteWslSandbox();
   const home = sandbox.homeDir;
   const activeStoragePath = path.join(
@@ -254,7 +276,7 @@ async function runRemoteAssertions({ forceOffline: offlineRequested = false } = 
     fs.writeFileSync(siblingWslConfigPath, JSON.stringify(mirrorInitial, null, 2), "utf-8");
     const siblingOriginal = fs.readFileSync(siblingWslConfigPath, "utf-8");
 
-    const provider = buildProviderEntry("OpenCode", sourceOnlyKey, ["kimi-k3"], { isGo: true });
+    const provider = mirrorProvider("OpenCode", sourceOnlyKey, ["kimi-k3"], { isGo: true });
     const mirrorResult = writeProvidersToConfig([provider], primaryPath, activeStoragePath, {
       additionalTargetPaths: [associatedWslConfigPath, windowsProfileConfigPath],
       discoveryContext,
@@ -313,7 +335,54 @@ async function runRemoteAssertions({ forceOffline: offlineRequested = false } = 
       "kimi-k3",
       "claude-sonnet-4-6",
     ];
-    const generatedProvider = buildProviderEntry("OpenCode", "sk-wsl-schema-test", modelIds, { isGo: true });
+    const goBase = "https://opencode.ai/zen/go/v1";
+    const modelSchemas = {
+      "muse-spark-1.3-contributor": {
+        provider: { npm: "@ai-sdk/openai", api: goBase },
+        metadata: {
+          id: "muse-spark-1.3-contributor",
+          name: "muse-spark-1.3-contributor",
+          limit: { context: 1048576, input: 983040, output: 65536 },
+          modalities: { input: ["text"], output: ["text"] },
+          reasoning: false,
+          tool_call: true,
+        },
+      },
+      "deepseek-v4-flash": {
+        provider: { npm: "@ai-sdk/openai-compatible", api: goBase },
+        metadata: {
+          id: "deepseek-v4-flash",
+          name: "deepseek-v4-flash",
+          limit: { context: 1048576, input: 983040, output: 131072 },
+          modalities: { input: ["text"], output: ["text"] },
+          reasoning: true,
+          tool_call: true,
+        },
+      },
+      "kimi-k3": {
+        provider: { npm: "@ai-sdk/openai-compatible", api: goBase },
+        metadata: {
+          id: "kimi-k3",
+          name: "kimi-k3",
+          limit: { context: 1048576, input: 983040, output: 65536 },
+          modalities: { input: ["text", "image"], output: ["text"] },
+          reasoning: true,
+          tool_call: true,
+        },
+      },
+      "claude-sonnet-4-6": {
+        provider: { npm: "@ai-sdk/anthropic", api: goBase },
+        metadata: {
+          id: "claude-sonnet-4-6",
+          name: "claude-sonnet-4-6",
+          limit: { context: 1000000, input: 800000, output: 128000 },
+          modalities: { input: ["text"], output: ["text"] },
+          reasoning: true,
+          tool_call: true,
+        },
+      },
+    };
+    const generatedProvider = metadataProviderEntry("OpenCode", "sk-wsl-schema-test", modelIds, modelSchemas);
     const schemaPath = path.join(sandbox.root, "schema-target", "chatLanguageModels.json");
     fs.mkdirSync(path.dirname(schemaPath), { recursive: true });
     fs.writeFileSync(
