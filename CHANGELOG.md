@@ -2,6 +2,32 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.20.0 - 2026-11-01
+#### Features
+- (**provider**) stream thinking, surface stops, gate diagnostics - (4b57c6b) - Mark Fenderov
+- (**provider**) add SDK-backed chat adapter - (1cfa67e) - Mark Fenderov
+- (**sdk**) metadata-driven provider routing with cache-only fallback - (1c0d71a) - Mark Fenderov
+- recover timed out chat streams - (b9afb9b) - Mark Fenderov
+- add OpenCode-style stream timeouts - (1e1f58d) - Mark Fenderov
+#### Bug Fixes
+- (**ci**) repair ubuntu remote script and windows stream timing - (8101591) - Mark Fenderov
+- (**provider**) restore model-aware token estimates - (9b5e641) - Mark Fenderov
+- preserve chat completion usage trailer - (43c81e8) - Mark Fenderov
+- finalize SDK stream on protocol completion - (f591bbb) - Mark Fenderov
+- clear scoped CRAP quality gate - (1cdb960) - Mark Fenderov
+- stop consuming stream on completion - (2827015) - Mark Fenderov
+- enforce stream timeout while consumer pauses - (437d873) - Mark Fenderov
+#### Documentation
+- describe OpenCode-native stream recovery - (947e279) - Mark Fenderov
+#### Miscellaneous Chores
+- (**badge**) refresh CRAP badge [skip ci] - (ae5dffa) - github-actions[bot]
+- (**build**) stop tracking dist bundle, build in pipeline - (e86d4af) - Mark Fenderov
+- (**docs**) exclude superpowers working notes from repo and package - (2869f43) - Mark Fenderov
+- ignore session scratch workspace - (f4ff018) - Mark Fenderov
+- untrack session scratch reports - (8436dcd) - Mark Fenderov
+
+- - -
+
 ## v0.19.2 - 2026-10-19
 #### Bug Fixes
 - (**build**) bundle via esbuild JS API instead of spawning npx - (3378c17) - Mark Fenderov
