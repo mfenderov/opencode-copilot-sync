@@ -15,6 +15,9 @@ export class EventEmitter {
       } catch {}
     }
   }
+  dispose() {
+    this.#listeners.clear();
+  }
 }
 export const LanguageModelChatMessageRole = { User: 1, Assistant: 2 };
 export class LanguageModelTextPart { constructor(value) { this.value = value; } }
@@ -27,9 +30,10 @@ export class LanguageModelDataPart {
     return new LanguageModelDataPart(new TextEncoder().encode(JSON.stringify(value)), mimeType);
   }
 }
+export class LanguageModelPromptTsxPart { constructor(value) { this.value = value; } }
 export class LanguageModelToolCallPart { constructor(callId, name, input) { this.callId = callId; this.name = name; this.input = input; } }
 export class LanguageModelToolResultPart { constructor(callId, content) { this.callId = callId; this.content = content; } }
-export class LanguageModelThinkingPart { constructor(value, id) { this.value = value; this.id = id; } }
+export class LanguageModelThinkingPart { constructor(value, id, metadata) { this.value = value; this.id = id; this.metadata = metadata; } }
 export const LanguageModelChatToolMode = { Auto: 1, Required: 2 };
 export class LanguageModelError extends Error {
   constructor(message, code) {
@@ -116,5 +120,3 @@ export const Uri = {
     scheme: str.split(':')[0],
   }),
 };
-
-

@@ -1,4 +1,3 @@
-import { enrichModel } from './models/infrastructure/model-enricher.js';
 import type { CustomEndpointModel } from './models/domain/model.js';
 
 export interface ProviderEntry {
@@ -31,7 +30,7 @@ function isUnifiedOpenCodeProvider(entry: unknown): entry is Record<string, unkn
   return isRecord(entry) && entry.name === 'OpenCode' && entry.vendor === 'customendpoint';
 }
 
-const VS_CODE_SECRET_INPUT_REFERENCE = /^\$\{input:chat\.lm\.secret\.[0-9a-f]+\}$/;
+const VS_CODE_SECRET_INPUT_REFERENCE = /^\$\{input:chat\.lm\.secret\.-?[0-9a-f]+\}$/;
 
 export function parseVSCodeSecretInputReference(value: unknown): VSCodeSecretInputReference | undefined {
   if (typeof value !== 'string' || !VS_CODE_SECRET_INPUT_REFERENCE.test(value)) return undefined;
@@ -51,23 +50,6 @@ function hasOpenCodeModelUrl(entry: Record<string, unknown>): boolean {
 
 function isLegacyOpenCodeName(name: string): boolean {
   return name === 'OpenCode Go' || name === 'OpenCode Zen Free';
-}
-
-export function buildProviderEntry(
-  name: string,
-  apiKey: string,
-  modelIds: string[],
-  options: { isGo?: boolean } = { isGo: true }
-): ProviderEntry {
-  const models = modelIds.map((id) => enrichModel(id, options));
-
-  return {
-    name,
-    vendor: 'customendpoint',
-    apiKey,
-    apiType: 'chat-completions',
-    models,
-  };
 }
 
 export function isOpenCodeLegacyOrCustomEntry(entry: unknown): boolean {
@@ -159,6 +141,14 @@ export function mergeOpenCodeProviderForTarget(
       config: existingConfig,
       warning:
         "OpenCode mirror skipped because this VS Code profile has no VS Code SecretStorage-backed API key reference. In that profile, open Manage Language Models, configure OpenCode, and enter the API key locally; the next sync can then reuse that profile's secret reference.",
+    };
+  }
+
+  if (provider.models.length === 0) {
+    return {
+      status: 'skipped',
+      config: existingConfig,
+      warning: 'OpenCode mirror skipped because no catalog models have a compatible custom endpoint protocol.',
     };
   }
 

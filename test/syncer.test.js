@@ -14,7 +14,7 @@ import {
   cleanupLegacyOpenCodeCustomEndpoints,
 } from '../out/sync-writer.js';
 import { syncOpenCodeModels } from '../out/models/application/synchronize-models.js';
-import { buildProviderEntry } from '../out/config.js';
+import { catalogMetadata, metadataResponse, mirrorProvider as buildProviderEntry } from './helpers/catalog-fixture.js';
 import * as syncerModule from '../out/models/application/synchronize-models.js';
 import { setVSCodeProxyUrl } from '../out/infrastructure/http/proxy-routing.js';
 
@@ -84,13 +84,13 @@ test('buildUnifiedModels gives Go catalog models priority over Zen overlap', () 
   const { models, zenCount } = buildUnifiedModels(
     ['kimi-k3', 'deepseek-v4-flash'],
     ['kimi-k3', 'big-pickle'],
-    {}
+    catalogMetadata(['kimi-k3', 'deepseek-v4-flash'], ['kimi-k3', 'big-pickle'])
   );
 
   assert.deepEqual(models.map((model) => model.id), ['kimi-k3', 'deepseek-v4-flash', 'big-pickle']);
-  assert.equal(models[0].url, 'https://opencode.ai/zen/go/v1/chat/completions');
-  assert.equal(models[2].url, 'https://opencode.ai/zen/v1/chat/completions');
-  assert.equal(models[2].name, 'Big Pickle (OpenCode Zen)');
+  assert.equal(models[0].url, 'https://opencode.ai/inference/go/openai/v1');
+  assert.equal(models[2].url, 'https://opencode.ai/inference/openai/v1');
+  assert.equal(models[2].name, 'big-pickle (OpenCode Zen)');
   assert.equal(zenCount, 1);
 });
 
@@ -125,7 +125,9 @@ test('syncOpenCodeModels fetches catalogs, merges Go priority, and never stores 
       return new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), { status: 200 });
     }
     if (url.hostname === 'models.opencode.ai') {
-      return new Response('{}', { status: 200 });
+      return new Response(JSON.stringify(metadataResponse(
+        ['kimi-k3', 'deepseek-v4-flash'], ['kimi-k3', 'big-pickle']
+      )), { status: 200 });
     }
     throw new Error(`Unexpected test URL: ${url.href}`);
   };

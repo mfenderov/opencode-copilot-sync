@@ -1,114 +1,49 @@
-import { after, test } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkZenBalance, fetchModelsDevMetadata, fetchOpenCodeModels, filterAvailableGoModels, KNOWN_UNAVAILABLE_MODELS } from '../out/models/infrastructure/models-dev-client.js';
+import { fetchModelsDevMetadata, fetchOpenCodeModels } from '../out/models/infrastructure/models-dev-client.js';
+import { metadataResponse } from './helpers/catalog-fixture.js';
 
-const originalOfflineMode = process.env.OPENCODE_OFFLINE;
-delete process.env.OPENCODE_OFFLINE;
+function isolateFetch(t, handler) {
+  const previous = { fetch: globalThis.fetch, noProxy: process.env.NO_PROXY, offline: process.env.OPENCODE_OFFLINE };
+  process.env.NO_PROXY = '*';
+  delete process.env.OPENCODE_OFFLINE;
+  globalThis.fetch = handler;
+  t.after(() => {
+    globalThis.fetch = previous.fetch;
+    if (previous.noProxy === undefined) delete process.env.NO_PROXY;
+    else process.env.NO_PROXY = previous.noProxy;
+    if (previous.offline === undefined) delete process.env.OPENCODE_OFFLINE;
+    else process.env.OPENCODE_OFFLINE = previous.offline;
+  });
+}
 
-after(() => {
-  if (originalOfflineMode === undefined) delete process.env.OPENCODE_OFFLINE;
-  else process.env.OPENCODE_OFFLINE = originalOfflineMode;
-});
-
-test('filterAvailableGoModels filters out known broken/unavailable models', () => {
-  const models = [
-    'kimi-k3',
-    'glm-5.2',
-    'gpt-5.6-luna',
-    'grok-4.5',
-    'minimax-m3',
-    'minimax-m2.7'
-  ];
-
-  const available = filterAvailableGoModels(models);
-  assert.deepEqual(available, [
-    'kimi-k3',
-    'glm-5.2',
-    'minimax-m3'
+test('model availability follows the upstream catalog without a local model denylist', async (t) => {
+  isolateFetch(t, async () => new Response(JSON.stringify({
+    data: [{ id: 'grok-4.6' }, { id: 'minimax-m2.7' }, { id: 'new-model' }],
+  }), { status: 200 }));
+  assert.deepEqual(await fetchOpenCodeModels('sk-test-key', 'go'), [
+    'grok-4.6', 'minimax-m2.7', 'new-model',
   ]);
 });
 
-test('fetchModelsDevMetadata prefers OpenCode Go limits over third-party providers', async () => {
-  const originalFetch = globalThis.fetch;
-  const originalNoProxy = process.env.NO_PROXY;
-  process.env.NO_PROXY = '*';
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    bothub: {
-      models: {
-        'muse-spark-1.3-contributor': {
-          limit: { context: 1048576, output: 943718 },
-        },
-      },
-    },
-    opencode: {
-      models: {
-        'muse-spark-1.3-contributor': {
-          limit: { context: 1048576, output: 65536 },
-        },
-      },
-    },
-    'opencode-go': {
-      models: {
-        'muse-spark-1.3-contributor': {
-          limit: { context: 1048576, output: 131072 },
-        },
-      },
-    },
-  }), { status: 200, headers: { 'content-type': 'application/json' } });
-
-  try {
-    const metadata = await fetchModelsDevMetadata();
-    assert.deepEqual(metadata['muse-spark-1.3-contributor'].limit, {
-      context: 1048576,
-      output: 131072,
-    });
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (originalNoProxy === undefined) delete process.env.NO_PROXY;
-    else process.env.NO_PROXY = originalNoProxy;
-  }
-});
-
-test('fetchOpenCodeModels aborts a hung catalog request instead of stalling startup sync', { timeout: 15000 }, async () => {
-  const originalFetch = globalThis.fetch;
-  // Signal-aware hang: mirrors the real fetch contract, which rejects when
-  // the passed AbortSignal fires.
-  globalThis.fetch = (url, init) => new Promise((resolve, reject) => {
-    init?.signal?.addEventListener('abort', () => reject(init.signal.reason));
+test('metadata falls back to the second upstream catalog after a primary failure', async (t) => {
+  const urls = [];
+  isolateFetch(t, async (url) => {
+    urls.push(String(url));
+    if (String(url).includes('models.opencode.ai')) return new Response('unavailable', { status: 503 });
+    return new Response(JSON.stringify(metadataResponse(['go-model'], ['zen-model'])), { status: 200 });
   });
-
-  try {
-    const start = Date.now();
-    await assert.rejects(
-      fetchOpenCodeModels('sk-test-key-12345', 'go'),
-      (err) => err && err.name === 'TimeoutError'
-    );
-    assert.ok(Date.now() - start < 12000, 'hung request must be time-bounded');
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  const catalog = await fetchModelsDevMetadata();
+  assert.ok(catalog.go.models['go-model']);
+  assert.ok(catalog.zen.models['zen-model']);
+  assert.ok(urls.some((url) => url.includes('models.dev')));
 });
 
-test('checkZenBalance does not call the API while OPENCODE_OFFLINE is enabled', async () => {
-  const previousOffline = process.env.OPENCODE_OFFLINE;
-  const previousNoProxy = process.env.NO_PROXY;
-  const originalFetch = globalThis.fetch;
-  process.env.OPENCODE_OFFLINE = '1';
-  process.env.NO_PROXY = '*';
-  let calls = 0;
-  globalThis.fetch = async () => {
-    calls++;
-    return new Response('ok', { status: 200 });
-  };
-
-  try {
-    assert.equal(await checkZenBalance('sk-test'), false);
-    assert.equal(calls, 0);
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (previousOffline === undefined) delete process.env.OPENCODE_OFFLINE;
-    else process.env.OPENCODE_OFFLINE = previousOffline;
-    if (previousNoProxy === undefined) delete process.env.NO_PROXY;
-    else process.env.NO_PROXY = previousNoProxy;
-  }
+test('fetchOpenCodeModels aborts a hung catalog request instead of stalling startup sync', { timeout: 15000 }, async (t) => {
+  isolateFetch(t, (_url, init) => new Promise((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(init.signal.reason));
+  }));
+  const start = Date.now();
+  await assert.rejects(fetchOpenCodeModels('sk-test-key', 'go'), (error) => error?.name === 'TimeoutError');
+  assert.ok(Date.now() - start < 12000, 'hung request must be time-bounded');
 });

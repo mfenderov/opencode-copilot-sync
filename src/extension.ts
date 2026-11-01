@@ -1,30 +1,36 @@
 import * as vscode from 'vscode';
 import { resolveApiKey, promptAndSetApiKey } from './infrastructure/vscode/secret-store.js';
 import {
+  buildUnifiedModels,
   syncOpenCodeModels,
-  getModelFamily,
-  getModelCatalog,
   type SyncOpenCodeOptions,
   type SyncOpenCodeResult,
 } from './models/application/synchronize-models.js';
+import {
+  CATALOG_CACHE_KEY,
+  catalogKeyHash,
+  createCatalogCache,
+  readCatalogCache,
+  type CatalogSelection,
+} from './models/infrastructure/catalog-cache.js';
 import { getChatLanguageModelsPath } from './sync-targets.js';
 import { formatSyncFailureMessage, formatSyncFailureTooltip } from './sync-status.js';
 import { buildSyncOptions, shouldPromptForApiKey } from './sync-options.js';
+import { OpenCodeChatAdapter } from './infrastructure/vscode/open-code-chat-adapter.js';
 import { updateUsageMeter } from './usage/application/refresh-usage.js';
-import { OpenCodeChatProvider } from './chat/infrastructure/vscode-chat-provider.js';
 import { setVSCodeProxyUrl, setProxyWarningHandler } from './infrastructure/http/proxy-routing.js';
 import { OpenCodeUsageTreeProvider } from './usage/infrastructure/usage-tree-adapter.js';
 
-export async function activate(context: vscode.ExtensionContext) {
+function createChannel(context: vscode.ExtensionContext): vscode.LogOutputChannel {
   const outputChannel = vscode.window.createOutputChannel('OpenCode Copilot Sync', { log: true });
   context.subscriptions.push(outputChannel);
-
   outputChannel.info(
     `[Platform] OS: ${process.platform} (${process.arch}), Remote: ${vscode.env.remoteName || 'local'}, App: ${vscode.env.appName}`
   );
+  return outputChannel;
+}
 
-  // Honor VS Code's own `http.proxy` setting for all outbound requests, in addition to
-  // the standard HTTPS_PROXY/HTTP_PROXY/NO_PROXY env vars (fetch-policy.ts falls back to those).
+function watchProxySetting(context: vscode.ExtensionContext, outputChannel: vscode.LogOutputChannel): void {
   const applyProxySetting = () => {
     const proxyUrl = vscode.workspace.getConfiguration('http').get<string>('proxy');
     setVSCodeProxyUrl(proxyUrl || undefined);
@@ -40,42 +46,97 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     })
   );
+}
 
-  // Register first-class native Language Model Chat Provider in VS Code
-  const chatProvider = new OpenCodeChatProvider(context, outputChannel);
-  context.subscriptions.push(
-    vscode.lm.registerLanguageModelChatProvider('opencode', chatProvider)
-  );
-  // Announce the cached models immediately so Agent Mode sees them before the
-  // delayed startup sync finishes; otherwise restored sessions fail model
-  // lookup until the first post-sync refresh.
-  chatProvider.refresh();
-  outputChannel.info('Registered native OpenCode LanguageModelChatProvider with VS Code.');
+function createChatProvider(
+  context: vscode.ExtensionContext,
+  outputChannel: vscode.LogOutputChannel
+): OpenCodeChatAdapter {
+  return new OpenCodeChatAdapter(context, (message) => {
+    if (vscode.workspace.getConfiguration('opencode').get<boolean>('streamDiagnostics', false)) {
+      outputChannel.info(message);
+    }
+  });
+}
 
-  // Auto-enable VS Code's experimental Agent Host BYOK bridge so custom models appear in Agent Mode
+function readCacheSelection(): CatalogSelection {
+  return {
+    includeGo: vscode.workspace.getConfiguration('opencode').get<boolean>('includeGoModels', true),
+    includeZen: vscode.workspace.getConfiguration('opencode').get<boolean>('includeZenModels', true),
+  };
+}
+
+async function restoreCachedCatalog(
+  context: vscode.ExtensionContext,
+  outputChannel: vscode.LogOutputChannel,
+  chatProvider: OpenCodeChatAdapter,
+  cacheSelection: CatalogSelection
+): Promise<string | undefined> {
+  try {
+    const apiKey = await resolveApiKey(context.secrets, false);
+    const cached = apiKey && readCatalogCache(context.globalState.get(CATALOG_CACHE_KEY), apiKey, cacheSelection);
+    if (cached && apiKey) {
+      const restored = buildUnifiedModels(cached.ids.goModelIds, cached.ids.zenModelIds, cached.metadata);
+      if (restored.models.length) {
+        chatProvider.updateModels(restored.models);
+        outputChannel.info(`Loaded ${restored.models.length} models from the last successful OpenCode catalog.`);
+        restored.warnings.forEach((warning) => { outputChannel.warn(`[Cached catalog] ${warning}`); });
+        return catalogScope(apiKey, cacheSelection);
+      }
+    }
+  } catch (error) {
+    outputChannel.warn(`Unable to restore the cached OpenCode catalog: ${formatSyncFailureMessage(error)}`);
+  }
+  return undefined;
+}
+
+function registerChatProvider(
+  context: vscode.ExtensionContext,
+  outputChannel: vscode.LogOutputChannel,
+  chatProvider: OpenCodeChatAdapter
+): void {
+  context.subscriptions.push(chatProvider, vscode.lm.registerLanguageModelChatProvider('opencode', chatProvider));
+  outputChannel.info('OpenCode model sync active: SDK adapter supplies conversation headers and forwards responses.');
+}
+
+async function enableAgentHostBridge(outputChannel: vscode.LogOutputChannel): Promise<void> {
   try {
     const agentHostCfg = vscode.workspace.getConfiguration('chat.agentHost');
     if (!agentHostCfg.get<boolean>('byokModels.enabled', false)) {
       await agentHostCfg.update('byokModels.enabled', true, vscode.ConfigurationTarget.Global);
       outputChannel.info('Enabled chat.agentHost.byokModels.enabled for Agent Mode support.');
     }
-  } catch (err: any) {
-    outputChannel.warn(`Note: Could not set chat.agentHost.byokModels.enabled: ${err.message}`);
+  } catch (err: unknown) {
+    outputChannel.warn(`Note: Could not set chat.agentHost.byokModels.enabled: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
 
-  // Status bar indicator with Live Usage Meter & quick trigger
+function createUi(context: vscode.ExtensionContext, outputChannel: vscode.LogOutputChannel): {
+  statusBarItem: vscode.StatusBarItem;
+  usageTreeProvider: OpenCodeUsageTreeProvider;
+} {
+  watchProxySetting(context, outputChannel);
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
   statusBarItem.text = '$(hubot) OpenCode';
   statusBarItem.tooltip = 'Click to sync OpenCode models & refresh usage';
   statusBarItem.command = 'opencode-copilot-sync.sync';
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
-
-  // Dedicated Activity Bar Sidebar View: Usage & Quotas
   const usageTreeProvider = new OpenCodeUsageTreeProvider(async () => resolveApiKey(context.secrets, false));
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('opencode-usage-view', usageTreeProvider)
   );
+  return { statusBarItem, usageTreeProvider };
+}
+
+export async function activate(context: vscode.ExtensionContext) {
+  const outputChannel = createChannel(context);
+  const chatProvider = createChatProvider(context, outputChannel);
+  const cacheSelection = readCacheSelection();
+  let activeCatalogScope = await restoreCachedCatalog(context, outputChannel, chatProvider, cacheSelection);
+  registerChatProvider(context, outputChannel, chatProvider);
+  await enableAgentHostBridge(outputChannel);
+  const { statusBarItem, usageTreeProvider } = createUi(context, outputChannel);
 
   async function openApiKeyPageAndSet(): Promise<void> {
     try {
@@ -94,19 +155,21 @@ export async function activate(context: vscode.ExtensionContext) {
     if (action) void action();
   }
 
+  async function warnMissingApiKey(): Promise<void> {
+    await vscode.window.showInformationMessage(
+      'OpenCode Copilot Sync: Enter your OpenCode API key to enable flat-rate Go and Zen models in Copilot.',
+      'Set API Key',
+      'Get API Key (opencode.ai)'
+    ).then(handleMissingApiKeyChoice);
+  }
+
   function showMissingApiKeyMessage(interactive: boolean): void {
     if (interactive) {
-      vscode.window.showWarningMessage('OpenCode sync cancelled: No API key provided.');
+      void vscode.window.showWarningMessage('OpenCode sync cancelled: No API key provided.');
       return;
     }
 
-    void vscode.window
-      .showInformationMessage(
-        'OpenCode Copilot Sync: Enter your OpenCode API key to enable flat-rate Go and Zen models in Copilot.',
-        'Set API Key',
-        'Get API Key (opencode.ai)'
-      )
-      .then(handleMissingApiKeyChoice);
+    void warnMissingApiKey();
   }
 
   async function getSyncApiKey(interactive: boolean): Promise<string | undefined> {
@@ -137,22 +200,22 @@ export async function activate(context: vscode.ExtensionContext) {
 
   function logSyncResult(syncResult: SyncOpenCodeResult, interactive: boolean): void {
     outputChannel.info(
-      `${interactive ? '' : '[Startup] '}Synced ${syncResult.totalCount} unified OpenCode models (${syncResult.goCount} Go + ${syncResult.zenCount} Zen) to native provider.`
+      `${interactive ? '' : '[Startup] '}Synced ${syncResult.totalCount} unified OpenCode models (${syncResult.goCount} Go + ${syncResult.zenCount} Zen) to OpenCode.`
     );
     syncResult.warnings.forEach((warning) => {
-      outputChannel.warn(`[Compatibility mirror] ${warning}`);
+      outputChannel.warn(`[Sync] ${warning}`);
     });
   }
 
   function reportSyncResult(syncResult: SyncOpenCodeResult, interactive: boolean): void {
     logSyncResult(syncResult, interactive);
-    if (interactive) notifySyncResult(syncResult);
+    if (interactive || syncResult.warnings.length > 0) notifySyncResult(syncResult);
   }
 
   function notifySyncResult(syncResult: SyncOpenCodeResult): void {
     if (syncResult.warnings.length > 0) {
       vscode.window.showWarningMessage(
-        `Synced OpenCode models, but ${syncResult.warnings.length} compatibility mirror(s) were skipped. See the OpenCode Copilot Sync output channel for target-local setup instructions.`
+        `Synced OpenCode models with ${syncResult.warnings.length} warning(s). See the OpenCode Copilot Sync output channel for details.`
       );
       return;
     }
@@ -163,32 +226,16 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 
   function updateModelCatalog(syncResult: SyncOpenCodeResult): void {
-    if (syncResult.models.length > 0) {
-      chatProvider.updateModels(
-        syncResult.models.map((model) => ({
-          id: model.id,
-          name: model.name,
-          family: getModelFamily(model),
-          catalog: getModelCatalog(model),
-          contextWindow: model.contextWindow,
-          maxOutputTokens: model.maxOutputTokens,
-          vision: model.vision,
-          thinking: model.thinking,
-          supportsReasoningEffort: model.supportsReasoningEffort,
-          apiType: model.apiType,
-        }))
-      );
-      usageTreeProvider.updateModelCounts(syncResult.goCount, syncResult.zenCount);
-      return;
-    }
-    chatProvider.refresh();
+    usageTreeProvider.updateModelCounts(syncResult.goCount, syncResult.zenCount);
   }
 
-  function reportSyncFailure(error: unknown, interactive: boolean): void {
+  function reportSyncFailure(error: unknown): void {
     const message = formatSyncFailureMessage(error);
     outputChannel.error(`[Sync Error] ${message}`);
-    if (interactive) {
-      vscode.window.showErrorMessage(`OpenCode sync failed: ${message}`);
+    if (activeCatalogScope) {
+      vscode.window.showWarningMessage(`OpenCode sync failed; using the last cached catalog. ${message}`);
+    } else {
+      vscode.window.showErrorMessage(`OpenCode sync failed; no validated cached model catalog is available. ${message}`);
     }
     statusBarItem.text = '$(hubot) OpenCode';
     statusBarItem.tooltip = formatSyncFailureTooltip();
@@ -206,9 +253,21 @@ export async function activate(context: vscode.ExtensionContext) {
       return;
     }
 
+    const scope = catalogScope(apiKey, syncOptions);
+    if (activeCatalogScope && activeCatalogScope !== scope) {
+      chatProvider.updateModels([]);
+      activeCatalogScope = undefined;
+    }
     statusBarItem.text = '$(sync~spin) OpenCode';
     statusBarItem.tooltip = 'Syncing OpenCode models...';
     const syncResult = await runSyncWithProgress(interactive, apiKey, syncOptions);
+    chatProvider.updateModels(syncResult.models);
+    activeCatalogScope = scope;
+    try {
+      await context.globalState.update(CATALOG_CACHE_KEY, createCatalogCache(apiKey, syncOptions, syncResult.cacheSource));
+    } catch (error) {
+      syncResult.warnings.push(`Unable to save the model catalog cache: ${formatSyncFailureMessage(error)}`);
+    }
     reportSyncResult(syncResult, interactive);
     updateModelCatalog(syncResult);
     await updateUsageMeter(statusBarItem, usageTreeProvider, context.secrets, apiKey);
@@ -218,7 +277,7 @@ export async function activate(context: vscode.ExtensionContext) {
     try {
       await runSyncWorkflow(interactive);
     } catch (error: unknown) {
-      reportSyncFailure(error, interactive);
+      reportSyncFailure(error);
     }
   }
 
@@ -270,3 +329,7 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {}
+
+function catalogScope(apiKey: string, selection: CatalogSelection): string {
+  return JSON.stringify([catalogKeyHash(apiKey), selection.includeGo, selection.includeZen]);
+}

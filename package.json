@@ -134,7 +134,12 @@
         "opencode.streamIdleTimeoutSeconds": {
           "type": "number",
           "default": 90,
-          "description": "Timeout in seconds to wait for stream chunks from OpenCode before recovering or alerting on an idle stream."
+          "description": "Seconds to wait for stream chunks before recovering or reporting an interruption."
+        },
+        "opencode.streamDiagnostics": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log per-request stream summaries ([Stream] request/completed lines with part counts, timing, and finish reason) to the OpenCode Copilot Sync output channel. Never includes prompt text, reasoning content, tool arguments, or credentials."
         }
       }
     }
@@ -147,7 +152,7 @@
     "crap": "npm run test:coverage && node scripts/crap-report.mjs",
     "lint": "eslint src",
     "test:all": "node test/runner-all.js",
-    "test:e2e": "node test/e2e/runner.js",
+    "test:e2e": "npm run build && node test/e2e/runner.js",
     "test:remote": "node scripts/test-remote-wsl.js"
   },
   "devDependencies": {
@@ -162,6 +167,12 @@
     "vscode": "file:./test/mocks/vscode"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "3.0.133",
+    "@ai-sdk/google": "3.0.139",
+    "@ai-sdk/mistral": "3.0.77",
+    "@ai-sdk/openai": "3.0.130",
+    "@ai-sdk/openai-compatible": "2.0.87",
+    "@ai-sdk/provider": "3.0.19",
     "undici": "^8.10.2"
   }
 }
