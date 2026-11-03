@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.20.1 - 2026-11-03
+#### Miscellaneous Chores
+- (**deps**) bump undici (#31) - (e68eab1) - dependabot[bot]
+
+- - -
+
 ## v0.20.0 - 2026-11-01
 #### Features
 - (**provider**) stream thinking, surface stops, gate diagnostics - (4b57c6b) - Mark Fenderov
