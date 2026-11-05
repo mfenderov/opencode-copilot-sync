@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.21.1 - 2026-11-05
+#### Bug Fixes
+- (**provider**) restore effort labels and context-size toggle in model schema (#35) - (09ea4b9) - Mark Fenderov
+#### Miscellaneous Chores
+- (**badge**) refresh CRAP badge [skip ci] - (3fe5e4c) - github-actions[bot]
+
+- - -
+
 ## v0.21.0 - 2026-11-05
 #### Features
 - (**sync**) make catalog fetch timeout configurable (#33) - (ed99ca7) - NicolasWeb
