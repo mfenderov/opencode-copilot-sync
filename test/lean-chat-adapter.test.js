@@ -808,6 +808,40 @@ test('reasoning metadata and selected effort reach upstream for arbitrary Respon
   assert.deepEqual(info.configurationSchema.properties.reasoningEffort.enum, ['low', 'high']);
 });
 
+test('announced schema labels efforts and defaults to medium when available', async (t) => {
+  const { provider, model } = await setup(t, (req, res) => sendResponses(res, req.body.model));
+  provider.updateModels([{ ...model, thinking: true, supportsReasoningEffort: ['low', 'medium', 'high'] }]);
+  const info = provider.provideLanguageModelChatInformation()[0];
+  const effort = info.configurationSchema.properties.reasoningEffort;
+  assert.deepEqual(effort.enumItemLabels, ['Low', 'Medium', 'High']);
+  assert.equal(effort.default, 'medium');
+});
+
+test('announced schema offers a context-size toggle for long-context models', async (t) => {
+  const { provider, model } = await setup(t, (req, res) => sendResponses(res, req.body.model));
+  provider.updateModels([{ ...model, contextWindow: 1000000 }]);
+  const info = provider.provideLanguageModelChatInformation()[0];
+  assert.deepEqual(info.configurationSchema.properties.contextTier, {
+    type: 'string',
+    title: 'Context Size',
+    enum: ['default', 'long_context'],
+    enumItemLabels: ['Standard (128K)', 'Extended (1M)'],
+    enumDescriptions: [
+      'Standard context window for faster generation and lower token usage',
+      'Full extended context window for large codebase analysis',
+    ],
+    default: 'default',
+    group: 'tokens',
+  });
+});
+
+test('announced schema omits the context-size toggle for standard models', async (t) => {
+  const { provider, model } = await setup(t, (req, res) => sendResponses(res, req.body.model));
+  provider.updateModels([{ ...model, contextWindow: 128000, supportsReasoningEffort: ['low'] }]);
+  const info = provider.provideLanguageModelChatInformation()[0];
+  assert.ok(!('contextTier' in (info.configurationSchema.properties ?? {})));
+});
+
 test('reasoning summary deltas reach VS Code as thinking parts for thinking models', async (t) => {
   const { provider, model, requests, run } = await setup(t, (req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream' });

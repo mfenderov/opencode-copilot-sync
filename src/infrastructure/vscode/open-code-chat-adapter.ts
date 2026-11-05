@@ -48,6 +48,66 @@ const thinkingPart = (vscode as typeof vscode & {
   LanguageModelThinkingPart?: new (value: string, id: string, metadata?: Record<string, unknown>) => vscode.LanguageModelResponsePart;
 }).LanguageModelThinkingPart;
 
+// Long-context models get a Context Size toggle so users can trade token
+// usage against the full window. Restored from the pre-SDK provider: the
+// threshold and tiers match what the model picker showed before v0.20.
+const LONG_CONTEXT_THRESHOLD = 256000;
+
+function effortLabel(effort: string): string {
+  switch (effort) {
+    case 'minimal': return 'Minimal';
+    case 'low': return 'Low';
+    case 'medium': return 'Medium';
+    case 'high': return 'High';
+    case 'xhigh': return 'Extra High';
+    case 'max': return 'Max';
+    default: return effort.charAt(0).toUpperCase() + effort.slice(1);
+  }
+}
+
+function effortDescription(effort: string): string {
+  switch (effort) {
+    case 'minimal': return 'Minimal reasoning';
+    case 'low': return 'Faster responses with light reasoning';
+    case 'medium': return 'Balanced reasoning and speed';
+    case 'high': return 'Deep reasoning';
+    case 'xhigh': return 'Extra deep reasoning';
+    case 'max': return 'Maximum reasoning depth';
+    default: return `${effort} reasoning`;
+  }
+}
+
+function modelConfigurationSchema(model: OpenCodeModel): Record<string, unknown> | undefined {
+  const properties: Record<string, unknown> = {};
+  const efforts = model.supportsReasoningEffort?.filter((effort) => effort !== 'none');
+  if (efforts?.length) {
+    properties.reasoningEffort = {
+      type: 'string',
+      title: 'Thinking Effort',
+      enum: efforts,
+      enumItemLabels: efforts.map(effortLabel),
+      enumDescriptions: efforts.map(effortDescription),
+      default: efforts.includes('medium') ? 'medium' : efforts[0],
+      group: 'navigation',
+    };
+  }
+  if (model.contextWindow > LONG_CONTEXT_THRESHOLD) {
+    properties.contextTier = {
+      type: 'string',
+      title: 'Context Size',
+      enum: ['default', 'long_context'],
+      enumItemLabels: ['Standard (128K)', 'Extended (1M)'],
+      enumDescriptions: [
+        'Standard context window for faster generation and lower token usage',
+        'Full extended context window for large codebase analysis',
+      ],
+      default: 'default',
+      group: 'tokens',
+    };
+  }
+  return Object.keys(properties).length > 0 ? { type: 'object', properties } : undefined;
+}
+
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -1171,11 +1231,7 @@ export class OpenCodeChatAdapter implements vscode.LanguageModelChatProvider<Reg
     this.models = models.map((model) => ({
       ...model, family: model.family ?? model.id, version: '1.0',
       capabilities: { toolCalling: model.toolCalling, imageInput: model.vision, thinking: model.thinking },
-      configurationSchema: model.supportsReasoningEffort?.length ? {
-        type: 'object', properties: {
-          reasoningEffort: { type: 'string', title: 'Thinking Effort', enum: model.supportsReasoningEffort },
-        },
-      } : undefined,
+      configurationSchema: modelConfigurationSchema(model),
     }));
     this.changed.fire();
   }
