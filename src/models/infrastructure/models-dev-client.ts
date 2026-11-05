@@ -1,11 +1,12 @@
 import { extensionUserAgent } from '../../extension-version.js';
 import { fetchWithRetry } from '../../infrastructure/http/fetch-policy.js';
 
-const CATALOG_FETCH_TIMEOUT_MS = 5_000;
+const DEFAULT_CATALOG_FETCH_TIMEOUT_MS = 5_000;
 
 export async function fetchOpenCodeModels(
   apiKey: string,
-  catalog: 'go' | 'zen' = 'go'
+  catalog: 'go' | 'zen' = 'go',
+  timeoutMs: number = DEFAULT_CATALOG_FETCH_TIMEOUT_MS
 ): Promise<string[]> {
   const url = catalog === 'go'
     ? 'https://opencode.ai/zen/go/v1/models'
@@ -16,7 +17,7 @@ export async function fetchOpenCodeModels(
       Authorization: `Bearer ${apiKey}`,
       'User-Agent': extensionUserAgent(),
     },
-    signal: AbortSignal.timeout(CATALOG_FETCH_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) {
     const errorText = await res.text();
@@ -74,10 +75,10 @@ export function providerMetadata(value: unknown): ModelProviderMetadata | undefi
   return { npm: provider.npm, api: provider.api, models: provider.models as Record<string, ModelDevMetadata> };
 }
 
-async function fetchCatalogFrom(url: string): Promise<CatalogModelMetadata> {
+async function fetchCatalogFrom(url: string, timeoutMs: number): Promise<CatalogModelMetadata> {
   const res = await fetchWithRetry(
     url,
-    { signal: AbortSignal.timeout(CATALOG_FETCH_TIMEOUT_MS) },
+    { signal: AbortSignal.timeout(timeoutMs) },
     { retries: 1, baseDelayMs: 200 }
   );
   if (!res.ok) throw new Error(`Metadata request failed (${res.status}).`);
@@ -90,11 +91,13 @@ async function fetchCatalogFrom(url: string): Promise<CatalogModelMetadata> {
   return { zen, go };
 }
 
-export async function fetchModelsDevMetadata(): Promise<CatalogModelMetadata> {
+export async function fetchModelsDevMetadata(
+  timeoutMs: number = DEFAULT_CATALOG_FETCH_TIMEOUT_MS
+): Promise<CatalogModelMetadata> {
   const failures: string[] = [];
   for (const url of ['https://models.opencode.ai/api.json', 'https://models.dev/api.json']) {
     try {
-      return await fetchCatalogFrom(url);
+      return await fetchCatalogFrom(url, timeoutMs);
     } catch (error) {
       failures.push(`${new URL(url).hostname}: ${error instanceof Error ? error.message : String(error)}`);
     }

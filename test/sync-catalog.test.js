@@ -46,6 +46,20 @@ test('fetchOpenCodeCatalogIds requests Go and Zen catalogs concurrently', async 
   }
 });
 
+test('fetchOpenCodeCatalogIds aborts hung catalog requests with the configured timeout', async () => {
+  globalThis.fetch = (_url, init) => new Promise((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(init.signal.reason));
+  });
+
+  const start = Date.now();
+  try {
+    await assert.rejects(fetchOpenCodeCatalogIds('sk-test-key-12345', true, true, 150));
+    assert.ok(Date.now() - start < 4_000, 'the configured timeout must govern both concurrent catalog fetches');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('fetchOpenCodeCatalogIds rejects when the enabled Go catalog fails instead of returning a partial list', async () => {
   globalThis.fetch = async (url) => {
     if (String(url).includes('/zen/go/v1/models')) return failedList();

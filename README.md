@@ -62,6 +62,7 @@ Customize behavior via VS Code Settings (`Cmd+,` / `Ctrl+,` search for `opencode
 | `opencode.autoSyncOnStartup` | `true` | Automatically sync models on VS Code launch or window reload. |
 | `opencode.includeGoModels` | `true` | Include models from the OpenCode Go subscription catalog. |
 | `opencode.includeZenModels` | `true` | Include OpenCode Zen catalog models as announced upstream. |
+| `opencode.catalogFetchTimeoutSeconds` | `5` | Seconds to wait for one catalog request (Go/Zen model lists and model metadata) before it is aborted. Raise it on slow connections, e.g. behind a corporate proxy or VPN tunnel. |
 | `opencode.additionalSyncTargets` | `[]` | Additional absolute `chatLanguageModels.json` paths to mirror to. Use this to opt in to another user profile or a sibling WSL distro. |
 | `opencode.streamDiagnostics` | `false` | Log per-request stream summaries (`[Stream]` lines with part counts, timing, and finish reason) to the output channel. Never includes prompt text, reasoning content, tool arguments, or credentials. |
 

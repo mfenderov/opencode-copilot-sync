@@ -123,6 +123,11 @@
           "default": true,
           "description": "Include OpenCode Zen catalog models as announced upstream (de-duplicated against Go)."
         },
+        "opencode.catalogFetchTimeoutSeconds": {
+          "type": "number",
+          "default": 5,
+          "description": "Seconds to wait for one catalog request (Go/Zen model lists and model metadata) before it is aborted. Raise it on slow connections, e.g. behind a corporate proxy or VPN tunnel."
+        },
         "opencode.additionalSyncTargets": {
           "type": "array",
           "items": {
@@ -174,5 +179,8 @@
     "@ai-sdk/openai-compatible": "2.0.87",
     "@ai-sdk/provider": "3.0.19",
     "undici": "^8.12.2"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
   }
 }

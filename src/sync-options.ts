@@ -8,6 +8,7 @@ export interface ExtensionSyncOptions {
   storagePath: string;
   remoteName?: string;
   additionalTargetPaths: string[];
+  catalogFetchTimeoutMs: number;
 }
 
 function getBooleanSetting(
@@ -18,6 +19,18 @@ function getBooleanSetting(
   const value = configuration.get<unknown>(section, defaultValue);
   if (typeof value !== 'boolean') {
     throw new Error(`opencode.${section} must be a boolean.`);
+  }
+  return value;
+}
+
+function getPositiveNumberSetting(
+  configuration: OpenCodeSyncConfiguration,
+  section: string,
+  defaultValue: number
+): number {
+  const value = configuration.get<unknown>(section, defaultValue);
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`opencode.${section} must be a positive number.`);
   }
   return value;
 }
@@ -50,6 +63,7 @@ export function buildSyncOptions(
     storagePath,
     remoteName,
     additionalTargetPaths: getAdditionalTargetPaths(configuration),
+    catalogFetchTimeoutMs: getPositiveNumberSetting(configuration, 'catalogFetchTimeoutSeconds', 5) * 1000,
   };
 }
 

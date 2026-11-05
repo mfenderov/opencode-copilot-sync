@@ -11,10 +11,14 @@ import {
 import type { OpenCodeCatalogIds, UnifiedOpenCodeModels } from '../domain/model-catalog.js';
 import { writeProvidersToConfig } from '../../sync-writer.js';
 
-async function fetchCatalogIds(apiKey: string, catalog: 'go' | 'zen'): Promise<string[]> {
+async function fetchCatalogIds(
+  apiKey: string,
+  catalog: 'go' | 'zen',
+  timeoutMs: number | undefined
+): Promise<string[]> {
   const label = catalog === 'go' ? 'Go' : 'Zen';
   try {
-    return (await fetchOpenCodeModels(apiKey, catalog)).filter(Boolean);
+    return (await fetchOpenCodeModels(apiKey, catalog, timeoutMs)).filter(Boolean);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     throw new Error(`Failed to fetch ${label} models: ${detail}`);
@@ -24,7 +28,8 @@ async function fetchCatalogIds(apiKey: string, catalog: 'go' | 'zen'): Promise<s
 export async function fetchOpenCodeCatalogIds(
   apiKey: string,
   includeGo: boolean,
-  includeZen: boolean
+  includeZen: boolean,
+  timeoutMs?: number
 ): Promise<OpenCodeCatalogIds> {
   // Catalog sync is atomic: every enabled catalog must succeed. A failed Go
   // or Zen fetch aborts the whole sync instead of shrinking the announced
@@ -33,15 +38,15 @@ export async function fetchOpenCodeCatalogIds(
   // Go and Zen catalogs are independent: fetch them concurrently so one slow
   // endpoint does not serialize behind the other on startup.
   const [goModelIds, zenModelIds] = await Promise.all([
-    includeGo ? fetchCatalogIds(apiKey, 'go') : Promise.resolve([] as string[]),
-    includeZen ? fetchCatalogIds(apiKey, 'zen') : Promise.resolve([] as string[]),
+    includeGo ? fetchCatalogIds(apiKey, 'go', timeoutMs) : Promise.resolve([] as string[]),
+    includeZen ? fetchCatalogIds(apiKey, 'zen', timeoutMs) : Promise.resolve([] as string[]),
   ]);
 
   return { goModelIds, zenModelIds };
 }
 
-export async function fetchOpenCodeModelMetadata(): Promise<CatalogModelMetadata> {
-  return fetchModelsDevMetadata();
+export async function fetchOpenCodeModelMetadata(timeoutMs?: number): Promise<CatalogModelMetadata> {
+  return fetchModelsDevMetadata(timeoutMs);
 }
 
 function buildCatalogModels(
@@ -96,6 +101,8 @@ export interface SyncOpenCodeOptions {
   storagePath?: string;
   remoteName?: string;
   additionalTargetPaths?: readonly string[];
+  /** Abort budget for one catalog request; falls back to the client default when unset. */
+  catalogFetchTimeoutMs?: number;
 }
 
 export interface SyncOpenCodeResult {
@@ -118,8 +125,8 @@ export async function syncOpenCodeModels(
   // Catalog IDs and model metadata are independent: fetch them concurrently
   // so the multi-megabyte metadata download never serializes behind catalogs.
   const [catalogIds, metadata] = await Promise.all([
-    fetchOpenCodeCatalogIds(apiKey, includeGo, includeZen),
-    fetchOpenCodeModelMetadata(),
+    fetchOpenCodeCatalogIds(apiKey, includeGo, includeZen, options.catalogFetchTimeoutMs),
+    fetchOpenCodeModelMetadata(options.catalogFetchTimeoutMs),
   ]);
   const { models, zenCount, warnings } = buildUnifiedModels(
     catalogIds.goModelIds,
