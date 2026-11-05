@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.21.0 - 2026-11-05
+#### Features
+- (**sync**) make catalog fetch timeout configurable (#33) - (ed99ca7) - NicolasWeb
+#### Miscellaneous Chores
+- (**badge**) refresh CRAP badge [skip ci] - (a66037e) - github-actions[bot]
+
+- - -
+
 ## v0.20.1 - 2026-11-03
 #### Miscellaneous Chores
 - (**deps**) bump undici (#31) - (e68eab1) - dependabot[bot]
