@@ -30,7 +30,32 @@ test('buildSyncOptions reads catalog flags and exact additional target paths', a
     storagePath: '/tmp/extension-storage',
     remoteName: 'wsl+Ubuntu',
     additionalTargetPaths: ['/tmp/profile/chatLanguageModels.json'],
+    catalogFetchTimeoutMs: 5000,
   });
+});
+
+test('buildSyncOptions converts catalogFetchTimeoutSeconds to milliseconds', async () => {
+  const { buildSyncOptions } = await loadSyncOptions();
+  const options = buildSyncOptions(
+    { get: (key, fallback) => key === 'catalogFetchTimeoutSeconds' ? 30 : fallback },
+    '/tmp/extension-storage',
+    undefined
+  );
+  assert.equal(options.catalogFetchTimeoutMs, 30_000);
+});
+
+test('buildSyncOptions rejects a non-positive or non-numeric catalog fetch timeout', async () => {
+  const { buildSyncOptions } = await loadSyncOptions();
+  for (const value of [0, -1, '30', Number.NaN]) {
+    assert.throws(
+      () => buildSyncOptions(
+        { get: (key, fallback) => key === 'catalogFetchTimeoutSeconds' ? value : fallback },
+        '/tmp/storage'
+      ),
+      /catalogFetchTimeoutSeconds must be a positive number/,
+      `value ${String(value)} must be rejected`
+    );
+  }
 });
 
 test('buildSyncOptions rejects a malformed additional target setting', async () => {
